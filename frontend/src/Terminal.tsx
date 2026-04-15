@@ -1132,24 +1132,16 @@ export default function Terminal({ token }: Props) {
         // doesn't steal focus from our managed input.
         e.preventDefault()
         const xtermTa = termRef.current?.textarea
-        // 工具栏展开时收起工具栏；若键盘也可见则一并收起
-        if (toolbarCollapsedRef.current === false) {
-          setToolbarCollapsed(true)
-          if (keyboardVisibleRef.current) {
-            keyboardVisibleRef.current = false
-            if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
-            if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
-          }
-          return
-        }
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
         // Tap toggles keyboard: tap to show, tap again to hide
+        // Always toggle, regardless of toolbar state
         if (keyboardVisibleRef.current) {
           keyboardVisibleRef.current = false
           if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
           if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
         } else {
           keyboardVisibleRef.current = true
-          const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+          if (toolbarCollapsedRef.current === false) setToolbarCollapsed(true)
           if (isIOS) {
             // iOS Safari won't reliably show the keyboard for xterm's internal
             // textarea (tiny element + restrictive attributes). Use our standard
@@ -1764,11 +1756,11 @@ export default function Terminal({ token }: Props) {
       {showSessionDrawer && !isWidePC && (
         <>
           <GhostShield />
-          <div className="fixed inset-0 z-[400] bg-black/50" onPointerDown={() => { setShowSessionDrawer(false); setDrawerMenuIndex(null); setDrawerRenameIndex(null) }} />
+          <div className="fixed inset-0 z-[400] bg-black/50" onClick={() => { setShowSessionDrawer(false); setDrawerMenuIndex(null); setDrawerRenameIndex(null) }} />
           <div className="fixed bottom-0 left-0 right-0 z-[401] bg-nexus-menu-bg rounded-t-xl border border-nexus-border border-b-0 max-h-[70vh] flex flex-col shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
             <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border flex-shrink-0">
               <span className="text-nexus-text font-semibold text-[15px]">会话管理</span>
-              <button className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center" onPointerDown={(e) => { e.preventDefault(); setShowSessionDrawer(false); setDrawerMenuIndex(null); setDrawerRenameIndex(null); (document.activeElement as HTMLElement)?.blur() }}><Icon name="x" size={20} /></button>
+              <button type="button" className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center" onClick={() => { setShowSessionDrawer(false); setDrawerMenuIndex(null); setDrawerRenameIndex(null); (document.activeElement as HTMLElement)?.blur() }}><Icon name="x" size={20} /></button>
             </div>
             <div className="flex-1 overflow-y-auto py-1.5">
               {windows.map(win => {
@@ -1803,25 +1795,27 @@ export default function Terminal({ token }: Props) {
                       ) : (
                         <span
                           className="flex-1 text-nexus-text text-sm font-mono overflow-hidden text-ellipsis whitespace-nowrap cursor-pointer"
-                          onPointerUp={(e) => { e.stopPropagation(); attachToWindow(win.index); setShowSessionDrawer(false); setDrawerMenuIndex(null) }}
+                          onClick={e => { e.stopPropagation(); attachToWindow(win.index); setShowSessionDrawer(false); setDrawerMenuIndex(null) }}
                         >{win.name}</span>
                       )}
                       {isActive && !isRenaming && <span className="text-nexus-accent text-sm font-semibold flex-shrink-0 flex items-center"><Icon name="check" size={14} /></span>}
-                      <button
-                        className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex-shrink-0 flex items-center justify-center"
-                        onPointerDown={e => { e.stopPropagation(); setDrawerMenuIndex(isMenuOpen ? null : win.index); setDrawerRenameIndex(null) }}
-                      ><Icon name="more" size={18} /></button>
+                        <button
+                          type="button"
+                          className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex-shrink-0 flex items-center justify-center"
+                          onClick={e => { e.stopPropagation(); setDrawerMenuIndex(isMenuOpen ? null : win.index); setDrawerRenameIndex(null) }}
+                        ><Icon name="more" size={18} /></button>
                     </div>
                     {/* Action row */}
                     {isMenuOpen && !isRenaming && (
                       <div className="flex gap-2 px-4 py-1.5 pb-2.5 bg-nexus-bg">
                         <button
                           className="flex-1 bg-transparent border border-nexus-border rounded-md text-nexus-text text-sm py-1.5 cursor-pointer"
-                          onPointerDown={e => { e.stopPropagation(); setDrawerRenameValue(win.name); setDrawerRenameIndex(win.index); setDrawerMenuIndex(null) }}
+                          onClick={e => { e.stopPropagation(); setDrawerRenameValue(win.name); setDrawerRenameIndex(win.index); setDrawerMenuIndex(null) }}
                         ><span className="flex items-center justify-center gap-1"><Icon name="pencil" size={14} />改名</span></button>
                         <button
+                          type="button"
                           className="flex-1 bg-transparent border border-nexus-error rounded-md text-nexus-error text-sm py-1.5 cursor-pointer"
-                          onPointerDown={e => { e.stopPropagation(); closeWindow(win.index); setDrawerMenuIndex(null); if (windows.length <= 1) setShowSessionDrawer(false) }}
+                          onClick={e => { e.stopPropagation(); closeWindow(win.index); setDrawerMenuIndex(null); if (windows.length <= 1) setShowSessionDrawer(false) }}
                         ><span className="flex items-center justify-center gap-1"><Icon name="x" size={14} />关闭</span></button>
                       </div>
                     )}

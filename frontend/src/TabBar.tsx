@@ -179,14 +179,15 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
         <div style={s.actions}>
           {sessions && sessions.length > 1 && (
             <button
+              type="button"
               style={{ ...s.iconBtn, fontSize: 11, padding: '0 6px', maxWidth: 64, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-              onPointerDown={(e) => { e.preventDefault(); setShowSessionPicker(v => !v) }}
+              onClick={() => setShowSessionPicker(v => !v)}
               title={`${t('tabBar.currentSession')} ${activeSession}`}
             >{activeSession}</button>
           )}
-          <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onAdd() }} title={t('tabBar.newSession')}>+</button>
-          {onUpload && <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onUpload() }} title={t('tabBar.upload')}><Icon name="paperclip" size={18} /></button>}
-          <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }} title={t('settings.title')}><Icon name="settings" size={18} /></button>
+          <button type="button" style={s.iconBtn} onClick={() => onAdd()} title={t('tabBar.newSession')}>+</button>
+          {onUpload && <button type="button" style={s.iconBtn} onClick={() => onUpload()} title={t('tabBar.upload')}><Icon name="paperclip" size={18} /></button>}
+          <button type="button" style={s.iconBtn} onClick={() => onOpenSettings()} title={t('settings.title')}><Icon name="settings" size={18} /></button>
         </div>
       </div>
 
@@ -269,7 +270,7 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
       {/* 右键/长按菜单 */}
       {menuIndex !== null && (
         <>
-          <div style={s.menuOverlay} onPointerDown={() => setMenuIndex(null)} />
+          <div style={s.menuOverlay} onClick={() => setMenuIndex(null)} />
           <div style={{
             ...s.contextMenu,
             left: Math.min(menuPos.x, window.innerWidth - 180),
@@ -277,14 +278,16 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
           }}>
             <div style={s.menuTitle}>{windows.find(w => w.index === menuIndex)?.name}</div>
             <button
+              type="button"
               style={s.menuItem}
-              onPointerDown={() => menuIndex !== null && startRename(menuIndex, windows.find(w => w.index === menuIndex)?.name || '')}
+              onClick={() => menuIndex !== null && startRename(menuIndex, windows.find(w => w.index === menuIndex)?.name || '')}
             >
               <Icon name="pencil" size={14} /> 重命名
             </button>
             <button
+              type="button"
               style={s.menuItemClose}
-              onPointerDown={() => menuIndex !== null && handleClose(menuIndex)}
+              onClick={() => menuIndex !== null && handleClose(menuIndex)}
             >
               <Icon name="x" size={14} /> 关闭会话
             </button>

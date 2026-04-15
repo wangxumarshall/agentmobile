@@ -137,6 +137,12 @@ export default function SessionFAB({ onClick, windowCount, topInset = 0, bottomI
     }
   }, [topInset, effectiveBottomInset])
 
+  const handleClick = useCallback(() => {
+    if (!moved.current) {
+      onClick()
+    }
+  }, [onClick])
+
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (!isDragging.current) return
     e.preventDefault()
@@ -159,6 +165,7 @@ export default function SessionFAB({ onClick, windowCount, topInset = 0, bottomI
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onClick={handleClick}
       style={{
         position: 'fixed',
         left: renderedPos.x,
