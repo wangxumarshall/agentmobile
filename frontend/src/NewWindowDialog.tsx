@@ -37,7 +37,7 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
   function handleConfirm() {
     // 如果有选中的 profile，从它读取 agent_type；否则用当前 shellType
     const cfg = configs.find(c => c.id === selectedProfile)
-    const agentType = cfg?.agent_type || shellType
+    const agentType = (cfg?.agent_type || shellType) as 'claude' | 'codex' | 'bash'
     const profile = agentType === 'bash' ? undefined : (selectedProfile || undefined)
     if (profile) localStorage.setItem('nexus_last_profile', profile)
     onConfirm(agentType, profile)

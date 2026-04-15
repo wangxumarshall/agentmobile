@@ -107,7 +107,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
     const path = inputPath.trim()
     if (!path) return
     const cfg = configs.find(c => c.id === selectedProfile)
-    const agentType = cfg?.agent_type || shellType
+    const agentType = (cfg?.agent_type || shellType) as 'claude' | 'codex' | 'bash'
     const profile = agentType === 'bash' ? undefined : (selectedProfile || undefined)
     localStorage.setItem('nexus_last_path', path)
     if (profile) localStorage.setItem('nexus_last_profile', profile)
