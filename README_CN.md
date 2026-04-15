@@ -1,13 +1,13 @@
 # Nexus4CC
 
-### 你的 Claude Code，随身携带。
+### 你的 AI 编程助手，随身携带。
 
 [![Node](https://img.shields.io/badge/node-20+-brightgreen?style=flat-square)](https://nodejs.org/)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3%20%2F%20商业授权-blue?style=flat-square)](LICENSE.md)
 [![GitHub stars](https://img.shields.io/github/stars/librae8226/nexus4cc?style=flat-square)](https://github.com/librae8226/nexus4cc/stargazers)
 [![PRs Welcome](https://img.shields.io/badge/PRs-欢迎-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
-[English](README.md)
+<!-- [English](README.md) -->
 
 ---
 
@@ -25,9 +25,10 @@
 
 | | |
 |---|---|
-| **随时指挥 AI** | 你的时间是碎片化的，你的 AI 不应该被困住。在地铁上、会议间隙、出差途中，随时给 Claude Code 下指令。 |
+| **双 AI 后端** | 按窗口自由切换 Claude Code ⚡ 或 OpenAI Codex CLI 🔷——按需选择最合适的工具。 |
+| **随时指挥 AI** | 你的时间是碎片化的，你的 AI 不应该被困住。在地铁上、会议间隙、出差途中，随时给 AI Agent 下指令。 |
 | **专为触控打造** | 不是把桌面终端硬塞进手机。左右滑动切换会话、双指缩放、可配置软键盘工具栏——从第一天起就为手指设计。 |
-| **完整记忆，始终在线** | Claude Code 运行在你的电脑上，跑在 tmux 会话里——完整的代码库、完整的对话历史、完整的项目上下文。不是云端聊天，不会忘事。 |
+| **完整记忆，始终在线** | AI Agent 运行在你的电脑上，跑在 tmux 会话里——完整的代码库、完整的对话历史、完整的项目上下文。不是云端聊天，不会忘事。 |
 | **发射后不管** | 下达指令，锁上手机。AI 继续执行。回来时，一切就在你离开的地方。 |
 
 ---
@@ -36,6 +37,7 @@
 
 |                              | Anthropic Remote Control | Happy Coder | Omnara  | **nexus4cc** |
 |------------------------------|:---:|:---:|:---:|:---:|
+| 双 AI 后端（Claude + Codex） | ❌ | ❌ | ❌ | ✅ |
 | 自托管                       | ❌ | ❌ | ⚠️ | ✅ |
 | 无需订阅                     | ❌ ($100+/月) | ✅ | ❌ ($9/月) | ✅ |
 | 数据留在本地                 | ❌ | ❌ | ❌ | ✅ |
@@ -53,12 +55,14 @@
 
 - 🔌 **WebSocket ↔ tmux 桥接** — 每个 tmux 窗口一个 PTY，实时双向 I/O
 - 📱 **移动端优先终端** — xterm.js + 滑动导航 + 双指缩放 + 可配置软键盘
-- 🤖 **任务面板** — SSE 流式输出，异步监控 Claude 任务进度
+- 🤖 **双 AI 后端** — 按窗口切换 Claude Code ⚡ 和 OpenAI Codex CLI 🔷
+- 🎯 **任务面板** — 异步发送任务（`claude -p` / `codex exec`），SSE 流式监控进度
 - 📂 **文件浏览器** — 浏览、编辑、上传工作区文件
 - 🗂️ **项目与频道管理** — 以目录为单位组织项目，多个频道式会话，像 Slack 频道一样切换
 - 🔀 **多会话管理** — 秒切 tmux session
 - 🎨 **PWA** — 可安装、深色/浅色主题
 - ⚡ **零延迟体感** — WebSocket 直连，无 SSH 开销
+- ✈️ **Telegram Bot** — 从 Telegram 发送任务，实时获取进度
 
 ---
 
@@ -72,11 +76,11 @@ npm start
 # 在任意设备打开 http://localhost:59000 🚀
 ```
 
-> 完整配置指南（Claude Profile、PM2、移动端访问、故障排查）：**[QUICKSTART.md →](docs/QUICKSTART.md)**
+> 完整配置指南（AI Profile、PM2、移动端访问、故障排查）：**[QUICKSTART.md →](docs/QUICKSTART.md)**
 
 ---
 
-## 使用 Claude Code 一键安装
+## 使用 AI 助手一键安装
 
 如果你是正在帮用户安装 Nexus 的 AI 助手，按以下步骤执行：
 
@@ -102,7 +106,24 @@ npm start
 | Node.js | 20+ | |
 | tmux | 任意近期版本 | |
 | PM2 | 任意近期版本 | `setup.js` 自动安装 |
+| **Claude Code** | 最新 | 使用 Claude 后端时需要 |
+| **Codex CLI** | 最新 | 使用 Codex 后端时安装（可选） |
 | 操作系统 | Linux / WSL2 | |
+
+---
+
+## 双 AI 后端
+
+Nexus 支持 **Claude Code** 和 **OpenAI Codex CLI** 作为并行的 AI 后端。按窗口选择：
+
+| | Claude Code ⚡ | Codex CLI 🔷 |
+|---|---|---|
+| **安装** | `npm install -g @anthropic-ai/claude-code` | `npm install -g @openai/codex` |
+| **交互模式** | `claude --dangerously-skip-permissions` | `codex --yolo` |
+| **异步任务** | `claude -p <prompt>` | `codex exec <prompt> --yolo --json` |
+| **Profile** | `data/configs/*.json`（无 `agent_type` 或 `claude`） | `data/configs/*.json`（`"agent_type": "codex"`） |
+
+两个后端共享同一 tmux 桥接、文件浏览器、项目管理和 PWA 前端。
 
 ---
 
@@ -159,4 +180,4 @@ Nexus4CC 诞生于我自己的真实需求：在机场、出租车、会议间�
 
 ---
 
-*用 Claude Code 构建，为 Claude Code 而生。*
+*用 AI 构建，为开发者而生。*

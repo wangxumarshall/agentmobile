@@ -8,7 +8,7 @@
 
 ### 轴一：AI 全域工作能力
 AI Agent 能在我的任意项目目录中运行，拥有完整的文件系统读写权限和项目上下文。
-当前实现：Claude Code 直接在宿主机（WSL2）运行，WORKSPACE_ROOT 指向宿主机工作区。
+当前实现：Claude Code / Codex CLI 直接在宿主机（WSL2）运行，WORKSPACE_ROOT 指向宿主机工作区。
 
 ### 轴二：零摩擦上下文同步
 无论我在哪里、用什么设备，都能流畅地将真实世界的上下文（文字、图像、文件、语音）同步给 AI，
@@ -23,7 +23,7 @@ AI Agent 能在我的任意项目目录中运行，拥有完整的文件系统�
 ## 目标用户
 
 **用户即开发者本人**（单用户/个人服务器）
-- 同时运行多个 Claude Code Agent，需要随时从任意设备查看进度和干预
+- 同时运行多个 AI Agent（Claude / Codex），需要随时从任意设备查看进度和干预
 - 不想保持 SSH 连接，浏览器/App 关掉后 Agent 继续运行
 - 希望在走路、坐地铁时通过 Telegram 给 AI 下任务，回家后在 PC 上接续
 
@@ -33,7 +33,7 @@ AI Agent 能在我的任意项目目录中运行，拥有完整的文件系统�
 
 - **不替换 tmux**：Session 持久化、scrollback 全部由 tmux 负责
 - **不做多用户系统**：单密码 JWT，不做注册/权限/团队功能
-- **不做通用 Web SSH**：功能边界是 claude CLI 工作流，非通用终端工具
+- **不做通用 Web SSH**：功能边界是 AI Agent CLI 工作流（Claude / Codex），非通用终端工具
 - **不暴露 Docker socket 到前端**
 
 ---

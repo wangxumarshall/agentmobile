@@ -1,8 +1,19 @@
 # ROADMAP — Nexus
 
-**锚点**: `docs/NORTH-STAR.md` | **PRD**: `docs/PRD.md` (v1 Complete) | **更新**: 2026-04-01
+**锚点**: `docs/NORTH-STAR.md` | **PRD**: `docs/PRD.md` (v1 Complete) | **更新**: 2026-04-15
 
 ---
+
+## v4.5.0 Released (2026-04-15) — Dual AI Backend
+
+- F-22 双 AI 后端：按窗口选择 Claude Code ⚡ 或 OpenAI Codex CLI 🔷
+- Agent 抽象层：`getAgentTypeFromProfile()` + `buildAgentShellCmd()` 统一入口
+- `runTask()` 双分支：`claude -p` / `codex exec --yolo --json`
+- `nexus-run-codex.sh` 对标 `nexus-run-claude.sh`，交互模式支持
+- 前端 UI：NewWindowDialog / WorkspaceSelector 三选 Agent（Claude / Codex / Bash）
+- Telegram Bot：`/agent CLAude|codex` 命令切换默认后端
+- Profile 格式扩展：`agent_type` 字段 + 自动创建 `codex.json`
+- 向后兼容：默认 `claude`，`shell_type` 参数仍有效
 
 ## v1.0 Released (2026-04-01)
 
