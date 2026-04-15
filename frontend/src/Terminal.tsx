@@ -650,13 +650,12 @@ export default function Terminal({ token }: Props) {
     }
   }
 
-  async function createSession(relPath: string, shellType: 'claude' | 'bash' = 'claude', profile?: string) {
+  async function createSession(relPath: string, agentType: 'claude' | 'codex' | 'bash' = 'claude', profile?: string) {
     try {
-      // F-20: 使用 /api/projects 创建新的 project（tmux session）
       const r = await fetch('/api/projects', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: relPath, shell_type: shellType, profile }),
+        body: JSON.stringify({ path: relPath, agent_type: agentType, profile }),
       })
       if (r.ok) {
         const { name: newProjectName } = await r.json()
@@ -669,17 +668,16 @@ export default function Terminal({ token }: Props) {
   }
 
   // F-19: 创建新窗口（继承当前项目目录）
-  async function createWindow(shellType: 'claude' | 'bash' = 'claude', profile?: string) {
+  async function createWindow(agentType: 'claude' | 'codex' | 'bash' = 'claude', profile?: string) {
     try {
       const session = activeTmuxSessionRef.current
       // 获取当前 project 的路径
       const currentProject = projects.find(p => p.name === session)
       const projectPath = currentProject?.path
-      // 修复：使用正确的 API 端点 /api/projects/:name/channels
       const r = await fetch(`/api/projects/${encodeURIComponent(session)}/channels`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shell_type: shellType, profile, path: projectPath }),
+        body: JSON.stringify({ agent_type: agentType, profile, path: projectPath }),
       })
       if (r.ok) {
         const { name: newWindowName } = await r.json()
@@ -707,9 +705,9 @@ export default function Terminal({ token }: Props) {
     setShowNewSession(true)
   }
 
-  function handleCreateSession(path: string, shellType: 'claude' | 'bash', profile?: string) {
+  function handleCreateSession(path: string, agentType: 'claude' | 'codex' | 'bash', profile?: string) {
     setShowNewSession(false)
-    createSession(path, shellType, profile)
+    createSession(path, agentType, profile)
   }
 
   // F-19: 处理新窗口创建（打开配置对话框）
@@ -717,9 +715,9 @@ export default function Terminal({ token }: Props) {
     setShowNewWindow(true)
   }
 
-  function handleNewWindowConfirm(shellType: 'claude' | 'bash', profile?: string) {
+  function handleNewWindowConfirm(agentType: 'claude' | 'codex' | 'bash', profile?: string) {
     setShowNewWindow(false)
-    createWindow(shellType, profile)
+    createWindow(agentType, profile)
     setTimeout(() => sessionManagerRef.current?.refresh(), 500)
   }
 

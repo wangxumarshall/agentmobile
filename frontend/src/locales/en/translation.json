@@ -35,7 +35,9 @@
     "pathPlaceholder": "~ or /path/to/project",
     "pathHelp": "Use ~ for home directory, or enter an absolute path",
     "shellType": "Shell Type",
+    "agentType": "Agent Type",
     "shellClaude": "Claude",
+    "shellCodex": "Codex",
     "shellZsh": "Zsh",
     "profileLabel": "Config Profile (optional)",
     "profileDefault": "Default (no profile)",
@@ -77,6 +79,7 @@
   "newChannel": {
     "title": "New Channel",
     "shellType": "Shell Type",
+    "agentType": "Agent Type",
     "profile": "Profile",
     "profileDefault": "Default"
   },

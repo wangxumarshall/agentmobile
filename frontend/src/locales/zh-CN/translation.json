@@ -35,7 +35,9 @@
     "pathPlaceholder": "~ 或 /path/to/project",
     "pathHelp": "支持 ~ 表示 home 目录，或直接输入绝对路径",
     "shellType": "Shell 类型",
-    "shellClaude": "Claude (默认)",
+    "agentType": "Agent 类型",
+    "shellClaude": "Claude",
+    "shellCodex": "Codex",
     "shellZsh": "Zsh",
     "profileLabel": "配置 Profile (可选)",
     "profileDefault": "默认 (不使用 profile)",
@@ -75,8 +77,9 @@
     }
   },
   "newChannel": {
-    "title": "新建频道",
+    "title": "新建 Channel",
     "shellType": "Shell 类型",
+    "agentType": "Agent 类型",
     "profile": "Profile",
     "profileDefault": "默认"
   },

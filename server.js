@@ -69,6 +69,35 @@ if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
   }
 }
 
+// 自动确保 codex.json 存在（对标 anthropic.json 自动创建逻辑）
+{
+  const codexProfile = join(CONFIGS_DIR, 'codex.json');
+  if (!existsSync(codexProfile)) {
+    // 检测本地 codex 是否已 login（~/.codex/ 存在）
+    let isCodexInstalled = false;
+    try {
+      execSync('command -v codex >/dev/null 2>&1');
+      isCodexInstalled = true;
+    } catch {}
+
+    const apiKey = process.env.OPENAI_API_KEY || '';
+    const baseUrl = process.env.OPENAI_BASE_URL || '';
+
+    if (isCodexInstalled || apiKey) {
+      writeFileSync(codexProfile, JSON.stringify({
+        agent_type: 'codex',
+        label: 'OpenAI Codex',
+        BASE_URL: baseUrl,
+        API_KEY: apiKey,
+        DEFAULT_MODEL: 'gpt-5.4',
+        REASONING_EFFORT: 'high',
+        SANDBOX_MODE: 'danger-full-access',
+      }, null, 2), 'utf8');
+      console.log(`[Nexus] Auto-created codex profile (${isCodexInstalled ? 'codex installed' : 'API key from env'})`);
+    }
+  }
+}
+
 const app = express();
 app.use(express.json());
 
@@ -106,6 +135,77 @@ function buildInteractiveShellCmd(prefix = '') {
   return `${prefix}${INTERACTIVE_SHELL_CMD}`;
 }
 
+// ─── Agent 类型检测与命令构建工具 ───
+
+/**
+ * 从 profile JSON 文件中读取 agent_type
+ * @param {string} profileId - profile 文件名（不含 .json）
+ * @returns {string} 'claude' | 'codex'
+ */
+function getAgentTypeFromProfile(profileId) {
+  const profilePath = join(CONFIGS_DIR, `${profileId}.json`)
+  if (!existsSync(profilePath)) return 'claude' // 默认
+  try {
+    const cfg = JSON.parse(readFileSync(profilePath, 'utf8'))
+    return cfg.agent_type || 'claude'
+  } catch {
+    return 'claude'
+  }
+}
+
+/**
+ * 构建 AI Agent 的 shell 启动命令
+ * @param {string} agentType - 'claude' | 'codex' | 'bash'
+ * @param {string|null} profile - profile 文件名（可选）
+ * @param {string} cwd - 工作目录
+ * @param {string} proxyPrefix - 代理变量导出的 shell 前缀
+ * @returns {string} 完整 shell 命令
+ */
+function buildAgentShellCmd(agentType, profile, cwd, proxyPrefix) {
+  if (agentType === 'bash') return buildInteractiveShellCmd(proxyPrefix)
+
+  // 有 profile：使用对应的 run 脚本
+  if (profile) {
+    const runScript = agentType === 'codex'
+      ? join(__dirname, 'nexus-run-codex.sh')
+      : join(__dirname, 'nexus-run-claude.sh')
+    return `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`
+  }
+
+  // 无 profile：直接启动 agent
+  if (agentType === 'codex') {
+    return `${proxyPrefix}codex --yolo; ${INTERACTIVE_SHELL_CMD}`
+  }
+  // 默认 claude
+  return `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`
+}
+
+/**
+ * 收集代理环境变量（宿主机 + 覆盖）
+ * @param {string|null} overrideProxy - 覆盖代理地址（如 null 则使用宿主机环境）
+ * @returns {Record<string, string>}
+ */
+function collectProxyVars(overrideProxy = null) {
+  return {
+    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
+    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
+    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
+    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
+    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
+    ...(overrideProxy ? { ALL_PROXY: overrideProxy, HTTPS_PROXY: overrideProxy, HTTP_PROXY: overrideProxy, NEXUS_PROXY: overrideProxy } : {}),
+  }
+}
+
+/**
+ * 将代理对象转换为 shell export 前缀
+ * @param {Record<string, string>} proxyVars
+ * @returns {string}
+ */
+function proxyVarsToShellPrefix(proxyVars) {
+  const exports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ')
+  return exports ? `${exports}; ` : ''
+}
+
 // 静态文件：frontend/dist 和 public
 app.use(express.static(join(__dirname, 'public')));
 app.use(express.static(join(__dirname, 'frontend', 'dist')));
@@ -138,12 +238,16 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // POST /api/windows — F-19: 项目-窗口两级结构
-// body: { rel_path?, shell_type?, profile? }
+// body: { rel_path?, shell_type?, agent_type?, profile? }
+// - agent_type: 'claude' | 'codex' | 'bash'（默认: 'claude'，向后兼容 shell_type）
 // - 提供 rel_path: 设置 NEXUS_CWD 并在此目录创建窗口（新项目）
 // - 不提供 rel_path: 读取 NEXUS_CWD 并在此目录创建窗口（新窗口）
 app.post('/api/windows', authMiddleware, (req, res) => {
-  const { rel_path, shell_type = 'claude', profile } = req.body || {};
+  const { rel_path, shell_type, agent_type: reqAgentType, profile } = req.body || {};
   const tmuxSession = req.query.session || TMUX_SESSION;
+
+  // agent_type 优先于 shell_type（向后兼容）
+  const agentType = reqAgentType || (shell_type === 'bash' ? 'bash' : getAgentTypeFromProfile(profile));
 
   let cwd;
   if (rel_path) {
@@ -165,32 +269,10 @@ app.post('/api/windows', authMiddleware, (req, res) => {
     }
   }
 
-  // 窗口名称基于目录
-  const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'window';
-
-  // 构建 shell 命令
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  };
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ');
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : '';
-
-  let shellCmd;
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix);
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh');
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`;
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`;
-    }
-  }
+  // 构建 shell 命令（使用新 agent 抽象层）
+  const proxyVars = collectProxyVars(CLAUDE_PROXY);
+  const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
+  let shellCmd = buildAgentShellCmd(agentType, profile, cwd, proxyPrefix);
 
   // 确保 tmux session 存在
   try {
@@ -207,46 +289,25 @@ app.post('/api/windows', authMiddleware, (req, res) => {
   const cmd = `tmux new-window -t ${tmuxSession} -c "${cwd}" -n "${name}" "${shellCmd}"`;
   exec(cmd, (err) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ name, cwd, shell_type, profile: profile || null, session: tmuxSession });
+    res.json({ name, cwd, agent_type: agentType, profile: profile || null, session: tmuxSession });
   });
 });
 
 // POST /api/sessions — 在 tmux 中创建新 window
-// body: { rel_path, shell_type?, profile?, session? }
-//   shell_type: 'claude' | 'bash' (default: 'claude')
-//   当 shell_type='claude' 时，profile 可选，使用 nexus-run-claude.sh 启动
-//   当 shell_type='bash' 时，启动本地 shell（优先 zsh，不存在时回退 bash）
+// body: { rel_path, shell_type?, agent_type?, profile?, session? }
 app.post('/api/sessions', authMiddleware, (req, res) => {
-  const { rel_path, shell_type = 'claude', profile, session } = req.body || {};
+  const { rel_path, shell_type, agent_type: reqAgentType, profile, session } = req.body || {};
   const tmuxSession = session || TMUX_SESSION;
   if (!rel_path) return res.status(400).json({ error: 'rel_path required' });
   const cwd = rel_path.startsWith('/') ? rel_path : `${WORKSPACE_ROOT}/${rel_path}`;
   const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'session';
 
-  // 收集代理变量（宿主机环境 + CLAUDE_PROXY 覆盖）
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  };
+  // agent_type 优先于 shell_type（向后兼容）
+  const agentType = reqAgentType || (shell_type === 'bash' ? 'bash' : getAgentTypeFromProfile(profile));
 
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ');
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : '';
-
-  let shellCmd;
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix);
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh');
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`;
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`;
-    }
-  }
+  const proxyVars = collectProxyVars(CLAUDE_PROXY);
+  const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
+  let shellCmd = buildAgentShellCmd(agentType, profile, cwd, proxyPrefix);
 
   // 确保 tmux session 存在
   try {
@@ -263,11 +324,11 @@ app.post('/api/sessions', authMiddleware, (req, res) => {
   const cmd = `tmux new-window -t ${tmuxSession} -c "${cwd}" -n "${name}" "${shellCmd}"`;
   exec(cmd, (err) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ name, cwd, shell_type, profile: profile || null, session: tmuxSession });
+    res.json({ name, cwd, agent_type: agentType, profile: profile || null, session: tmuxSession });
   });
 });
 
-// GET /api/configs — 列出所有 claude 配置 profile
+// GET /api/configs — 列出所有 AI agent 配置 profile
 app.get('/api/configs', authMiddleware, (req, res) => {
   try {
     const files = readdirSync(CONFIGS_DIR, { withFileTypes: true })
@@ -1058,10 +1119,10 @@ app.get('/api/projects/:name/channels', authMiddleware, (req, res) => {
 })
 
 // POST /api/projects — 新建 Project（创建 tmux session）
-// body: { path, shell_type?, profile? }
+// body: { path, shell_type?, agent_type?, profile? }
 // project 名称基于路径自动生成
 app.post('/api/projects', authMiddleware, (req, res) => {
-  const { path, shell_type = 'claude', profile } = req.body || {}
+  const { path, shell_type, agent_type: reqAgentType, profile } = req.body || {}
   if (!path) return res.status(400).json({ error: 'path required' })
 
   const cwd = path.startsWith('/') ? path : `${WORKSPACE_ROOT}/${path}`
@@ -1082,29 +1143,12 @@ app.post('/api/projects', authMiddleware, (req, res) => {
     }
   } catch {}
 
-  // 构建 shell 命令
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  }
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ')
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : ''
+  // agent_type 优先于 shell_type（向后兼容）
+  const agentType = reqAgentType || (shell_type === 'bash' ? 'bash' : getAgentTypeFromProfile(profile));
 
-  let shellCmd
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix)
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh')
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`
-    }
-  }
+  const proxyVars = collectProxyVars(CLAUDE_PROXY);
+  const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
+  let shellCmd = buildAgentShellCmd(agentType, profile, cwd, proxyPrefix);
 
   // 初始窗口名使用目录名[-profile名]（取路径最后一部分）
   const dirName = cwd.replace(/^\/+|\/+$/g, '').split('/').pop() || '~'
@@ -1123,13 +1167,13 @@ app.post('/api/projects', authMiddleware, (req, res) => {
     return res.status(500).json({ error: 'failed to create project: ' + err.message })
   }
 
-  res.json({ name: finalName, path: cwd, shell_type, profile: profile || null })
+  res.json({ name: finalName, path: cwd, agent_type: agentType, profile: profile || null })
 })
 
 // POST /api/projects/:name/channels — 在指定 Project 中新建 Channel（window）
 app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
   const sessionName = req.params.name
-  const { shell_type = 'claude', profile, path: bodyPath } = req.body || {}
+  const { shell_type, agent_type: reqAgentType, profile, path: bodyPath } = req.body || {}
 
   // 优先使用前端传入的 path，其次读取 NEXUS_CWD，最后 fallback 到 WORKSPACE_ROOT
   let cwd = WORKSPACE_ROOT
@@ -1154,29 +1198,12 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
     }
   } catch {}
 
-  // 构建 shell 命令
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  }
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ')
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : ''
+  // agent_type 优先于 shell_type（向后兼容）
+  const agentType = reqAgentType || (shell_type === 'bash' ? 'bash' : getAgentTypeFromProfile(profile));
 
-  let shellCmd
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix)
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh')
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`
-    }
-  }
+  const proxyVars = collectProxyVars(CLAUDE_PROXY);
+  const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
+  let shellCmd = buildAgentShellCmd(agentType, profile, cwd, proxyPrefix);
 
   // 确保 session 存在
   try {
@@ -1187,7 +1214,7 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
   const cmd = `tmux new-window -t ${sessionName} -c "${cwd}" -n "${channelName}" "${shellCmd}"`
   exec(cmd, (err) => {
     if (err) return res.status(500).json({ error: err.message })
-    res.json({ name: channelName, cwd, shell_type, profile: profile || null, project: sessionName })
+    res.json({ name: channelName, cwd, agent_type: agentType, profile: profile || null, project: sessionName })
   })
 })
 
@@ -1355,16 +1382,19 @@ function updateTask(id, updates) {
 }
 
 /**
- * F-17: 统一任务执行入口 — spawn claude -p, 管理任务记录, 回调给各渠道
+ * F-17: 统一任务执行入口 — spawn claude -p 或 codex exec, 管理任务记录, 回调给各渠道
  * @param {string} prompt
  * @param {string} cwd
- * @param {{ sessionName?: string, source?: string, tmuxSession?: string, profile?: string, onChunk?: (chunk:string,isErr:boolean)=>void, onDone?: (result:object)=>void }} opts
- * @returns {string} taskId
+ * @param {{ sessionName?: string, source?: string, tmuxSession?: string, profile?: string, agentType?: string, onChunk?: (chunk:string,isErr:boolean)=>void, onDone?: (result:object)=>void }} opts
+ * @returns {{ taskId: string, kill: () => void }}
  */
 function runTask(prompt, cwd, opts = {}) {
-  const { sessionName, source = 'web', tmuxSession, profile, onChunk, onDone } = opts
+  const { sessionName, source = 'web', tmuxSession, profile, agentType: reqAgentType, onChunk, onDone } = opts
   const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const createdAt = new Date().toISOString()
+
+  // 确定 agent 类型：优先级 reqAgentType > profile.agent_type > 默认 'claude'
+  const agentType = reqAgentType || (profile ? getAgentTypeFromProfile(profile) : 'claude')
 
   const taskRecord = {
     id: taskId,
@@ -1375,6 +1405,7 @@ function runTask(prompt, cwd, opts = {}) {
     error: '',
     createdAt,
     source,
+    agent_type: agentType,
     ...(tmuxSession && tmuxSession !== TMUX_SESSION ? { tmux_session: tmuxSession } : {}),
   }
   const allTasks = loadTasks()
@@ -1382,21 +1413,58 @@ function runTask(prompt, cwd, opts = {}) {
   saveTasks(allTasks)
 
   const proxyEnv = CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY } : {}
-  const claudeArgs = ['-p', prompt, '--dangerously-skip-permissions']
-  if (profile) claudeArgs.push('--profile', profile)
-  const child = spawn('claude', claudeArgs, {
-    cwd,
-    env: { ...process.env, ...proxyEnv },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+
+  let child
+  if (agentType === 'codex') {
+    const codexArgs = ['exec', prompt, '--yolo']
+    if (profile) codexArgs.push('--profile', profile)
+    codexArgs.push('--json')
+    child = spawn('codex', codexArgs, {
+      cwd,
+      env: { ...process.env, ...proxyEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } else {
+    const claudeArgs = ['-p', prompt, '--dangerously-skip-permissions']
+    if (profile) claudeArgs.push('--profile', profile)
+    child = spawn('claude', claudeArgs, {
+      cwd,
+      env: { ...process.env, ...proxyEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  }
 
   let output = ''
   let errorOutput = ''
 
+  // Codex --json 输出是 JSON lines 格式，需要解析后提取文本
+  const isCodexJson = agentType === 'codex'
+  let jsonBuffer = ''
+
   child.stdout.on('data', (data) => {
-    const chunk = data.toString()
-    output += chunk
-    onChunk?.(chunk, false)
+    const raw = data.toString()
+    output += raw
+
+    if (isCodexJson) {
+      jsonBuffer += raw
+      // 尝试按行解析 JSON
+      const lines = jsonBuffer.split('\n')
+      jsonBuffer = lines.pop() || '' // 保留不完整的最后一行
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const parsed = JSON.parse(line)
+          // Codex JSON 格式: { type: 'output', content: '...' } 或类似
+          const text = parsed.content || parsed.output || parsed.text || parsed.message || line
+          onChunk?.(text, false)
+        } catch {
+          // 非 JSON 行，直接转发
+          onChunk?.(line, false)
+        }
+      }
+    } else {
+      onChunk?.(raw, false)
+    }
   })
   child.stderr.on('data', (data) => {
     const chunk = data.toString()
@@ -1435,7 +1503,7 @@ app.delete('/api/tasks/:id', authMiddleware, (req, res) => {
 
 // POST /api/tasks — 创建新任务，SSE 流式返回
 app.post('/api/tasks', authMiddleware, (req, res) => {
-  const { session_name, prompt, profile, tmux_session } = req.body || {}
+  const { session_name, prompt, profile, tmux_session, agent_type } = req.body || {}
   if (!prompt) return res.status(400).json({ error: 'prompt required' })
 
   // 找到 session 对应的 cwd
@@ -1462,6 +1530,7 @@ app.post('/api/tasks', authMiddleware, (req, res) => {
     source: 'web',
     tmuxSession: targetSession,
     profile,
+    agentType: agent_type,
     onChunk: (chunk, isErr) => {
       const ev = isErr ? 'error' : 'output'
       res.write(`event: ${ev}\ndata: ${JSON.stringify({ chunk })}\n\n`)
@@ -1549,6 +1618,9 @@ function downloadTelegramFile(fileId, destDir, filename) {
   })
 }
 
+// 全局变量：Telegram Bot 默认 agent 类型
+let telegramAgentType = 'claude'
+
 // POST /api/webhooks/telegram — Telegram Bot webhook
 app.post('/api/webhooks/telegram', (req, res) => {
   // 验证 secret（如果配置了）
@@ -1562,7 +1634,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
   if (!TELEGRAM_BOT_TOKEN) return res.status(503).json({ error: 'Telegram not configured' })
 
   const update = req.body
-  res.json({ ok: true }) // 立即返回，避免 Telegram 重试
+  res.json({ ok: true }) // 立即返回，以避免 Telegram 重试
 
   const message = update.message || update.edited_message
   if (!message) return
@@ -1571,7 +1643,21 @@ app.post('/api/webhooks/telegram', (req, res) => {
 
   // /start 欢迎消息
   if (message.text?.trim() === '/start') {
-    telegramSend(chatId, '👋 *Nexus Bot* 已就绪\n\n发送任意文字，我会用 `claude -p` 在你的服务器上执行并回复结果。\n\n发送图片或文件，我会保存到当前 session 目录。\n\n`/sessions` — 查看 tmux 窗口列表\n`/switch <编号>` — 切换目标窗口')
+    const agentSymbol = telegramAgentType === 'codex' ? '🔷' : '⚡'
+    telegramSend(chatId, `👋 *Nexus Bot* 已就绪 (${agentSymbol} ${telegramAgentType})\n\n发送任意文字，我会用 \`${telegramAgentType}\` 在你的服务器上执行并回复结果。\n\n发送图片或文件，我会保存到当前 session 目录。\n\n\`/sessions\` — 查看 tmux 窗口列表\n\`/switch <编号>\` — 切换目标窗口\n\`/agent claude|codex\` — 切换 AI 后端`)
+    return
+  }
+
+  // /agent claude|codex — 切换 Telegram Bot 默认 agent
+  if (message.text?.trim().startsWith('/agent ')) {
+    const agent = message.text.trim().slice('/agent '.length).trim().toLowerCase()
+    if (agent === 'claude' || agent === 'codex') {
+      telegramAgentType = agent
+      const symbol = agent === 'codex' ? '🔷' : '⚡'
+      telegramSend(chatId, `${symbol} 已切换到 *${agent.charAt(0).toUpperCase() + agent.slice(1)}*`)
+    } else {
+      telegramSend(chatId, '❌ 无效的参数。用法: `/agent claude` 或 `/agent codex`')
+    }
     return
   }
 
@@ -1609,9 +1695,10 @@ app.post('/api/webhooks/telegram', (req, res) => {
     return
   }
 
-  // 执行 claude -p，Telegram 渠道：增量进度推送
-  async function runClaudePrompt(prompt, cwd, sessionName) {
-    const msgId = await telegramSend(chatId, `⏳ *执行中*（session: \`${sessionName || 'default'}\`）\n\n_等待输出..._`)
+  // 执行 AI agent 任务，Telegram 渠道：增量进度推送
+  async function runTelegramPrompt(prompt, cwd, sessionName, agentType = telegramAgentType) {
+    const agentSymbol = agentType === 'codex' ? '🔷' : '⚡'
+    const msgId = await telegramSend(chatId, `⏳ *执行中*（session: \`${sessionName || 'default'}\`, agent: ${agentSymbol} ${agentType}）\n\n_等待输出..._`)
 
     let currentOutput = ''
     let currentError = ''
@@ -1632,6 +1719,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
     const { taskId } = runTask(prompt, cwd, {
       sessionName: sessionName || 'telegram',
       source: 'telegram',
+      agentType: agentType,
       onChunk: (chunk, isErr) => {
         if (isErr) currentError += chunk; else currentOutput += chunk
       },
@@ -1684,7 +1772,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
         // 如果有 caption，把 caption 作为 prompt 执行
         if (message.caption?.trim()) {
           const caption = message.caption.trim()
-          runClaudePrompt(caption, cwd, 'telegram').catch(e => console.error('runClaudePrompt error:', e))
+          runTelegramPrompt(caption, cwd, 'telegram', telegramAgentType).catch(e => console.error('runTelegramPrompt error:', e))
         }
       } catch (e) {
         telegramSend(chatId, '❌ 文件处理失败: ' + (e.message || String(e)))
@@ -1728,7 +1816,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
     }
   } catch { /* ignore */ }
 
-  runClaudePrompt(text, cwd, sessionName).catch(e => console.error('runClaudePrompt error:', e))
+  runTelegramPrompt(text, cwd, sessionName, telegramAgentType).catch(e => console.error('runTelegramPrompt error:', e))
 })
 
 // GET /api/telegram/setup — 一键配置 Telegram webhook URL

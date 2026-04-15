@@ -11,8 +11,11 @@
 |------|----------|----------|
 | Node.js | 20+ | `node --version` |
 | tmux | 任意近期版本 | `tmux -V` |
-| Claude CLI | 官方命令行工具 | `claude --version` |
+| Claude CLI | 官方命令行工具（可选） | `claude --version` |
+| Codex CLI | 官方命令行工具（可选） | `codex --version` |
 | Git | 任意版本 | `git --version` |
+
+> **至少安装其中一个 AI agent CLI**。
 
 **安装 Claude CLI（如果还没有）:**
 
@@ -22,6 +25,16 @@ npm install -g @anthropic-ai/claude-code
 
 # 登录（会打开浏览器授权）
 claude login
+```
+
+**安装 Codex CLI（如果还没有）:**
+
+```bash
+# 需要 Node.js 20+
+npm install -g @openai/codex
+
+# 登录（会打开浏览器授权，或使用 API key）
+codex login
 ```
 
 ---
@@ -54,17 +67,21 @@ cp .env.example .env
 | `JWT_SECRET` | 已预填 | JWT 签名密钥 |
 | `ACC_PASSWORD_HASH` | 已预填 | 默认密码：**`nexus123`** |
 | `TMUX_SESSION` | `main` | tmux 会话名 |
-| `WORKSPACE_ROOT` | `/home` | Claude 能访问的目录根 |
+| `WORKSPACE_ROOT` | `/home` | AI agent 能访问的目录根 |
 | `PORT` | `59000` | 服务端口 |
+| `CLAUDE_PROXY` | 空 | Claude Code 专用代理 |
+| `CODEX_PROXY` | 空 | Codex CLI 专用代理 |
+| `OPENAI_API_KEY` | 空 | 用于自动创建 codex profile |
 
 **常用调整（可选）：**
 
 ```bash
-# 改为你的实际工作目录（让 Claude 只访问特定目录）
+# 改为你的实际工作目录（让 AI agent 只访问特定目录）
 WORKSPACE_ROOT=/home/yourname/work
 
-# 如需通过代理访问 Anthropic API
-CLAUDE_PROXY=http://127.0.0.1:6789
+# 如需通过代理访问 AI API
+CLAUDE_PROXY=http://127.0.0.1:6789  # Claude Code 代理
+CODEX_PROXY=http://127.0.0.1:6789   # Codex CLI 代理
 ```
 
 > ⚠️ **生产环境**请修改密码和 JWT_SECRET。生成新密码 hash：
@@ -74,9 +91,9 @@ CLAUDE_PROXY=http://127.0.0.1:6789
 
 ---
 
-## 第三步：创建 Claude Profile（关键步骤）
+## 第三步：创建 AI Agent Profile（关键步骤）
 
-**这是新用户最容易遗漏的一步。** Nexus 通过 `data/configs/` 下的 JSON 文件来管理不同的 Claude API 配置（官方 API、Kimi、OpenRouter 等）。
+**这是新用户最容易遗漏的一步。** Nexus 通过 `data/configs/` 下的 JSON 文件来管理不同的 AI agent 配置。
 
 ### 3.1 创建 configs 目录
 
@@ -106,7 +123,25 @@ mkdir -p data/configs
 
 > 留空表示使用 Claude CLI 默认凭证（从 `claude login` 获取）。
 
-**模板 B：Kimi（Moonshot 国内服务）**
+**模板 B：OpenAI Codex（新）**
+
+创建 `data/configs/codex.json`：
+
+```json
+{
+  "agent_type": "codex",
+  "label": "OpenAI Codex",
+  "BASE_URL": "https://api.openai.com/v1",
+  "API_KEY": "",
+  "DEFAULT_MODEL": "gpt-5.4",
+  "REASONING_EFFORT": "high",
+  "SANDBOX_MODE": "danger-full-access"
+}
+```
+
+> `API_KEY` 留空则使用 Codex CLI 登录凭证（从 `codex login` 获取）。
+
+**模板 C：Kimi（Moonshot 国内服务）**
 
 创建 `data/configs/kimi.json`：
 
@@ -146,14 +181,17 @@ mkdir -p data/configs
 
 | 字段 | 说明 |
 |------|------|
+| `agent_type` | **`claude`**（默）或 **`codex`** |
 | `label` | 显示名称 |
 | `BASE_URL` | API 基础地址，留空使用官方 |
 | `AUTH_TOKEN` | API Key（OpenAI/Anthropic/Kimi 等） |
 | `API_KEY` | 备用字段，通常留空 |
 | `DEFAULT_MODEL` | 默认对话模型 |
-| `THINK_MODEL` | "/think" 命令使用的模型 |
-| `LONG_CONTEXT_MODEL` | 长上下文模型 |
-| `DEFAULT_HAIKU_MODEL"` | 快速/低成本模型 |
+| `REASONING_EFFORT` | Codex 专用：`low`/`medium`/`high` |
+| `SANDBOX_MODE` | Codex 专用：`danger-full-access`（推荐） |
+| `THINK_MODEL` | Claude 专用："/think" 命令使用的模型 |
+| `LONG_CONTEXT_MODEL` | Claude 专用：长上下文模型 |
+| `DEFAULT_HAIKU_MODEL` | Claude 专用：快速/低成本模型 |
 | `API_TIMEOUT_MS` | API 超时（毫秒） |
 
 ---
@@ -206,22 +244,33 @@ http://localhost:59000
 
 - **Name**: 项目名（如 `my-project`）
 - **Directory**: 选择一个在 `WORKSPACE_ROOT` 下的目录
-- **Profile**: 选择刚才创建的 Profile（如 `anthropic` 或 `kimi`）
+- **Agent**: 选择 **⚡ Claude** 或 **🔷 Codex**（v4.5.0+ 支持）
+- **Profile**: 选择刚才创建的 Profile（如 `anthropic` 或 `codex`）
 
-### 3. 启动 Claude 会话
+### 3. 启动 AI Agent 会话
 
-创建 Project 后，会自动打开一个 tmux window 运行 Claude。你会看到：
+创建 Project 后，会自动打开一个 tmux window 运行你选择的 AI agent。
 
+**Claude 会话**（如果你选择了 Claude）：
 ```
 ╔══════════════════════════════════════════╗
 ║  Nexus · Claude Session
-║  Profile : Anthropic Claude
+╗
 ║  Project : /home/yourname/workspace/my-project
-║  API     : Anthropic (官方)
 ╚══════════════════════════════════════════╝
 ```
 
-现在可以直接在终端里和 Claude 对话了。
+**Codex 会话**（如果你选择了 Codex）：
+```
+╔══════════════════════════════════════════╗
+║  Nexus · Codex Session
+║  Profile : OpenAI Codex
+║  Project : /home/yourname/workspace/my-project
+║  API     : OpenAI (官方)
+╚═╗
+```
+
+现在可以直接在终端里和 AI agent 对话了。
 
 ### 4. 移动端访问（同一 WiFi 下）
 

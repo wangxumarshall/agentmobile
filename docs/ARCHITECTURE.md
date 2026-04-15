@@ -1,6 +1,8 @@
 # ARCHITECTURE — Nexus 架构现状
 
-**Last Updated**: 2026-04-06  **版本**: v4.3.1  **锚点**: `docs/NORTH-STAR.md`
+**Last Updated**: 2026-04-15  **版本**: v4.5.0  **锚点**: `docs/NORTH-STAR.md`
+
+> **v4.5.0**: 新增 Dual AI Backend — Claude Code ⚡ 和 OpenAI Codex CLI 🔷 并行支持。
 
 ---
 
@@ -13,12 +15,12 @@ Browser (任意设备)
 Nexus Server（Node.js，server.js）
     ↕  node-pty (ptyMap)           ← PTY 桥（每个 session:window 独立实例）
 tmux attach-session -t <session>:<window>
-    ├── window 0: vault
-    ├── window 1: projects-blog
-    └── window N: ...
+    ├── window 0: vault (⚡ Claude)
+    ├── window 1: projects-blog (🔷 Codex)
+    └── window N: ... (⚡/🔷/bash)
 Telegram Bot（可选）
     ↕  webhook POST /api/webhooks/telegram
-    ↕  runTask() → claude -p
+    ↕  runTask() → claude -p | codex exec
 ```
 
 ---
@@ -108,15 +110,45 @@ function getOrCreatePty(session, windowIndex) {
 
 **Resize 策略**: 多客户端时取所有连接的最小尺寸（min cols/rows），防止小屏遮挡内容。
 
+### Agent 抽象层（v4.5.0+）
+
+```javascript
+// agent_type 优先级: 请求参数 > profile.agent_type > 默认 'claude'
+function buildAgentShellCmd(agentType, profile, cwd, proxyPrefix) {
+  if (agentType === 'bash') return bashShellCmd
+  if (profile) {
+    // profile 中 agent_type 字段决定使用哪个 run 脚本
+    return agentType === 'codex'
+      ? `nexus-run-codex.sh ${profile} ${cwd}`
+      : `nexus-run-claude.sh ${profile} ${cwd}`
+  }
+  return agentType === 'codex'
+    ? `codex --yolo`
+    : `claude --dangerously-skip-permissions`
+}
+```
+
+**Profile 格式**:
+```json
+// Claude profile (agent_type: "claude")
+{ "label": "Anthropic", "BASE_URL": "", "API_KEY": "sk-ant-...", "DEFAULT_MODEL": "claude-sonnet-4-6" }
+
+// Codex profile (agent_type: "codex")
+{ "agent_type": "codex", "label": "OpenAI Codex", "BASE_URL": "https://api.openai.com/v1", "API_KEY": "sk-proj-...", "DEFAULT_MODEL": "gpt-5.4", "REASONING_EFFORT": "high", "SANDBOX_MODE": "danger-full-access" }
+```
+
 ### 任务系统（runTask 统一抽象）
 
 ```javascript
 function runTask(prompt, cwd, opts) {
-  // opts: { sessionName, source, tmuxSession, profile, onChunk, onDone }
-  // 1. 创建任务记录（立即写入 data/tasks.json）
-  // 2. spawn claude -p <prompt> --dangerously-skip-permissions [--profile <p>]
-  // 3. stdout/stderr → onChunk() 回调
-  // 4. close → updateTask() + onDone() 回调
+  // opts: { sessionName, source, tmuxSession, profile, agentType, onChunk, onDone }
+  // 1. 确定 agent: opts.agentType > profile.agent_type > 'claude'
+  // 2. 创建任务记录（立即写入 data/tasks.json）
+  // 3. 根据 agent_type 分支:
+  //    - claude: spawn('claude', ['-p', prompt, '--dangerously-skip-permissions'])
+  //    - codex:  spawn('codex', ['exec', prompt, '--yolo', '--json'])
+  // 4. stdout/stderr → onChunk() 回调
+  // 5. close → updateTask() + onDone() 回调
   // 返回 { taskId, kill }
 }
 ```
@@ -127,10 +159,10 @@ function runTask(prompt, cwd, opts) {
 
 ### Telegram Bot
 
-- 支持命令：`/list`（列窗口）、`/switch <name>`（切换目标窗口）
-- 接收消息 → `runTask()` 在目标窗口 cwd 执行
+- 支持命令：`/list`（列窗口）、`/switch <name>`（切换目标窗口）、`/agent claude|codex`（切换 AI 后端）
+- 接收消息 → `runTask()` 在目标窗口 cwd 执行（使用当前 agent_type）
 - 接收文件/图片 → 下载到 WORKSPACE_ROOT → `runTask()` 附路径执行
-- 目标窗口状态：持久化在内存 `telegramTargetWindow`（服务重启后重置）
+- 目标窗口状态：持久化在内存 `telegramAgentType`（默认 'claude'）和服务重启后重置）
 
 ---
 
@@ -253,9 +285,13 @@ nexus/
 | `TMUX_SESSION` | | `main` | 要 attach 的 tmux session 名 |
 | `WORKSPACE_ROOT` | | `/workspace` | 工作区根目录 |
 | `PORT` | | `59000` | 监听端口 |
+| `PROXY` | | — | 通用网络代理（Claude 和 Codex 共用） |
+| `CLAUDE_PROXY` | | — | Claude Code 专用代理（覆盖 PROXY） |
+| `CODEX_PROXY` | | — | Codex CLI 专用代理（覆盖 PROXY） |
+| `OPENAI_API_KEY` | | — | OpenAI API Key（用于自动创建 codex profile） |
+| `OPENAI_BASE_URL` | | — | OpenAI API Base URL（自定义 endpoint） |
 | `TELEGRAM_BOT_TOKEN` | | — | Telegram Bot token（可选） |
 | `TELEGRAM_CHAT_ID` | | — | 允许的 Telegram chat ID（可选） |
-| `CLAUDE_PROXY` | | — | HTTP/HTTPS/ALL proxy for claude CLI（可选） |
 
 ---
 
@@ -264,6 +300,8 @@ nexus/
 | 位置 | 问题 | 优先级 |
 |---|---|---|
 | `server.js` | tmux 命令 cwd/name 特殊字符转义不完整 | 中 |
-| `server.js` | `telegramTargetWindow` 重启后丢失，不持久化 | 低 |
+| `server.js` | `telegramAgentType` 重启后丢失，不持久化 | 低 |
+| `server.js` | `collectProxyVars` 只接受一个代理参数，Codex 专用代理（`CODEX_PROXY`）未独立处理 | 低 |
 | `Terminal.tsx` | window 切换通过 `\x02{index}` 键序列，依赖 tmux 快捷键 | 低 |
 | `toolbarDefaults.ts` | 按键序列硬编码，无运行时验证 | 低 |
+| `frontend/locales/` | 仅 en 和 zh-CN 有翻译，其他 6 种语言缺失 | 低 |

@@ -12,12 +12,13 @@ interface BrowseResult {
 interface Config {
   id: string
   label: string
+  agent_type?: string
 }
 
 interface Props {
   token: string
   onClose: () => void
-  onConfirm: (path: string, shellType: 'claude' | 'bash', profile?: string) => void
+  onConfirm: (path: string, agentType: 'claude' | 'codex' | 'bash', profile?: string) => void
 }
 
 // 检测是否为 PC 端（>= 768px）
@@ -36,7 +37,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   const isDesktop = useIsDesktop()
   const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
   const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
-  const [shellType, setShellType] = useState<'claude' | 'bash'>('claude')
+  const [shellType, setShellType] = useState<'claude' | 'codex' | 'bash'>('claude')
   const [configs, setConfigs] = useState<Config[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
 
@@ -105,10 +106,12 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   function handleConfirm() {
     const path = inputPath.trim()
     if (!path) return
-    const profile = shellType === 'claude' && selectedProfile ? selectedProfile : undefined
+    const cfg = configs.find(c => c.id === selectedProfile)
+    const agentType = cfg?.agent_type || shellType
+    const profile = agentType === 'bash' ? undefined : (selectedProfile || undefined)
     localStorage.setItem('nexus_last_path', path)
     if (profile) localStorage.setItem('nexus_last_profile', profile)
-    onConfirm(path, shellType, profile)
+    onConfirm(path, agentType, profile)
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -161,24 +164,34 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
             <div className="text-nexus-muted text-[11px] mt-1.5">{t('workspace.pathHelp')}</div>
           </div>
 
-          {/* Shell 类型选择 */}
+          {/* Agent 类型选择 */}
           <div className="px-4 py-3 border-b border-nexus-border">
-            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-0">{t('workspace.shellType')}</div>
+            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-0">{t('workspace.agentType')}</div>
             <div className="flex flex-col gap-2.5 mt-2">
               <label className="flex items-center gap-2 text-nexus-text text-sm cursor-pointer">
                 <input
                   type="radio"
-                  name="shellType"
+                  name="agentType"
                   value="claude"
                   checked={shellType === 'claude'}
                   onChange={() => setShellType('claude')}
                 />
-                <span>{t('workspace.shellClaude')}</span>
+                <span>⚡ {t('workspace.shellClaude')}</span>
               </label>
               <label className="flex items-center gap-2 text-nexus-text text-sm cursor-pointer">
                 <input
                   type="radio"
-                  name="shellType"
+                  name="agentType"
+                  value="codex"
+                  checked={shellType === 'codex'}
+                  onChange={() => setShellType('codex')}
+                />
+                <span>🔷 {t('workspace.shellCodex')}</span>
+              </label>
+              <label className="flex items-center gap-2 text-nexus-text text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="agentType"
                   value="bash"
                   checked={shellType === 'bash'}
                   onChange={() => setShellType('bash')}
@@ -188,8 +201,8 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
             </div>
           </div>
 
-          {/* Profile 选择 (仅 claude 模式) */}
-          {shellType === 'claude' && (
+          {/* Profile 选择 (非 bash 模式) */}
+          {shellType !== 'bash' && (
             <div className="px-4 py-3 border-b border-nexus-border">
               <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-0">{t('workspace.profileLabel')}</div>
               <select

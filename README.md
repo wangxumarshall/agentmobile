@@ -1,6 +1,6 @@
 # Nexus4CC
 
-### Your Claude Code, Everywhere.
+### Your AI Coding Agent, Everywhere.
 
 [![Node](https://img.shields.io/badge/node-20+-brightgreen?style=flat-square)](https://nodejs.org/)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3%20%2F%20Commercial-blue?style=flat-square)](LICENSE.md)
@@ -25,9 +25,10 @@
 
 | | |
 |---|---|
-| **AI on the go** | Your time is fragmented. Your AI shouldn't be. Command Claude Code from your phone — commuting, in a meeting, or away from your desk. |
+| **Dual AI Backend** | Switch between Claude Code and OpenAI Codex CLI per window — use the best tool for each task. |
+| **AI on the go** | Your time is fragmented. Your AI shouldn't be. Command your AI agents from your phone — commuting, in a meeting, or away from your desk. |
 | **Built for touch** | Not a desktop terminal shoehorned onto mobile. Swipe between windows, pinch-to-zoom, configurable toolbar — purpose-built for fingers. |
-| **Full context, always** | Claude Code runs on your machine, in your tmux sessions — your full codebase, your history, your preferences. Not a cloud chat that forgets everything. |
+| **Full context, always** | AI agents run on your machine, in your tmux sessions — your full codebase, your history, your preferences. Not a cloud chat that forgets everything. |
 | **Fire and forget** | Give the instruction, close your phone. Your agents keep running. Open later — everything's exactly where you left it. |
 
 ---
@@ -36,6 +37,7 @@
 
 |                          | Anthropic Remote Control | Happy Coder | Omnara  | **nexus4cc** |
 |--------------------------|:---:|:---:|:---:|:---:|
+| Dual AI backend (Claude + Codex) | ❌ | ❌ | ❌ | ✅ |
 | Self-hosted              | ❌ | ❌ | ⚠️ | ✅ |
 | No subscription needed   | ❌ ($100+/mo) | ✅ | ❌ ($9/mo) | ✅ |
 | Data stays on your infra | ❌ | ❌ | ❌ | ✅ |
@@ -53,12 +55,14 @@
 
 - 🔌 **WebSocket ↔ tmux bridge** — one PTY per window, real-time bidirectional I/O
 - 📱 **Mobile-first terminal** — xterm.js, swipe navigation, pinch-to-zoom, configurable soft toolbar
-- 🤖 **Task Panel** — launch Claude tasks, monitor via SSE streaming, async progress
+- 🤖 **Dual AI Backend** — switch between Claude Code ⚡ and OpenAI Codex CLI 🔷 per window
+- 🎯 **Task Panel** — launch async tasks (claude -p / codex exec), monitor via SSE streaming
 - 📂 **File browser** — browse, edit, upload workspace files (sort by name / modified / size)
 - 🗂️ **Project & channel management** — directory-based projects, each with channel-like sessions (like Slack channels for your terminal)
 - 🔀 **Multi-session** — switch tmux sessions instantly
 - 🎨 **PWA** — installable, dark / light themes
 - ⚡ **Zero overhead** — direct WebSocket pipe, no SSH
+- 🤖 **Telegram Bot** — send tasks from Telegram, get real-time progress
 
 ---
 
@@ -76,7 +80,7 @@ npm start
 
 ---
 
-## Install with Claude Code
+## Install with an AI Assistant
 
 If you're an AI assistant helping a user install Nexus, follow this path:
 
@@ -102,6 +106,8 @@ Expose securely without port forwarding via [Cloudflare Tunnel](https://develope
 | Node.js | 20+ | |
 | tmux | any recent | |
 | PM2 | any recent | auto-installed by `setup.js` |
+| **Claude Code** | latest | for Claude backend |
+| **Codex CLI** | latest | for Codex backend (optional) |
 | OS | Linux / WSL2 | |
 
 ---
@@ -113,6 +119,22 @@ Nexus is a **single-user, self-hosted tool** — not a multi-tenant platform.
 - 🔒 bcrypt (12 rounds) password hash + JWT (30d)
 - ⚠️ WebSocket token passed via query string — enable TLS in production
 - 🛡️ Run behind firewall, VPN, or tunnel — do not expose directly to the internet
+
+---
+
+## Dual AI Backend
+
+Nexus supports **Claude Code** and **OpenAI Codex CLI** as parallel AI backends. Choose per window:
+
+| | Claude Code ⚡ | Codex CLI 🔷 |
+|---|---|---|
+| **Command** | `claude` | `codex` |
+| **Interactive** | `claude --dangerously-skip-permissions` | `codex --yolo` |
+| **Async Task** | `claude -p <prompt>` | `codex exec <prompt> --yolo --json` |
+| **Profile** | `data/configs/*.json` (agent_type: claude) | `data/configs/*.json` (agent_type: codex) |
+| **Install** | `npm install -g @anthropic-ai/claude-code` | `npm install -g @openai/codex` |
+
+Both backends share the same tmux bridge, file browser, project management, and PWA frontend.
 
 ---
 
@@ -147,4 +169,4 @@ Dual-licensed: **[GPL v3](LICENSE.md)** for open-source use · **Commercial lice
 
 ---
 
-*Built with Claude Code, for Claude Code.*
+*Built with AI, for developers.*

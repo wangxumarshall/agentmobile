@@ -6,19 +6,21 @@ import { Icon } from './icons'
 interface Config {
   id: string
   label: string
+  agent_type?: string
 }
 
 interface Props {
   token: string
   onClose: () => void
-  onConfirm: (shellType: 'claude' | 'bash', profile?: string) => void
+  onConfirm: (shellType: 'claude' | 'codex' | 'bash', profile?: string) => void
 }
 
 export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
   const { t } = useTranslation()
-  const [shellType, setShellType] = useState<'claude' | 'bash'>('claude')
+  const [shellType, setShellType] = useState<'claude' | 'codex' | 'bash'>('claude')
   const [configs, setConfigs] = useState<Config[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
+  const [showConfigs, setShowConfigs] = useState(false)
 
   useEffect(() => {
     fetch('/api/configs', { headers: { Authorization: `Bearer ${token}` } })
@@ -33,9 +35,12 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
   }, [token])
 
   function handleConfirm() {
-    const profile = shellType === 'claude' && selectedProfile ? selectedProfile : undefined
+    // 如果有选中的 profile，从它读取 agent_type；否则用当前 shellType
+    const cfg = configs.find(c => c.id === selectedProfile)
+    const agentType = cfg?.agent_type || shellType
+    const profile = agentType === 'bash' ? undefined : (selectedProfile || undefined)
     if (profile) localStorage.setItem('nexus_last_profile', profile)
-    onConfirm(shellType, profile)
+    onConfirm(agentType, profile)
   }
 
   function handleProfileChange(id: string) {
@@ -59,24 +64,34 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
         </div>
 
         <div className="px-4 py-4 flex flex-col gap-4">
-          {/* Shell 类型 */}
+          {/* Agent 类型 */}
           <div>
-            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2">{t('newChannel.shellType')}</div>
+            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2">{t('newChannel.agentType')}</div>
             <div className="flex flex-col gap-2">
               <label className="flex items-center gap-2 text-nexus-text text-sm cursor-pointer">
                 <input
                   type="radio"
-                  name="shellType"
+                  name="agentType"
                   value="claude"
                   checked={shellType === 'claude'}
                   onChange={() => setShellType('claude')}
                 />
-                <span>Claude</span>
+                <span>⚡ Claude</span>
               </label>
               <label className="flex items-center gap-2 text-nexus-text text-sm cursor-pointer">
                 <input
                   type="radio"
-                  name="shellType"
+                  name="agentType"
+                  value="codex"
+                  checked={shellType === 'codex'}
+                  onChange={() => setShellType('codex')}
+                />
+                <span>🔷 Codex</span>
+              </label>
+              <label className="flex items-center gap-2 text-nexus-text text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="agentType"
                   value="bash"
                   checked={shellType === 'bash'}
                   onChange={() => setShellType('bash')}
@@ -86,20 +101,51 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
             </div>
           </div>
 
-          {/* Profile */}
-          {shellType === 'claude' && configs.length > 0 && (
+          {/* Profile — Claude */}
+          {shellType === 'claude' && configs.filter(c => !c.agent_type || c.agent_type === 'claude').length > 0 && (
             <div>
-              <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2">{t('newChannel.profile')}</div>
-              <select
-                className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-2.5 py-2 w-full outline-none"
-                value={selectedProfile}
-                onChange={e => handleProfileChange(e.target.value)}
+              <div
+                className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2 cursor-pointer select-none"
+                onClick={() => setShowConfigs(!showConfigs)}
               >
-                <option value="">{t('newChannel.profileDefault')}</option>
-                {configs.map(cfg => (
-                  <option key={cfg.id} value={cfg.id}>{cfg.label}</option>
-                ))}
-              </select>
+                {t('newChannel.profile')} {showConfigs ? '▲' : '▼'}
+              </div>
+              {showConfigs && (
+                <select
+                  className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-2.5 py-2 w-full outline-none"
+                  value={selectedProfile}
+                  onChange={e => handleProfileChange(e.target.value)}
+                >
+                  <option value="">{t('newChannel.profileDefault')}</option>
+                  {configs.filter(c => !c.agent_type || c.agent_type === 'claude').map(cfg => (
+                    <option key={cfg.id} value={cfg.id}>{cfg.label}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
+          {/* Profile — Codex */}
+          {shellType === 'codex' && configs.filter(c => c.agent_type === 'codex').length > 0 && (
+            <div>
+              <div
+                className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2 cursor-pointer select-none"
+                onClick={() => setShowConfigs(!showConfigs)}
+              >
+                {t('newChannel.profile')} {showConfigs ? '▲' : '▼'}
+              </div>
+              {showConfigs && (
+                <select
+                  className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-2.5 py-2 w-full outline-none"
+                  value={selectedProfile}
+                  onChange={e => handleProfileChange(e.target.value)}
+                >
+                  <option value="">{t('newChannel.profileDefault')}</option>
+                  {configs.filter(c => c.agent_type === 'codex').map(cfg => (
+                    <option key={cfg.id} value={cfg.id}>{cfg.label}</option>
+                  ))}
+                </select>
+              )}
             </div>
           )}
         </div>
