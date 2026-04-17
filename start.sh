@@ -1,7 +1,7 @@
 #!/bin/bash
 # Nexus 启动脚本
 # 在宿主机（WSL2）上直接运行: bash start.sh
-# 或: PORT=59000 bash start.sh
+# 或: PORT=5000 bash start.sh
 
 set -e
 
@@ -32,7 +32,7 @@ set -a
 source .env
 set +a
 
-export PORT="${PORT:-59000}"
+export PORT="${PORT:-5000}"
 
 echo "启动 Nexus on :$PORT ..."
 exec node server.js
