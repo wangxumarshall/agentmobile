@@ -247,6 +247,35 @@ function sanitizeProfileForAgent(agentType, profile) {
   return getAgentTypeFromProfile(profile) === agentType ? profile : null
 }
 
+function getAgentSlug(agentType) {
+  switch (agentType) {
+    case 'claude':
+      return 'claude'
+    case 'codex':
+      return 'codex'
+    case 'opencode':
+      return 'opencode'
+    case 'trae':
+      return 'trae-cli'
+    case 'bash':
+      return 'bash'
+    default:
+      return 'project'
+  }
+}
+
+function buildProjectSessionName(cwd, agentType) {
+  const initials = cwd
+    .split('/')
+    .filter(Boolean)
+    .map(segment => segment[0]?.toLowerCase() || '')
+    .join('')
+    .replace(/[^a-z0-9]/g, '')
+
+  const base = `${initials || 'p'}-${getAgentSlug(agentType)}`
+  return base.replace(/[^a-zA-Z0-9._~-]/g, '-').substring(0, 50) || 'project'
+}
+
 /**
  * 构建 AI Agent 的 shell 启动命令
  * @param {string} agentType - 'claude' | 'codex' | 'trae' | 'opencode' | 'bash'
@@ -1294,11 +1323,12 @@ app.post('/api/projects', authMiddleware, (req, res) => {
 
   const cwd = path.startsWith('/') ? path : `${WORKSPACE_ROOT}/${path}`
 
-  // project 名称基于路径：把 / 替换成 -，并去除首尾 -
-  let projectName = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-')
-  if (!projectName) projectName = 'home'
-  // 确保名称安全且唯一
-  const safeName = projectName.replace(/[^a-zA-Z0-9._~-]/g, '-').substring(0, 50) || 'project'
+  // agent_type 优先于 shell_type（向后兼容）
+  const agentType = normalizeRequestedAgentType(shell_type, reqAgentType, profile)
+  const resolvedProfile = sanitizeProfileForAgent(agentType, profile)
+
+  // project 名称默认使用：路径各段首字母 + agent 名，例如 /home/ubuntu + claude => hu-claude
+  const safeName = buildProjectSessionName(cwd, agentType)
 
   // 检查是否已存在同名 session，如果存在则添加序号
   let finalName = safeName
@@ -1309,10 +1339,6 @@ app.post('/api/projects', authMiddleware, (req, res) => {
       finalName = `${safeName}-${counter++}`
     }
   } catch {}
-
-  // agent_type 优先于 shell_type（向后兼容）
-  const agentType = normalizeRequestedAgentType(shell_type, reqAgentType, profile)
-  const resolvedProfile = sanitizeProfileForAgent(agentType, profile)
 
   const proxyVars = collectProxyVars(CLAUDE_PROXY);
   const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
