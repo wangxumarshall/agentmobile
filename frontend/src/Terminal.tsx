@@ -1673,16 +1673,15 @@ export default function Terminal({ token }: Props) {
     onCollapsedChange: setToolbarCollapsed,
   }
 
-  const showMobileInput = !isWidePC && mobileKeyboardVisible && !anyOverlayOpen
+  const enableMobileInput = !isWidePC && mobileKeyboardVisible && !anyOverlayOpen
 
   return (
     <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
       <input
         ref={inputRef}
-        className={showMobileInput
-          ? 'fixed left-3 right-3 z-[120] rounded-xl border border-agentmobile-border bg-agentmobile-bg/95 px-3 py-2.5 text-agentmobile-text text-base shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm outline-none'
+        className={enableMobileInput
+          ? 'fixed bottom-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10'
           : 'fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10'}
-        style={showMobileInput ? { bottom: toolbarHeightRef.current + 8 } : undefined}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
@@ -1705,7 +1704,6 @@ export default function Terminal({ token }: Props) {
         onCompositionStart={() => { isComposingRef.current = true; syncMobileKeyboard(true) }}
         onCompositionUpdate={(e) => keepMobileInputCaretVisible(e.currentTarget)}
         onCompositionEnd={handleCompositionEnd}
-        placeholder={showMobileInput ? 'Input' : undefined}
         aria-hidden="true"
       />
       <input
