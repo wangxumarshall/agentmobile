@@ -1,4 +1,4 @@
-# agentmobile4CC
+# agentmobile
 
 ### Your AI Coding Agent, Everywhere.
 
@@ -33,9 +33,9 @@
 
 ---
 
-## Why agentmobile 4 CC?
+## Why agentmobile?
 
-|                          | Anthropic Remote Control | Happy Coder | Omnara  | **agentmobile4cc** |
+|                          | Anthropic Remote Control | Happy Coder | Omnara  | **agentmobile** |
 |--------------------------|:---:|:---:|:---:|:---:|
 | Dual AI backend (Claude + Codex) | ❌ | ❌ | ❌ | ✅ |
 | Self-hosted              | ❌ | ❌ | ⚠️ | ✅ |
@@ -69,7 +69,7 @@
 ## Quick Start
 
 ```bash
-git clone https://github.com/librae8226/agentmobile4cc.git && cd agentmobile4cc
+git clone https://github.com/wangxumarshall/idea0019-agent-mobile.git && cd agentmobile
 cp .env.example .env          # set JWT_SECRET, ACC_PASSWORD_HASH, WORKSPACE_ROOT
 npm install && cd frontend && npm install && npm run build && cd ..
 npm start
@@ -93,13 +93,6 @@ If you're an AI assistant helping a user install agentmobile, follow this path:
 
 Prerequisites: Node.js 20+, tmux. Setup prefers `systemd` and automatically falls back to PM2 when `systemd` is unavailable.  
 Default login password: `agentmobile` (user can change it in `.env` after setup).
-
----
-
-## Deployment
-
-Expose securely without port forwarding via [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or [Tailscale](https://tailscale.com/).
-
 ---
 
 ## Requirements
@@ -150,25 +143,12 @@ Both backends share the same tmux bridge, file browser, project management, and 
 | [ROADMAP.md](docs/ROADMAP.md) | What's next |
 | [📖 The story behind agentmobile](docs/story.md) | Why this was built |
 
----
-
-## Community
-
-<p>
-  <img src="https://github.com/user-attachments/assets/6960ca95-f26d-484b-aa66-56b5315e39d3" width="225" />
-</p>
 
 ---
 
 ## Contributing
 
 PRs and issues welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local dev setup, commit standards, and good first issue ideas.
-
----
-
-## License
-
-Dual-licensed: **[GPL v3](LICENSE.md)** for open-source use · **Commercial license** available for proprietary / SaaS use — contact [librae8226](https://github.com/librae8226) or [faywong](https://github.com/faywong)
 
 ---
 
