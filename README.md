@@ -7,7 +7,6 @@
 [![GitHub stars](https://img.shields.io/github/stars/librae8226/agentmobile4cc?style=flat-square)](https://github.com/librae8226/agentmobile4cc/stargazers)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
-[🇨🇳 中文](README_CN.md)
 ---
 
 ## Highlights
