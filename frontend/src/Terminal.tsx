@@ -100,6 +100,7 @@ const NewWindowDialog = lazy(() => import('./NewWindowDialog'))
 const FilePanel = lazy(() => import('./FilePanel'))
 const WorkspaceBrowser = lazy(() => import('./WorkspaceBrowser'))
 const GeneralSettings = lazy(() => import('./GeneralSettings'))
+const TaskPanel = lazy(() => import('./TaskPanel'))
 
 interface TmuxWindow {
   index: number
@@ -254,6 +255,7 @@ export default function Terminal({ token }: Props) {
   const hasConnectedRef = useRef(false)
   const [showFiles, setShowFiles] = useState(false)
   const [showWorkspace, setShowWorkspace] = useState(false)
+  const [showTasks, setShowTasks] = useState(false)
   const [copySheetText, setCopySheetText] = useState<string | null>(null)
   const [showScrollback, setShowScrollback] = useState(false)
   const [scrollbackContent, setScrollbackContent] = useState('')
@@ -828,8 +830,7 @@ export default function Terminal({ token }: Props) {
     setActiveTmuxSession(newSession)
     // 强制 WebSocket 重新连接（即使 activeWindowIndex 没变）
     setWsSessionKey(newSession)
-    // 重置窗口状态，但如果有 lastChannel 则使用它
-    setWindows([])
+    // 保留上一次窗口快照，直到新 session 成功返回，避免断线时把 UI 清空
     if (lastChannel !== undefined && lastChannel !== null) {
       setActiveWindowIndex(lastChannel)
       localStorage.setItem(WINDOW_KEY, String(lastChannel))
@@ -1572,7 +1573,7 @@ export default function Terminal({ token }: Props) {
 
   // Overlay guard: when any overlay opens, set xterm textarea to readOnly
   // to prevent virtual keyboard from appearing when keyboard dismisses
-  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles
+  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles || showTasks
   useEffect(() => {
     if (isWidePC) return
     const ta = termRef.current?.textarea
@@ -1654,6 +1655,7 @@ export default function Terminal({ token }: Props) {
   }, [scrollbackContent])
 
   triggerScrollbackRef.current = fetchScrollback
+  const currentChannelName = windows.find(win => win.index === activeWindowIndex)?.name || null
 
   const toolbarProps = {
     token,
@@ -1666,6 +1668,7 @@ export default function Terminal({ token }: Props) {
     onOpenSettings: () => setShowGeneralSettings(true),
     onOpenFiles: () => setShowFiles(true),
     onOpenWorkspace: () => setShowWorkspace(true),
+    onOpenTasks: () => setShowTasks(true),
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
     onShowCopySheet: (text: string) => setCopySheetText(text),
@@ -1673,19 +1676,17 @@ export default function Terminal({ token }: Props) {
     onCollapsedChange: setToolbarCollapsed,
   }
 
-  const enableMobileInput = !isWidePC && mobileKeyboardVisible && !anyOverlayOpen
-
   return (
     <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
       <input
         ref={inputRef}
-        className={enableMobileInput
-          ? 'fixed bottom-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10'
-          : 'fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10'}
+        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
+        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
+        tabIndex={-1}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
@@ -1710,7 +1711,9 @@ export default function Terminal({ token }: Props) {
         ref={fileInputRef}
         type="file"
         accept="image/*,video/*"
-        className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
+        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
+        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        tabIndex={-1}
         onChange={(e) => {
           const file = e.target.files?.[0]
           if (file) uploadFile(file)
@@ -1721,7 +1724,9 @@ export default function Terminal({ token }: Props) {
       <input
         ref={pasteFileRef}
         type="file"
-        className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
+        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
+        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        tabIndex={-1}
         onChange={(e) => {
           const file = e.target.files?.[0]
           if (file) uploadFile(file)
@@ -1817,6 +1822,14 @@ export default function Terminal({ token }: Props) {
                       title="浏览工作目录"
                     >
                       <Icon name="folderOpen" size={18} />
+                    </button>
+
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowTasks(true); }}
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
+                      title="任务面板"
+                    >
+                      <Icon name="history" size={18} />
                     </button>
 
                     <button
@@ -2033,6 +2046,16 @@ export default function Terminal({ token }: Props) {
             token={token}
             onClose={() => setShowWorkspace(false)}
             currentSession={activeTmuxSession}
+          />
+        </Suspense>
+      )}
+      {showTasks && (
+        <Suspense fallback={null}>
+          <TaskPanel
+            token={token}
+            currentProject={activeTmuxSession}
+            currentChannelName={currentChannelName}
+            onClose={() => setShowTasks(false)}
           />
         </Suspense>
       )}

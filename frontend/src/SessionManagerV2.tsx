@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 
-const STORAGE_KEY = 'nexus_token'
+const STORAGE_KEY = 'agentmobile_token'
 
 /** Parse API error response into a user-friendly message.
  *  For 401, clears the token and reloads (auto-logout). */
@@ -49,6 +49,10 @@ interface Project {
   active: boolean
   channelCount: number
 }
+
+type RenameTarget =
+  | { type: 'channel'; channel: Channel }
+  | { type: 'project'; project: Project }
 
 interface Props {
   token: string
@@ -125,6 +129,10 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   // Sidebar right-click menu state
   const [sidebarChannelMenu, setSidebarChannelMenu] = useState<{ channel: Channel; x: number; y: number } | null>(null)
   const [sidebarProjectMenu, setSidebarProjectMenu] = useState<{ project: Project; x: number; y: number } | null>(null)
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renaming, setRenaming] = useState(false)
+  const renameInputRef = useRef<HTMLInputElement>(null)
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -147,15 +155,19 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     if (!opts?.silent) setLoadingChannels(true)
     try {
       const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/channels`, { headers })
+      if (!r.ok) {
+        setError(await parseApiError(r, t('sessionMgr.loadFailed')))
+        return
+      }
       const data = await r.json()
       setChannels((data as any).channels || [])
     } catch (e: unknown) {
       console.error('Load channels failed:', e)
-      setChannels([])
+      setError(parseNetworkError(e))
     } finally {
       if (!opts?.silent) setLoadingChannels(false)
     }
-  }, [token])
+  }, [t, token])
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
   useEffect(() => {
@@ -168,6 +180,19 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   }, [fetchProjects, fetchChannels, currentProject])
 
   useImperativeHandle(ref, () => ({ refresh: handleRefresh }), [handleRefresh])
+
+  useEffect(() => {
+    const es = new EventSource(`/api/projects/events?token=${encodeURIComponent(token)}`)
+    const onProjectsChanged = () => handleRefresh()
+    es.addEventListener('projects_changed', onProjectsChanged as EventListener)
+    es.onerror = () => {
+      // EventSource auto-reconnects. Keep the existing UI state.
+    }
+    return () => {
+      es.removeEventListener('projects_changed', onProjectsChanged as EventListener)
+      es.close()
+    }
+  }, [token, handleRefresh])
 
   // --- Actions ---
 
@@ -197,22 +222,72 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     }
   }
 
-  const handleRenameChannel = async (channel: Channel) => {
+  useEffect(() => {
+    if (!renameTarget) return
+    const timer = window.setTimeout(() => {
+      renameInputRef.current?.focus()
+      renameInputRef.current?.select()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [renameTarget])
+
+  const startRenameChannel = (channel: Channel) => {
     setChannelMenu(null)
     setLongPressMenu(null)
     setSidebarChannelMenu(null)
-    const newName = window.prompt(`${t('common.rename')} Channel:`, channel.name)
-    if (!newName || newName === channel.name) return
+    setRenameTarget({ type: 'channel', channel })
+    setRenameValue(channel.name)
+    setError(null)
+  }
+
+  const startRenameProject = (project: Project) => {
+    setProjectMenu(null)
+    setSidebarProjectMenu(null)
+    setRenameTarget({ type: 'project', project })
+    setRenameValue(project.name)
+    setError(null)
+  }
+
+  const cancelRename = () => {
+    if (renaming) return
+    setRenameTarget(null)
+    setRenameValue('')
+  }
+
+  const submitRename = async () => {
+    if (!renameTarget || renaming) return
+    const newName = renameValue.trim()
+    const currentName = renameTarget.type === 'channel' ? renameTarget.channel.name : renameTarget.project.name
+    if (!newName || newName === currentName) {
+      cancelRename()
+      return
+    }
+    setRenaming(true)
     try {
-      const r = await fetch(`/api/sessions/${channel.index}/rename?session=${encodeURIComponent(currentProject)}`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName }),
-      })
+      const r = renameTarget.type === 'channel'
+        ? await fetch(`/api/sessions/${renameTarget.channel.index}/rename?session=${encodeURIComponent(currentProject)}`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newName }),
+        })
+        : await fetch(`/api/projects/${encodeURIComponent(renameTarget.project.name)}/rename`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newName }),
+        })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.renameFailed'))); return }
-      fetchChannels(currentProject)
+      if (renameTarget.type === 'channel') {
+        fetchChannels(currentProject)
+      } else {
+        fetchProjects()
+        if (renameTarget.project.name === currentProject) onSwitchProject(newName)
+      }
+      setRenameTarget(null)
+      setRenameValue('')
     } catch (e: unknown) {
       setError(parseNetworkError(e))
+    } finally {
+      setRenaming(false)
     }
   }
 
@@ -227,25 +302,6 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
       })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.closeFailed'))); return }
       fetchChannels(currentProject)
-    } catch (e: unknown) {
-      setError(parseNetworkError(e))
-    }
-  }
-
-  const handleRenameProject = async (project: Project) => {
-    setProjectMenu(null)
-    setSidebarProjectMenu(null)
-    const newName = window.prompt(`${t('common.rename')} Project:`, project.name)
-    if (!newName || newName === project.name) return
-    try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}/rename`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName }),
-      })
-      if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.renameFailed'))); return }
-      fetchProjects()
-      if (project.name === currentProject) onSwitchProject(newName)
     } catch (e: unknown) {
       setError(parseNetworkError(e))
     }
@@ -379,16 +435,28 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   const menuButtonClass = (mode: 'sidebar' | 'modal') =>
     mode === 'sidebar'
-      ? 'bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 shrink-0'
-      : 'bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center opacity-60 transition-opacity duration-150 shrink-0'
+      ? 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 shrink-0'
+      : 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-60 transition-opacity duration-150 shrink-0'
+
+  const renameInputClass = 'w-full bg-agentmobile-bg-2 border border-agentmobile-border rounded px-2 py-1 text-sm text-agentmobile-text outline-none'
+
+  const handleRenameInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      submitRename()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelRename()
+    }
+  }
 
   // ====== Shared content ======
   const content = (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {error && (
-        <div className="bg-red-500/15 text-nexus-error px-4 py-2.5 text-sm flex items-center justify-between border-b border-nexus-border">
+        <div className="bg-red-500/15 text-agentmobile-error px-4 py-2.5 text-sm flex items-center justify-between border-b border-agentmobile-border">
           {error}
-          <button className="bg-transparent border-none text-nexus-error cursor-pointer p-0.5" onPointerDown={() => setError(null)}>
+          <button className="bg-transparent border-none text-agentmobile-error cursor-pointer p-0.5" onPointerDown={() => setError(null)}>
             <Icon name="x" size={14} />
           </button>
         </div>
@@ -397,15 +465,15 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {/* Project 列表 */}
         <div className="flex-1 py-2 flex flex-col min-h-0" >
-          <div className="px-3 pb-1.5 border-b border-nexus-border mb-1.5">
-            <div className="text-xs font-semibold text-nexus-text tracking-wide flex items-center justify-between gap-1.5">
+          <div className="px-3 pb-1.5 border-b border-agentmobile-border mb-1.5">
+            <div className="text-xs font-semibold text-agentmobile-text tracking-wide flex items-center justify-between gap-1.5">
               <div className="flex items-center gap-1.5">
                 <span className="text-sm">📁</span>
                 {t('sessionMgr.projects')}
               </div>
               {isSidebar && (
                 <button
-                  className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity"
+                  className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity"
                   onClick={handleRefresh}
                   title={t('sessionMgr.refresh') || 'Refresh'}
                 >
@@ -419,34 +487,48 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
             className="flex-1 overflow-y-auto px-1.5 min-h-0"
           >
             {loadingProjects ? (
-              <div className="text-nexus-muted text-sm px-3 py-2">{t('common.loading')}</div>
+              <div className="text-agentmobile-muted text-sm px-3 py-2">{t('common.loading')}</div>
             ) : projects.length === 0 ? (
-              <div className="flex flex-col items-center justify-center px-3 py-4 text-nexus-muted">
+              <div className="flex flex-col items-center justify-center px-3 py-4 text-agentmobile-muted">
                 <div className="text-[28px] mb-1.5 opacity-50">📁</div>
                 <div className="text-sm">{t('sessionMgr.noProjects')}</div>
               </div>
             ) : projects.map(project => {
               const isActive = project.name === currentProject
+              const isRenamingProject = renameTarget?.type === 'project' && renameTarget.project.name === project.name
               return (
                 <div
                   key={project.name}
                   data-menu-row
                   className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none group/item ${isActive ? 'bg-blue-500/15' : ''}`}
                   onPointerDown={() => {
-                    if (project.name !== currentProject) handleProjectClick(project)
+                    if (!isRenamingProject && project.name !== currentProject) handleProjectClick(project)
                   }}
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) } : undefined}
                 >
-                  <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-nexus-muted'}`} />
+                  <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-agentmobile-muted'}`} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm text-nexus-text truncate leading-tight" title={project.name}>{project.name}</div>
+                    {isRenamingProject ? (
+                      <input
+                        ref={renameInputRef}
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={handleRenameInputKeyDown}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onBlur={cancelRename}
+                        className={renameInputClass}
+                        disabled={renaming}
+                      />
+                    ) : (
+                      <div className="text-sm text-agentmobile-text truncate leading-tight" title={project.name}>{project.name}</div>
+                    )}
                     {project.path && (
-                      <div className="text-[11px] text-nexus-text-2 font-mono truncate mt-0.5" title={project.path}>
+                      <div className="text-[11px] text-agentmobile-text-2 font-mono truncate mt-0.5" title={project.path}>
                         {formatPath(project.path)}
                       </div>
                     )}
                   </div>
-                  <span className="text-xs text-nexus-text-2 font-mono shrink-0">({project.channelCount})</span>
+                  <span className="text-xs text-agentmobile-text-2 font-mono shrink-0">({project.channelCount})</span>
                   {!isSidebar && (
                     <button
                       className={menuButtonClass('modal')}
@@ -466,7 +548,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
             })}
           </div>
 
-          <button className="flex items-center justify-center gap-1.5 mx-3 my-1.5 px-2.5 py-1.5 bg-transparent border border-dashed border-nexus-border rounded text-nexus-text-2 text-sm cursor-pointer" onPointerDown={onNewProject}>
+          <button className="flex items-center justify-center gap-1.5 mx-3 my-1.5 px-2.5 py-1.5 bg-transparent border border-dashed border-agentmobile-border rounded text-agentmobile-text-2 text-sm cursor-pointer" onPointerDown={onNewProject}>
             <Icon name="plus" size={14} />
             <span>{t('sessionMgr.newProject')}</span>
           </button>
@@ -474,8 +556,8 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
         {/* Channel 列表 */}
         <div className="flex-1 py-2 flex flex-col min-h-0" >
-          <div className="px-3 pb-1.5 border-b border-nexus-border mb-1.5">
-            <div className="text-xs font-semibold text-nexus-text tracking-wide flex items-center gap-1.5">
+          <div className="px-3 pb-1.5 border-b border-agentmobile-border mb-1.5">
+            <div className="text-xs font-semibold text-agentmobile-text tracking-wide flex items-center gap-1.5">
               <span className="text-sm">#</span>
               {t('sessionMgr.channels')}
             </div>
@@ -485,30 +567,44 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
             className="flex-1 overflow-y-auto px-1.5 min-h-0"
           >
             {loadingChannels ? (
-              <div className="text-nexus-muted text-sm px-3 py-2">{t('common.loading')}</div>
+              <div className="text-agentmobile-muted text-sm px-3 py-2">{t('common.loading')}</div>
             ) : channels.length === 0 ? (
-              <div className="flex flex-col items-center justify-center px-3 py-4 text-nexus-muted">
+              <div className="flex flex-col items-center justify-center px-3 py-4 text-agentmobile-muted">
                 <div className="text-[28px] mb-1.5 opacity-50">#</div>
                 <div className="text-sm">{t('sessionMgr.noChannels')}</div>
               </div>
             ) : channels.map(channel => {
               const isActive = channel.index === currentChannelIndex
               const status = getChannelStatus(channel, isActive)
+              const isRenamingChannel = renameTarget?.type === 'channel' && renameTarget.channel.index === channel.index
               return (
                 <div
                   key={channel.index}
                   data-menu-row
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${!isDesktop && pressChannel === channel.index ? 'bg-nexus-border' : ''}`}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none transition-colors duration-75 group/item ${isActive ? 'bg-agentmobile-bg-2' : ''} ${!isDesktop && pressChannel === channel.index ? 'bg-agentmobile-border' : ''}`}
                   style={{ WebkitTouchCallout: 'none' }}
-                  onPointerDown={() => { if (isDesktop) doSwitchChannel(channel, false) }}
+                  onPointerDown={() => { if (!isRenamingChannel && isDesktop) doSwitchChannel(channel, false) }}
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) } : undefined}
-                  onTouchStart={(e) => { if (!isDesktop) handleChannelTouchStart(channel, e) }}
-                  onTouchEnd={(e) => { if (!isDesktop) { e.preventDefault(); handleChannelTouchEnd(channel) } }}
+                  onTouchStart={(e) => { if (!isDesktop && !isRenamingChannel) handleChannelTouchStart(channel, e) }}
+                  onTouchEnd={(e) => { if (!isDesktop && !isRenamingChannel) { e.preventDefault(); handleChannelTouchEnd(channel) } }}
                   onTouchMove={() => { if (!isDesktop) handleChannelTouchMove() }}
                 >
                   <span className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ background: STATUS_DOT[status] }} title={status} />
-                  <span className="text-nexus-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
-                  <span className="flex-1 text-sm text-nexus-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
+                  <span className="text-agentmobile-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
+                  {isRenamingChannel ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={handleRenameInputKeyDown}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onBlur={cancelRename}
+                      className={`${renameInputClass} flex-1 min-w-0`}
+                      disabled={renaming}
+                    />
+                  ) : (
+                    <span className="flex-1 text-sm text-agentmobile-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
+                  )}
                   {!isSidebar && (
                     <button
                       className={menuButtonClass('modal')}
@@ -528,7 +624,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
             })}
           </div>
 
-          <button className="flex items-center justify-center gap-1.5 mx-3 my-1.5 px-2.5 py-1.5 bg-transparent border border-dashed border-nexus-border rounded text-nexus-text-2 text-sm cursor-pointer" onPointerDown={onNewChannel}>
+          <button className="flex items-center justify-center gap-1.5 mx-3 my-1.5 px-2.5 py-1.5 bg-transparent border border-dashed border-agentmobile-border rounded text-agentmobile-text-2 text-sm cursor-pointer" onPointerDown={onNewChannel}>
             <Icon name="plus" size={14} />
             <span>{t('sessionMgr.newChannel')}</span>
           </button>
@@ -538,15 +634,15 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
             <>
               <div className="fixed inset-0 z-[150]" onPointerDown={() => { setLongPressMenu(null); setChannelMenu(null) }} />
               <div
-                className="fixed bg-nexus-bg border border-nexus-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
+                className="fixed bg-agentmobile-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
                 style={{ left: activeChannelMenu.x, top: activeChannelMenu.y }}
               >
-                <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-text text-sm cursor-pointer w-full text-left" onPointerDown={() => handleRenameChannel(activeChannelMenu.channel)}>
+                <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameChannel(activeChannelMenu.channel)}>
                   <Icon name="pencil" size={14} />
                   <span>{t('common.rename')}</span>
                 </button>
-                <div className="h-px bg-nexus-border my-1" />
-                <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(activeChannelMenu.channel)}>
+                <div className="h-px bg-agentmobile-border my-1" />
+                <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(activeChannelMenu.channel)}>
                   <Icon name="x" size={14} />
                   <span>{t('common.close')}</span>
                 </button>
@@ -562,12 +658,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   if (isSidebar) {
     return (
       <div
-        className="grid grid-rows-[1fr_auto_1fr] bg-nexus-bg text-nexus-text h-full"
+        className="grid grid-rows-[1fr_auto_1fr] bg-agentmobile-bg text-agentmobile-text h-full"
       >
         {error && (
-          <div className="bg-red-500/15 text-nexus-error px-4 py-2.5 text-sm flex items-center justify-between border-b border-nexus-border shrink-0">
+          <div className="bg-red-500/15 text-agentmobile-error px-4 py-2.5 text-sm flex items-center justify-between border-b border-agentmobile-border shrink-0">
             {error}
-            <button className="bg-transparent border-none text-nexus-error cursor-pointer p-0.5" onPointerDown={() => setError(null)}>
+            <button className="bg-transparent border-none text-agentmobile-error cursor-pointer p-0.5" onPointerDown={() => setError(null)}>
               <Icon name="x" size={14} />
             </button>
           </div>
@@ -575,14 +671,14 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
         {/* Projects section: 50% height, internal scroll */}
         <div className="flex flex-col overflow-hidden">
-          <div className="px-3 pr-10 py-1.5 border-b border-nexus-border shrink-0">
-            <div className="text-xs font-semibold text-nexus-text tracking-wide flex items-center justify-between gap-1.5">
+          <div className="px-3 pr-10 py-1.5 border-b border-agentmobile-border shrink-0">
+            <div className="text-xs font-semibold text-agentmobile-text tracking-wide flex items-center justify-between gap-1.5">
               <div className="flex items-center gap-1.5">
                 <span className="text-sm">📁</span>
                 {t('sessionMgr.projects')}
               </div>
               <button
-                className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity"
+                className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity"
                 onClick={handleRefresh}
                 title={t('sessionMgr.refresh') || 'Refresh'}
               >
@@ -594,48 +690,62 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
             className="flex-1 min-h-0 overflow-y-auto px-1.5 py-1"
           >
             {loadingProjects ? (
-              <div className="text-nexus-muted text-sm px-3 py-2">{t('common.loading')}</div>
+              <div className="text-agentmobile-muted text-sm px-3 py-2">{t('common.loading')}</div>
             ) : projects.length === 0 ? (
-              <div className="flex flex-col items-center justify-center px-3 py-2 text-nexus-muted">
+              <div className="flex flex-col items-center justify-center px-3 py-2 text-agentmobile-muted">
                 <div className="text-sm">{t('sessionMgr.noProjects')}</div>
               </div>
             ) : projects.map(project => {
               const isActive = project.name === currentProject
+              const isRenamingProject = renameTarget?.type === 'project' && renameTarget.project.name === project.name
               return (
                 <div
                   key={project.name}
                   data-menu-row
                   className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none group/item ${isActive ? 'bg-blue-500/15' : ''}`}
-                  onPointerDown={() => { if (project.name !== currentProject) handleProjectClick(project) }}
+                  onPointerDown={() => { if (!isRenamingProject && project.name !== currentProject) handleProjectClick(project) }}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) }}
                 >
-                  <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-nexus-muted'}`} />
+                  <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-agentmobile-muted'}`} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm text-nexus-text truncate leading-tight" title={project.name}>{project.name}</div>
+                    {isRenamingProject ? (
+                      <input
+                        ref={renameInputRef}
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={handleRenameInputKeyDown}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onBlur={cancelRename}
+                        className={renameInputClass}
+                        disabled={renaming}
+                      />
+                    ) : (
+                      <div className="text-sm text-agentmobile-text truncate leading-tight" title={project.name}>{project.name}</div>
+                    )}
                     {project.path && (
-                      <div className="text-[11px] text-nexus-text-2 font-mono truncate mt-0.5" title={project.path}>
+                      <div className="text-[11px] text-agentmobile-text-2 font-mono truncate mt-0.5" title={project.path}>
                         {formatPath(project.path)}
                       </div>
                     )}
                   </div>
-                  <span className="text-xs text-nexus-text-2 font-mono shrink-0">({project.channelCount})</span>
+                  <span className="text-xs text-agentmobile-text-2 font-mono shrink-0">({project.channelCount})</span>
                 </div>
               )
             })}
           </div>
-          <button className="flex items-center justify-center gap-1.5 mx-3 py-1 px-2.5 bg-transparent border border-dashed border-nexus-border rounded text-nexus-text-2 text-sm cursor-pointer shrink-0" onPointerDown={onNewProject}>
+          <button className="flex items-center justify-center gap-1.5 mx-3 py-1 px-2.5 bg-transparent border border-dashed border-agentmobile-border rounded text-agentmobile-text-2 text-sm cursor-pointer shrink-0" onPointerDown={onNewProject}>
             <Icon name="plus" size={14} />
             <span>{t('sessionMgr.newProject')}</span>
           </button>
         </div>
 
         {/* Divider */}
-        <div className="flex-shrink-0 h-px bg-nexus-border" />
+        <div className="flex-shrink-0 h-px bg-agentmobile-border" />
 
         {/* Channels section: 50% height, internal scroll */}
         <div className="flex flex-col overflow-hidden">
-          <div className="px-3 pr-10 py-1.5 border-b border-nexus-border shrink-0">
-            <div className="text-xs font-semibold text-nexus-text tracking-wide flex items-center gap-1.5">
+          <div className="px-3 pr-10 py-1.5 border-b border-agentmobile-border shrink-0">
+            <div className="text-xs font-semibold text-agentmobile-text tracking-wide flex items-center gap-1.5">
               <span className="text-sm">#</span>
               {t('sessionMgr.channels')}
             </div>
@@ -644,31 +754,45 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
             className="flex-1 min-h-0 overflow-y-auto px-1.5 py-1"
           >
             {loadingChannels ? (
-              <div className="text-nexus-muted text-sm px-3 py-2">{t('common.loading')}</div>
+              <div className="text-agentmobile-muted text-sm px-3 py-2">{t('common.loading')}</div>
             ) : channels.length === 0 ? (
-              <div className="flex flex-col items-center justify-center px-3 py-2 text-nexus-muted">
+              <div className="flex flex-col items-center justify-center px-3 py-2 text-agentmobile-muted">
                 <div className="text-sm">{t('sessionMgr.noChannels')}</div>
               </div>
             ) : channels.map(channel => {
               const isActive = channel.index === currentChannelIndex
               const status = getChannelStatus(channel, isActive)
+              const isRenamingChannel = renameTarget?.type === 'channel' && renameTarget.channel.index === channel.index
               return (
                 <div
                   key={channel.index}
                   data-menu-row
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''}`}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none transition-colors duration-75 group/item ${isActive ? 'bg-agentmobile-bg-2' : ''}`}
                   style={{ WebkitTouchCallout: 'none' }}
-                  onPointerDown={() => { doSwitchChannel(channel, false) }}
+                  onPointerDown={() => { if (!isRenamingChannel) doSwitchChannel(channel, false) }}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) }}
                 >
                   <span className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ background: STATUS_DOT[status] }} title={status} />
-                  <span className="text-nexus-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
-                  <span className="flex-1 text-sm text-nexus-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
+                  <span className="text-agentmobile-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
+                  {isRenamingChannel ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={handleRenameInputKeyDown}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onBlur={cancelRename}
+                      className={`${renameInputClass} flex-1 min-w-0`}
+                      disabled={renaming}
+                    />
+                  ) : (
+                    <span className="flex-1 text-sm text-agentmobile-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
+                  )}
                 </div>
               )
             })}
           </div>
-          <button className="flex items-center justify-center gap-1.5 mx-3 py-1 px-2.5 bg-transparent border border-dashed border-nexus-border rounded text-nexus-text-2 text-sm cursor-pointer shrink-0" onPointerDown={onNewChannel}>
+          <button className="flex items-center justify-center gap-1.5 mx-3 py-1 px-2.5 bg-transparent border border-dashed border-agentmobile-border rounded text-agentmobile-text-2 text-sm cursor-pointer shrink-0" onPointerDown={onNewChannel}>
             <Icon name="plus" size={14} />
             <span>{t('sessionMgr.newChannel')}</span>
           </button>
@@ -679,15 +803,15 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
           <>
             <div className="fixed inset-0 z-[150]" onPointerDown={() => setSidebarChannelMenu(null)} />
             <div
-              className="fixed bg-nexus-bg border border-nexus-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
+              className="fixed bg-agentmobile-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
               style={{ left: sidebarChannelMenu.x, top: sidebarChannelMenu.y }}
             >
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-text text-sm cursor-pointer w-full text-left" onPointerDown={() => handleRenameChannel(sidebarChannelMenu.channel)}>
+              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameChannel(sidebarChannelMenu.channel)}>
                 <Icon name="pencil" size={14} />
                 <span>{t('common.rename')}</span>
               </button>
-              <div className="h-px bg-nexus-border my-1" />
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(sidebarChannelMenu.channel)}>
+              <div className="h-px bg-agentmobile-border my-1" />
+              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(sidebarChannelMenu.channel)}>
                 <Icon name="x" size={14} />
                 <span>{t('common.close')}</span>
               </button>
@@ -700,18 +824,18 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
           <>
             <div className="fixed inset-0 z-[150]" onPointerDown={() => setSidebarProjectMenu(null)} />
             <div
-              className="fixed bg-nexus-bg border border-nexus-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
+              className="fixed bg-agentmobile-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
               style={{ left: sidebarProjectMenu.x, top: sidebarProjectMenu.y }}
             >
-              <div className="px-4 py-1.5 text-xs font-semibold text-nexus-text-2 border-b border-nexus-border mb-0">
+              <div className="px-4 py-1.5 text-xs font-semibold text-agentmobile-text-2 border-b border-agentmobile-border mb-0">
                 {sidebarProjectMenu.project.name}
               </div>
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-text text-sm cursor-pointer w-full text-left" onPointerDown={() => handleRenameProject(sidebarProjectMenu.project)}>
+              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameProject(sidebarProjectMenu.project)}>
                 <Icon name="pencil" size={14} />
                 <span>{t('common.rename')}</span>
               </button>
-              <div className="h-px bg-nexus-border my-1" />
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(sidebarProjectMenu.project)}>
+              <div className="h-px bg-agentmobile-border my-1" />
+              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(sidebarProjectMenu.project)}>
                 <Icon name="x" size={14} />
                 <span>{t('sessionMgr.closeProject')}</span>
               </button>
@@ -727,16 +851,16 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     <div className={isDesktop ? 'fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-5' : 'fixed inset-0 bg-black/60 z-[100]'}>
       <GhostShield />
       <div className={isDesktop
-        ? 'bg-nexus-bg border border-nexus-border rounded-xl flex flex-col text-nexus-text w-full max-w-[400px] max-h-[85vh] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden'
-        : 'fixed inset-0 bg-nexus-bg flex flex-col text-nexus-text'
+        ? 'bg-agentmobile-bg border border-agentmobile-border rounded-xl flex flex-col text-agentmobile-text w-full max-w-[400px] max-h-[85vh] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden'
+        : 'fixed inset-0 bg-agentmobile-bg flex flex-col text-agentmobile-text'
       }>
-        <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border shrink-0">
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border shrink-0">
           <span className="text-base font-semibold">{t('sessionMgr.title')}</span>
           <div className="flex items-center gap-2">
-            <button className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center" onPointerDown={handleRefresh} title={t('sessionMgr.refresh') || '刷新'}>
+            <button className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center" onPointerDown={handleRefresh} title={t('sessionMgr.refresh') || '刷新'}>
               <Icon name="refresh" size={16} />
             </button>
-            <button className="bg-transparent border-none text-nexus-text-2 cursor-pointer text-2xl leading-none px-1 flex items-center justify-center" onPointerDown={onClose}>
+            <button className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer text-2xl leading-none px-1 flex items-center justify-center" onPointerDown={onClose}>
               <Icon name="x" size={20} />
             </button>
           </div>
@@ -749,16 +873,16 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
           <>
             <div className="fixed inset-0 z-[150]" onPointerDown={() => setProjectMenu(null)} />
             <div
-              className="fixed bg-nexus-bg border border-nexus-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
+              className="fixed bg-agentmobile-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
               style={{ left: projectMenu.x, top: projectMenu.y }}
             >
-              <div className="px-4 py-1.5 text-xs font-semibold text-nexus-text-2 border-b border-nexus-border mb-0">{projectMenu.project.name}</div>
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-text text-sm cursor-pointer w-full text-left" onPointerDown={() => handleRenameProject(projectMenu.project)}>
+              <div className="px-4 py-1.5 text-xs font-semibold text-agentmobile-text-2 border-b border-agentmobile-border mb-0">{projectMenu.project.name}</div>
+              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameProject(projectMenu.project)}>
                 <Icon name="pencil" size={14} />
                 <span>{t('common.rename')}</span>
               </button>
-              <div className="h-px bg-nexus-border my-1" />
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-nexus-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(projectMenu.project)}>
+              <div className="h-px bg-agentmobile-border my-1" />
+              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(projectMenu.project)}>
                 <Icon name="x" size={14} />
                 <span>{t('sessionMgr.closeProject')}</span>
               </button>

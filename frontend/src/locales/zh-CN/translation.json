@@ -219,6 +219,9 @@
   },
   "tasks": {
     "title": "任务面板",
+    "currentTarget": "当前目标",
+    "agentType": "Agent",
+    "profile": "Profile",
     "session": "会话:",
     "promptPlaceholder": "输入任务 prompt，使用当前所选 Agent 非交互执行...",
     "sendTask": "▶ 发送任务",
@@ -229,9 +232,21 @@
     "noTasks": "暂无任务记录",
     "cancel": "取消",
     "requestFailed": "请求失败: {{status}}",
+    "startFailed": "任务启动失败",
     "waitingOutput": "等待输出...",
     "noOutput": "(无输出)",
-    "notificationTitle": "agentmobile: 任务完成"
+    "notificationTitle": "agentmobile: 任务完成",
+    "resumeNotice": "运行中的任务在断开后会继续执行，重新打开此面板会自动续连。",
+    "noActiveChannel": "当前没有可用于派发任务的 Channel",
+    "deleteConfirm": "确定删除这条任务记录吗？",
+    "project": "项目",
+    "channel": "频道",
+    "source": "来源",
+    "startedAt": "开始",
+    "updatedAt": "更新",
+    "completedAt": "完成",
+    "stderr": "错误输出",
+    "selectTask": "选择一条任务查看输出"
   },
   "files": {
     "title": "上传文件",

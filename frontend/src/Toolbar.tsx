@@ -21,6 +21,7 @@ interface Props {
   onUploadFile?: (file: File) => void
   onOpenFiles?: () => void
   onOpenWorkspace?: () => void
+  onOpenTasks?: () => void
   onFitTerminal?: () => void
   onShowCopySheet?: (text: string) => void
   /** When true: renders as a compact sidebar section (no theme/settings, flex-wrap key grid) */
@@ -33,9 +34,9 @@ interface Props {
 
 const KEY_MAP = Object.fromEntries(ALL_KEYS.map(k => [k.id, k]))
 
-const CONFIG_KEY = 'nexus_toolbar_v2'
-const USER_DEFAULT_KEY = 'nexus_toolbar_default'
-const COLLAPSED_KEY = 'nexus_toolbar_collapsed'
+const CONFIG_KEY = 'agentmobile_toolbar_v2'
+const USER_DEFAULT_KEY = 'agentmobile_toolbar_default'
+const COLLAPSED_KEY = 'agentmobile_toolbar_collapsed'
 
 // PC 端断点
 const PC_BREAKPOINT = 768
@@ -71,7 +72,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onOpenFiles, onOpenWorkspace, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const isControlled = controlledCollapsed !== undefined
@@ -320,10 +321,10 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     const editContent = (
       <>
         {/* 头部 */}
-        <div className={isPC ? 'flex items-center justify-between px-5 py-4 border-b border-nexus-border shrink-0' : 'flex items-center justify-between px-2.5 py-2 border-b border-nexus-border shrink-0'}>
+        <div className={isPC ? 'flex items-center justify-between px-5 py-4 border-b border-agentmobile-border shrink-0' : 'flex items-center justify-between px-2.5 py-2 border-b border-agentmobile-border shrink-0'}>
           <div>
-            <span className={isPC ? 'text-nexus-text text-base font-semibold' : 'text-nexus-text text-sm font-semibold'}>{t('toolbar.toolbarEdit')}</span>
-            <div className={isPC ? 'text-nexus-muted text-xs mt-1' : 'text-nexus-muted text-[10px] mt-0.5'}>
+            <span className={isPC ? 'text-agentmobile-text text-base font-semibold' : 'text-agentmobile-text text-sm font-semibold'}>{t('toolbar.toolbarEdit')}</span>
+            <div className={isPC ? 'text-agentmobile-muted text-xs mt-1' : 'text-agentmobile-muted text-[10px] mt-0.5'}>
               {existsUserDefault ? t('toolbar.resetToSaved') : t('toolbar.resetToFactory')}
             </div>
           </div>
@@ -331,7 +332,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             <button onPointerDown={(e) => { e.preventDefault(); resetConfig() }} className={isPC ? editBtnSmPCClass : editBtnSmClass}>{t('toolbar.reset')}</button>
             <button
               onPointerDown={(e) => { e.preventDefault(); saveAsDefault() }}
-              className={savedFlash ? (isPC ? 'text-nexus-success border-nexus-success ' + editBtnSmPCClass : 'text-nexus-success border-nexus-success ' + editBtnSmClass) : (isPC ? editBtnSmPCClass : editBtnSmClass)}
+              className={savedFlash ? (isPC ? 'text-agentmobile-success border-agentmobile-success ' + editBtnSmPCClass : 'text-agentmobile-success border-agentmobile-success ' + editBtnSmClass) : (isPC ? editBtnSmPCClass : editBtnSmClass)}
             >
               {savedFlash ? t('common.saved') : t('toolbar.saveAsDefault')}
             </button>
@@ -343,7 +344,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         <div ref={editScrollRef} className={isPC ? 'overflow-y-auto flex-1 py-2' : 'overflow-y-auto flex-1'}>
           {(['pinned', 'expanded'] as const).map(section => (
             <div key={section} className="mb-1">
-              <div className={isPC ? 'text-nexus-text-2 text-xs px-5 py-2.5 pb-1.5 tracking-wide uppercase' : 'text-nexus-text-2 text-[11px] px-2.5 py-1.5 pb-[3px] tracking-wide uppercase'}>
+              <div className={isPC ? 'text-agentmobile-text-2 text-xs px-5 py-2.5 pb-1.5 tracking-wide uppercase' : 'text-agentmobile-text-2 text-[11px] px-2.5 py-1.5 pb-[3px] tracking-wide uppercase'}>
                 {section === 'pinned' ? t('toolbar.fixedRow') : t('toolbar.expandSection')}
               </div>
               {getDisplayIds(section).map((id, idx) => {
@@ -355,14 +356,14 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                   <div
                     key={id}
                     className={[
-                      isPC ? 'flex items-center px-5 h-12 gap-3 border-b border-nexus-border box-border' : 'flex items-center px-2.5 h-12 gap-2 border-b border-nexus-border box-border',
-                      isDragging ? 'bg-[color-mix(in_srgb,var(--nexus-accent)_12%,transparent)] border-nexus-accent' : '',
+                      isPC ? 'flex items-center px-5 h-12 gap-3 border-b border-agentmobile-border box-border' : 'flex items-center px-2.5 h-12 gap-2 border-b border-agentmobile-border box-border',
+                      isDragging ? 'bg-[color-mix(in_srgb,var(--agentmobile-accent)_12%,transparent)] border-agentmobile-accent' : '',
                       isSource ? 'opacity-[0.35]' : ''
                     ].filter(Boolean).join(' ')}
                   >
                     {/* 拖拽手柄 */}
                     <div
-                      className="text-nexus-text-2 text-base cursor-grab py-2 px-1 shrink-0 touch-none flex items-center"
+                      className="text-agentmobile-text-2 text-base cursor-grab py-2 px-1 shrink-0 touch-none flex items-center"
                       onTouchStart={(e) => { e.stopPropagation(); onDragStart(section, idx, e.touches[0].clientY) }}
                       onTouchMove={(e) => { e.stopPropagation(); onDragMove(e.touches[0].clientY) }}
                       onTouchEnd={() => onDragEnd()}
@@ -374,10 +375,10 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                     >
                       <Icon name="grip" size={16} />
                     </div>
-                    <span className={isPC ? 'text-nexus-text font-mono text-sm min-w-[60px] shrink-0' : 'text-nexus-text font-mono text-[13px] min-w-[48px] shrink-0'}>{key.label}</span>
-                    <span className={isPC ? 'text-nexus-text-2 text-xs flex-1 overflow-hidden text-ellipsis whitespace-nowrap' : 'text-nexus-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'}>{t(key.desc)}</span>
+                    <span className={isPC ? 'text-agentmobile-text font-mono text-sm min-w-[60px] shrink-0' : 'text-agentmobile-text font-mono text-[13px] min-w-[48px] shrink-0'}>{key.label}</span>
+                    <span className={isPC ? 'text-agentmobile-text-2 text-xs flex-1 overflow-hidden text-ellipsis whitespace-nowrap' : 'text-agentmobile-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'}>{t(key.desc)}</span>
                     <button
-                      className={isPC ? 'bg-transparent border-none text-nexus-error cursor-pointer text-xl px-2 py-1 shrink-0 leading-none flex items-center justify-center' : 'bg-transparent border-none text-nexus-error cursor-pointer text-lg px-0.5 shrink-0 leading-none flex items-center justify-center'}
+                      className={isPC ? 'bg-transparent border-none text-agentmobile-error cursor-pointer text-xl px-2 py-1 shrink-0 leading-none flex items-center justify-center' : 'bg-transparent border-none text-agentmobile-error cursor-pointer text-lg px-0.5 shrink-0 leading-none flex items-center justify-center'}
                       onPointerDown={(e) => { e.preventDefault(); removeKey(section, id) }}
                       title={t('toolbar.remove')}
                     >
@@ -392,11 +393,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           {/* 可添加 */}
           {availableKeys.length > 0 && (
             <div className="mb-1">
-              <div className={isPC ? 'text-nexus-text-2 text-xs px-5 py-2.5 pb-1.5 tracking-wide uppercase' : 'text-nexus-text-2 text-[11px] px-2.5 py-1.5 pb-[3px] tracking-wide uppercase'}>{t('toolbar.addAvailable')}</div>
+              <div className={isPC ? 'text-agentmobile-text-2 text-xs px-5 py-2.5 pb-1.5 tracking-wide uppercase' : 'text-agentmobile-text-2 text-[11px] px-2.5 py-1.5 pb-[3px] tracking-wide uppercase'}>{t('toolbar.addAvailable')}</div>
               {availableKeys.map(key => (
-                <div key={key.id} className={isPC ? 'flex items-center px-5 h-12 gap-3 border-b border-nexus-border box-border' : 'flex items-center px-2.5 h-12 gap-2 border-b border-nexus-border box-border'}>
-                  <span className={isPC ? 'text-nexus-text font-mono text-sm min-w-[60px] shrink-0' : 'text-nexus-text font-mono text-[13px] min-w-[48px] shrink-0'}>{key.label}</span>
-                  <span className={isPC ? 'text-nexus-text-2 text-xs flex-1 overflow-hidden text-ellipsis whitespace-nowrap' : 'text-nexus-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'}>{t(key.desc)}</span>
+                <div key={key.id} className={isPC ? 'flex items-center px-5 h-12 gap-3 border-b border-agentmobile-border box-border' : 'flex items-center px-2.5 h-12 gap-2 border-b border-agentmobile-border box-border'}>
+                  <span className={isPC ? 'text-agentmobile-text font-mono text-sm min-w-[60px] shrink-0' : 'text-agentmobile-text font-mono text-[13px] min-w-[48px] shrink-0'}>{key.label}</span>
+                  <span className={isPC ? 'text-agentmobile-text-2 text-xs flex-1 overflow-hidden text-ellipsis whitespace-nowrap' : 'text-agentmobile-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'}>{t(key.desc)}</span>
                   <div className="flex gap-1 ml-auto shrink-0">
                     <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('pinned', key.id) }}>{t('toolbar.pinToFixed')}</button>
                     <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('expanded', key.id) }}>{t('toolbar.pinToExpand')}</button>
@@ -413,7 +414,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
       return (
         <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-5">
           <GhostShield />
-          <div ref={rootRef} className="bg-nexus-bg border border-nexus-border rounded-xl shrink-0 flex flex-col w-full max-w-[600px] max-h-[70vh] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
+          <div ref={rootRef} className="bg-agentmobile-bg border border-agentmobile-border rounded-xl shrink-0 flex flex-col w-full max-w-[600px] max-h-[70vh] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
             {editContent}
           </div>
         </div>
@@ -421,7 +422,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     }
 
     return (
-      <div ref={rootRef} className="bg-nexus-bg border-t border-nexus-border shrink-0 flex flex-col max-h-[55vh]">
+      <div ref={rootRef} className="bg-agentmobile-bg border-t border-agentmobile-border shrink-0 flex flex-col max-h-[55vh]">
         <GhostShield />
         {editContent}
       </div>
@@ -432,20 +433,20 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   const pasteBoxEl = showPasteBox && createPortal(
     <>
       <div className="fixed inset-0 z-[700]" onClick={() => setShowPasteBox(false)} />
-      <div className="fixed bottom-0 left-0 right-0 z-[701] bg-nexus-bg border-t border-nexus-border rounded-t-xl p-3.5 pb-6 shadow-[0_-4px_24px_rgba(0,0,0,0.35)]"
+      <div className="fixed bottom-0 left-0 right-0 z-[701] bg-agentmobile-bg border-t border-agentmobile-border rounded-t-xl p-3.5 pb-6 shadow-[0_-4px_24px_rgba(0,0,0,0.35)]"
         onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
-          <span className="text-nexus-text text-sm font-semibold">{t('toolbar.pasteUpload')}</span>
+          <span className="text-agentmobile-text text-sm font-semibold">{t('toolbar.pasteUpload')}</span>
           <button onPointerDown={(e) => { e.preventDefault(); setShowPasteBox(false) }}
-            className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex">
+            className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex">
             <Icon name="x" size={20} />
           </button>
         </div>
         <textarea
           ref={pasteBoxRef}
-          rows={3}
+          rows={5}
           placeholder={t('toolbar.pastePlaceholder')}
-          className="w-full box-border bg-nexus-bg-2 border border-nexus-border rounded-lg text-nexus-text text-sm p-2.5 resize-none outline-none font-inherit block"
+          className="w-full box-border bg-agentmobile-bg-2 border border-agentmobile-border rounded-lg text-agentmobile-text text-sm p-2.5 resize-none outline-none font-inherit block"
           onPaste={(e) => {
             const items = e.clipboardData?.items
             if (items) {
@@ -465,7 +466,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           }}
         />
         <button
-          className="w-full mt-2 py-2.5 rounded-lg bg-nexus-accent text-white text-sm font-medium cursor-pointer border-none"
+          className="w-full mt-2 py-2.5 rounded-lg bg-agentmobile-accent text-white text-sm font-medium cursor-pointer border-none"
           onClick={() => {
             const text = pasteBoxRef.current?.value ?? ''
             if (text) { sendToWs(text); setShowPasteBox(false) }
@@ -473,7 +474,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         >
           Send
         </button>
-        <label className="flex items-center justify-center gap-2 mt-2.5 p-2.5 rounded-lg cursor-pointer bg-nexus-bg-2 border border-nexus-border text-nexus-text-2 text-[13px]">
+        <label className="flex items-center justify-center gap-2 mt-2.5 p-2.5 rounded-lg cursor-pointer bg-agentmobile-bg-2 border border-agentmobile-border text-agentmobile-text-2 text-[13px]">
           <Icon name="paperclip" size={16} />{t('toolbar.selectFile')}
           <input ref={pasteFileRef} type="file" accept="*/*" className="hidden"
             onChange={(e) => {
@@ -520,10 +521,10 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   if (embedded) {
     const allEmbedded = [...config.pinned, ...(collapsed ? [] : config.expanded)]
     return (
-      <div ref={rootRef} className="border-t border-nexus-border shrink-0 bg-nexus-bg">
+      <div ref={rootRef} className="border-t border-agentmobile-border shrink-0 bg-agentmobile-bg">
         {/* Section header */}
         <div className="flex items-center px-2 py-1 gap-0.5">
-          <span className="text-[10px] text-nexus-muted flex-1 tracking-wide uppercase">{t('toolbar.shortcuts')}</span>
+          <span className="text-[10px] text-agentmobile-muted flex-1 tracking-wide uppercase">{t('toolbar.shortcuts')}</span>
           <button
             className={iconBtnPCClass}
             onPointerDown={(e) => { e.preventDefault(); setEditing(true) }}
@@ -551,7 +552,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           })}
         </div>
         {/* Bottom actions: upload + settings */}
-        <div className="flex items-center justify-between px-2 py-1.5 border-t border-nexus-border">
+        <div className="flex items-center justify-between px-2 py-1.5 border-t border-agentmobile-border">
           <div className="flex items-center gap-0.5">
             {onOpenWorkspace && (
               <button
@@ -566,7 +567,14 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               title={t('toolbar.pasteUpload')}
             ><Icon name="paperclip" size={18} /></button>
           </div>
-          <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-0.5">
+            {onOpenTasks && (
+              <button
+                className={iconBtnPCClass}
+                onPointerDown={(e) => { e.preventDefault(); onOpenTasks() }}
+                title={t('toolbar.tasks')}
+              ><Icon name="history" size={18} /></button>
+            )}
             {onOpenFiles && (
               <button
                 className={iconBtnPCClass}
@@ -592,7 +600,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   // ---- 正常工具栏 ----
   if (isPC) {
     return (
-      <div ref={rootRef} className="bg-nexus-bg border-t border-nexus-border select-none shrink-0 w-full">
+      <div ref={rootRef} className="bg-agentmobile-bg border-t border-agentmobile-border select-none shrink-0 w-full">
         {fileInputsEl}
         {/* PC: 控制按钮 + 固定键同一行 */}
         <div className="flex items-center px-3 py-1 gap-1.5 h-11 box-border">
@@ -622,6 +630,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               <Icon name="folder" size={18} />
             </button>
           )}
+          {onOpenTasks && (
+            <button className={iconBtnPCClass} onPointerDown={(e) => { e.preventDefault(); onOpenTasks() }} title={t('toolbar.tasks')}>
+              <Icon name="history" size={18} />
+            </button>
+          )}
           <button
             ref={uploadBtnRef}
             className={`${iconBtnPCClass} relative`}
@@ -643,7 +656,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             <>
               <GhostShield />
               <div className="fixed inset-0 z-[300]" onPointerDown={() => setShowUploadMenu(false)} />
-              <div className="fixed bg-nexus-menu-bg border border-nexus-border rounded-lg py-1 min-w-[120px] z-[400] shadow-[0_4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: uploadMenuPos.bottom, right: uploadMenuPos.right }}>
+              <div className="fixed bg-agentmobile-menu-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] z-[400] shadow-[0_4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: uploadMenuPos.bottom, right: uploadMenuPos.right }}>
                 <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); fileInputRef.current?.click(); setShowUploadMenu(false) }}>
                   <Icon name="image" size={16} />
                   <span>{t('toolbar.photos')}</span>
@@ -693,7 +706,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   }
 
   return (
-    <div ref={rootRef} className="bg-nexus-bg border-t border-nexus-border select-none shrink-0">
+    <div ref={rootRef} className="bg-agentmobile-bg border-t border-agentmobile-border select-none shrink-0">
       {fileInputsEl}
       <div className="flex items-center py-[3px] px-1.5 gap-1">
         <div className="flex-1" />
@@ -725,7 +738,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           <>
             <GhostShield />
             <div className="fixed inset-0 z-[300]" onPointerDown={() => setShowUploadMenu(false)} />
-            <div className="fixed bg-nexus-menu-bg border border-nexus-border rounded-lg py-1 min-w-[120px] z-[400] shadow-[0_-4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: uploadMenuPos.bottom, right: uploadMenuPos.right }}>
+            <div className="fixed bg-agentmobile-menu-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] z-[400] shadow-[0_-4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: uploadMenuPos.bottom, right: uploadMenuPos.right }}>
               <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); fileInputRef.current?.click(); setShowUploadMenu(false) }}>
                 <Icon name="image" size={16} />
                 <span>{t('toolbar.photos')}</span>
@@ -757,7 +770,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             <>
               <GhostShield />
               <div className="fixed inset-0 z-[300]" onPointerDown={() => setShowQuickMenu(false)} />
-              <div className="fixed bg-nexus-menu-bg border border-nexus-border rounded-lg py-1 min-w-[160px] z-[400] shadow-[0_-4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: menuPos.bottom, right: menuPos.right }}>
+              <div className="fixed bg-agentmobile-menu-bg border border-agentmobile-border rounded-lg py-1 min-w-[160px] z-[400] shadow-[0_-4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: menuPos.bottom, right: menuPos.right }}>
                 <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onToggleTheme(); setShowQuickMenu(false) }}>
                   <Icon name={themeMode === 'dark' ? 'sun' : 'moon'} size={16} />
                   <span>{themeMode === 'dark' ? t('toolbar.switchLight') : t('toolbar.switchDark')}</span>
@@ -769,6 +782,12 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                   <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenFiles(); setShowQuickMenu(false) }}>
                     <Icon name="image" size={16} />
                     <span>{t('toolbar.fileList')}</span>
+                  </button>
+                )}
+                {onOpenTasks && (
+                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenTasks(); setShowQuickMenu(false) }}>
+                    <Icon name="history" size={16} />
+                    <span>{t('toolbar.tasks')}</span>
                   </button>
                 )}
                 {onOpenSettings && (
@@ -822,15 +841,15 @@ function chunk<T>(arr: T[], n: number): T[][] {
 }
 
 // Tailwind class constants for reuse
-const keyClass = 'bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text cursor-pointer text-xs font-mono min-w-[38px] py-1.5 px-[7px] text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-nexus-bg active:border-nexus-accent'
-const keyPCClass = 'bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text cursor-pointer text-sm font-mono min-w-[48px] py-2 px-2.5 text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-nexus-bg active:border-nexus-accent'
-const keyEmbeddedClass = 'bg-nexus-bg-2 border border-nexus-border rounded text-nexus-text cursor-pointer text-[11px] font-mono min-w-[30px] py-1 px-[5px] text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-nexus-bg active:border-nexus-accent'
-const iconBtnClass = 'bg-transparent border-none text-nexus-text-2 cursor-pointer text-sm py-1 px-2 rounded flex items-center justify-center transition-all duration-100 active:scale-90 active:text-nexus-text active:bg-nexus-bg-2'
-const iconBtnPCClass = 'bg-transparent border-none text-nexus-text-2 cursor-pointer text-[13px] py-[3px] px-1.5 rounded flex-shrink-0 flex items-center justify-center transition-all duration-100 active:scale-90 active:text-nexus-text active:bg-nexus-bg-2'
-const quickMenuItemClass = 'flex items-center gap-2.5 bg-transparent border-none text-nexus-text cursor-pointer text-sm py-2.5 px-3.5 w-full text-left touch-manipulation transition-all duration-100 active:bg-nexus-bg-2 active:pl-4'
-const editBtnSmClass = 'bg-transparent border border-nexus-border rounded text-nexus-text-2 cursor-pointer text-xs py-1 px-2.5 transition-all duration-100 active:scale-95 active:bg-nexus-bg-2'
-const editBtnSmPCClass = 'bg-transparent border border-nexus-border rounded text-nexus-text-2 cursor-pointer text-[13px] py-1.5 px-3.5 transition-all duration-100 active:scale-95 active:bg-nexus-bg-2'
-const editBtnPrimaryClass = 'bg-nexus-accent border-none rounded text-white cursor-pointer text-xs font-semibold py-1 px-3 transition-all duration-100 active:scale-95 active:bg-blue-600'
-const editBtnPrimaryPCClass = 'bg-nexus-accent border-none rounded text-white cursor-pointer text-[13px] font-semibold py-1.5 px-4 transition-all duration-100 active:scale-95 active:bg-blue-600'
-const addBtnClass = 'bg-nexus-bg-2 border border-nexus-border rounded text-nexus-accent cursor-pointer text-[11px] py-1 px-2 transition-all duration-100 active:scale-95 active:bg-nexus-bg'
-const addBtnPCClass = 'bg-nexus-bg-2 border border-nexus-border rounded text-nexus-accent cursor-pointer text-xs py-1.5 px-3 transition-all duration-100 active:scale-95 active:bg-nexus-bg'
+const keyClass = 'bg-agentmobile-bg-2 border border-agentmobile-border rounded-md text-agentmobile-text cursor-pointer text-xs font-mono min-w-[38px] py-1.5 px-[7px] text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-agentmobile-bg active:border-agentmobile-accent'
+const keyPCClass = 'bg-agentmobile-bg-2 border border-agentmobile-border rounded-md text-agentmobile-text cursor-pointer text-sm font-mono min-w-[48px] py-2 px-2.5 text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-agentmobile-bg active:border-agentmobile-accent'
+const keyEmbeddedClass = 'bg-agentmobile-bg-2 border border-agentmobile-border rounded text-agentmobile-text cursor-pointer text-[11px] font-mono min-w-[30px] py-1 px-[5px] text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-agentmobile-bg active:border-agentmobile-accent'
+const iconBtnClass = 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer text-sm py-1 px-2 rounded flex items-center justify-center transition-all duration-100 active:scale-90 active:text-agentmobile-text active:bg-agentmobile-bg-2'
+const iconBtnPCClass = 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer text-[13px] py-[3px] px-1.5 rounded flex-shrink-0 flex items-center justify-center transition-all duration-100 active:scale-90 active:text-agentmobile-text active:bg-agentmobile-bg-2'
+const quickMenuItemClass = 'flex items-center gap-2.5 bg-transparent border-none text-agentmobile-text cursor-pointer text-sm py-2.5 px-3.5 w-full text-left touch-manipulation transition-all duration-100 active:bg-agentmobile-bg-2 active:pl-4'
+const editBtnSmClass = 'bg-transparent border border-agentmobile-border rounded text-agentmobile-text-2 cursor-pointer text-xs py-1 px-2.5 transition-all duration-100 active:scale-95 active:bg-agentmobile-bg-2'
+const editBtnSmPCClass = 'bg-transparent border border-agentmobile-border rounded text-agentmobile-text-2 cursor-pointer text-[13px] py-1.5 px-3.5 transition-all duration-100 active:scale-95 active:bg-agentmobile-bg-2'
+const editBtnPrimaryClass = 'bg-agentmobile-accent border-none rounded text-white cursor-pointer text-xs font-semibold py-1 px-3 transition-all duration-100 active:scale-95 active:bg-blue-600'
+const editBtnPrimaryPCClass = 'bg-agentmobile-accent border-none rounded text-white cursor-pointer text-[13px] font-semibold py-1.5 px-4 transition-all duration-100 active:scale-95 active:bg-blue-600'
+const addBtnClass = 'bg-agentmobile-bg-2 border border-agentmobile-border rounded text-agentmobile-accent cursor-pointer text-[11px] py-1 px-2 transition-all duration-100 active:scale-95 active:bg-agentmobile-bg'
+const addBtnPCClass = 'bg-agentmobile-bg-2 border border-agentmobile-border rounded text-agentmobile-accent cursor-pointer text-xs py-1.5 px-3 transition-all duration-100 active:scale-95 active:bg-agentmobile-bg'

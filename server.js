@@ -1579,6 +1579,12 @@ function loadTasks() {
 }
 
 const MAX_TASKS = 200
+const TASK_EVENT_BUFFER_LIMIT = 400
+const TASK_OUTPUT_PREVIEW_LIMIT = 10000
+const TASK_ERROR_PREVIEW_LIMIT = 1000
+const TASK_PERSIST_DEBOUNCE_MS = 300
+const TASK_RUNTIME_TTL_MS = 15 * 60 * 1000
+const taskRuntimeMap = new Map()
 
 function saveTasks(tasks) {
   // 保留最新的 MAX_TASKS 条，防止文件无限增长
@@ -1586,12 +1592,239 @@ function saveTasks(tasks) {
   writeFileSync(TASKS_FILE, JSON.stringify(trimmed, null, 2))
 }
 
+function getTask(id) {
+  const tasks = loadTasks()
+  return tasks.find(t => t.id === id) || null
+}
+
+function addTask(taskRecord) {
+  const tasks = loadTasks()
+  tasks.push(taskRecord)
+  saveTasks(tasks)
+  return taskRecord
+}
+
 function updateTask(id, updates) {
   const tasks = loadTasks()
   const idx = tasks.findIndex(t => t.id === id)
   if (idx !== -1) {
     Object.assign(tasks[idx], updates)
+    if (!updates.updatedAt) tasks[idx].updatedAt = new Date().toISOString()
     saveTasks(tasks)
+    return tasks[idx]
+  }
+  return null
+}
+
+function buildTaskRuntimeSnapshot(runtime) {
+  return {
+    ...runtime.record,
+    status: runtime.record.status,
+    output: runtime.record.output.slice(-TASK_OUTPUT_PREVIEW_LIMIT),
+    error: runtime.record.error.slice(-TASK_ERROR_PREVIEW_LIMIT),
+    updatedAt: runtime.record.updatedAt,
+    last_seq: runtime.record.last_seq,
+  }
+}
+
+function getTaskSnapshot(taskId) {
+  const runtime = taskRuntimeMap.get(taskId)
+  if (runtime) return buildTaskRuntimeSnapshot(runtime)
+  return getTask(taskId)
+}
+
+function initSse(res) {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+}
+
+function writeSseEvent(res, event, payload) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
+}
+
+function scheduleRuntimeCleanup(runtime) {
+  if (runtime.cleanupTimer) clearTimeout(runtime.cleanupTimer)
+  runtime.cleanupTimer = setTimeout(() => {
+    const latest = taskRuntimeMap.get(runtime.taskId)
+    if (latest === runtime && latest.finished) {
+      taskRuntimeMap.delete(runtime.taskId)
+    }
+  }, TASK_RUNTIME_TTL_MS)
+  runtime.cleanupTimer.unref?.()
+}
+
+function persistTaskRuntime(runtime, immediate = false) {
+  const applyPersist = () => {
+    runtime.persistTimer = null
+    updateTask(runtime.taskId, buildTaskRuntimeSnapshot(runtime))
+  }
+
+  if (immediate) {
+    if (runtime.persistTimer) {
+      clearTimeout(runtime.persistTimer)
+      runtime.persistTimer = null
+    }
+    applyPersist()
+    return
+  }
+
+  if (runtime.persistTimer) return
+  runtime.persistTimer = setTimeout(applyPersist, TASK_PERSIST_DEBOUNCE_MS)
+  runtime.persistTimer.unref?.()
+}
+
+function trimTaskEvents(runtime) {
+  if (runtime.events.length <= TASK_EVENT_BUFFER_LIMIT) return
+  runtime.events.splice(0, runtime.events.length - TASK_EVENT_BUFFER_LIMIT)
+}
+
+function cleanupTaskSubscriber(runtime, subscriber) {
+  if (!runtime || !subscriber) return
+  runtime.subscribers.delete(subscriber)
+  if (subscriber.heartbeat) clearInterval(subscriber.heartbeat)
+}
+
+function sendTaskEvent(runtime, subscriber, taskEvent) {
+  if (taskEvent.seq <= subscriber.lastSeq) return
+  try {
+    writeSseEvent(subscriber.res, taskEvent.event, taskEvent.data)
+    subscriber.lastSeq = taskEvent.seq
+    if (taskEvent.event === 'done') {
+      cleanupTaskSubscriber(runtime, subscriber)
+      subscriber.res.end()
+    }
+  } catch {
+    cleanupTaskSubscriber(runtime, subscriber)
+  }
+}
+
+function flushPendingTaskEvents(runtime, subscriber) {
+  if (!subscriber.pending.length) return
+  subscriber.pending.sort((a, b) => a.seq - b.seq)
+  const pending = subscriber.pending
+  subscriber.pending = []
+  for (const taskEvent of pending) {
+    sendTaskEvent(runtime, subscriber, taskEvent)
+  }
+}
+
+function broadcastTaskEvent(runtime, taskEvent) {
+  for (const subscriber of Array.from(runtime.subscribers)) {
+    if (taskEvent.seq <= subscriber.lastSeq) continue
+    if (subscriber.paused) {
+      subscriber.pending.push(taskEvent)
+    } else {
+      sendTaskEvent(runtime, subscriber, taskEvent)
+    }
+  }
+}
+
+function appendTaskEvent(runtime, event, payload) {
+  const seq = runtime.nextSeq++
+  runtime.record.last_seq = seq
+  runtime.record.updatedAt = new Date().toISOString()
+  const taskEvent = { event, seq, data: { taskId: runtime.taskId, seq, ...payload } }
+  runtime.events.push(taskEvent)
+  trimTaskEvents(runtime)
+  broadcastTaskEvent(runtime, taskEvent)
+  return taskEvent
+}
+
+function appendTaskChunk(runtime, chunk, isErr) {
+  if (!chunk) return null
+  if (isErr) {
+    runtime.fullError += chunk
+    runtime.record.error = runtime.fullError.slice(-TASK_ERROR_PREVIEW_LIMIT)
+  } else {
+    runtime.fullOutput += chunk
+    runtime.record.output = runtime.fullOutput.slice(-TASK_OUTPUT_PREVIEW_LIMIT)
+  }
+  persistTaskRuntime(runtime)
+  return appendTaskEvent(runtime, isErr ? 'error' : 'output', { chunk })
+}
+
+function finalizeTaskRuntime(runtime, status, exitCode) {
+  if (runtime.finished) return
+  runtime.finished = true
+  runtime.record.status = status
+  runtime.record.exitCode = exitCode
+  runtime.record.completedAt = new Date().toISOString()
+  appendTaskEvent(runtime, 'done', { status, exitCode })
+  persistTaskRuntime(runtime, true)
+  scheduleRuntimeCleanup(runtime)
+}
+
+function subscribeTaskStream(taskId, res, fromSeq = 0) {
+  const runtime = taskRuntimeMap.get(taskId)
+  if (!runtime) return null
+
+  const replayEvents = runtime.events.filter(taskEvent => taskEvent.seq > fromSeq)
+  if (runtime.finished) {
+    for (const taskEvent of replayEvents) {
+      writeSseEvent(res, taskEvent.event, taskEvent.data)
+    }
+    res.end()
+    return null
+  }
+
+  const lastReplaySeq = replayEvents.length > 0 ? replayEvents[replayEvents.length - 1].seq : fromSeq
+  const subscriber = {
+    res,
+    lastSeq: lastReplaySeq,
+    paused: true,
+    pending: [],
+    heartbeat: setInterval(() => {
+      try {
+        res.write(': heartbeat\n\n')
+      } catch {
+        cleanupTaskSubscriber(runtime, subscriber)
+      }
+    }, 15000),
+  }
+  subscriber.heartbeat.unref?.()
+
+  runtime.subscribers.add(subscriber)
+  for (const taskEvent of replayEvents) {
+    writeSseEvent(res, taskEvent.event, taskEvent.data)
+  }
+  subscriber.paused = false
+  flushPendingTaskEvents(runtime, subscriber)
+
+  const cleanup = () => cleanupTaskSubscriber(runtime, subscriber)
+  res.on('close', cleanup)
+  res.on('error', cleanup)
+  return cleanup
+}
+
+function mergeTaskSnapshot(task) {
+  const runtime = taskRuntimeMap.get(task.id)
+  return runtime ? buildTaskRuntimeSnapshot(runtime) : task
+}
+
+function extractTaskText(parsed, fallback) {
+  const fields = [parsed?.content, parsed?.output, parsed?.text, parsed?.message]
+  for (const value of fields) {
+    if (typeof value === 'string' && value) return value
+    if (Array.isArray(value)) {
+      const joined = value
+        .map(item => {
+          if (typeof item === 'string') return item
+          if (item && typeof item.text === 'string') return item.text
+          if (item && typeof item.content === 'string') return item.content
+          return ''
+        })
+        .join('')
+      if (joined) return joined
+    }
+  }
+  if (typeof fallback === 'string') return fallback
+  try {
+    return JSON.stringify(parsed)
+  } catch {
+    return String(parsed ?? '')
   }
 }
 
@@ -1600,7 +1833,7 @@ function updateTask(id, updates) {
  * @param {string} prompt
  * @param {string} cwd
  * @param {{ sessionName?: string, source?: string, tmuxSession?: string, profile?: string, agentType?: string, onChunk?: (chunk:string,isErr:boolean)=>void, onDone?: (result:object)=>void }} opts
- * @returns {{ taskId: string, kill: () => void }}
+ * @returns {{ taskId: string, runtime: any, kill: () => void }}
  */
 function runTask(prompt, cwd, opts = {}) {
   const { sessionName, source = 'web', tmuxSession, profile, agentType: reqAgentType, onChunk, onDone } = opts
@@ -1618,13 +1851,28 @@ function runTask(prompt, cwd, opts = {}) {
     output: '',
     error: '',
     createdAt,
+    updatedAt: createdAt,
     source,
     agent_type: agentType,
+    last_seq: 0,
     ...(tmuxSession && tmuxSession !== TMUX_SESSION ? { tmux_session: tmuxSession } : {}),
   }
-  const allTasks = loadTasks()
-  allTasks.push(taskRecord)
-  saveTasks(allTasks)
+  addTask(taskRecord)
+
+  const runtime = {
+    taskId,
+    record: taskRecord,
+    child: null,
+    finished: false,
+    nextSeq: 1,
+    events: [],
+    subscribers: new Set(),
+    fullOutput: '',
+    fullError: '',
+    persistTimer: null,
+    cleanupTimer: null,
+  }
+  taskRuntimeMap.set(taskId, runtime)
 
   const proxyEnv = CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY } : {}
 
@@ -1632,16 +1880,12 @@ function runTask(prompt, cwd, opts = {}) {
   const binary = resolveAgentBinary(agentType)
   if (!binary) {
     const errorMessage = `${spec.label} command not found: ${spec.binaries.join(' / ')}`
-    updateTask(taskId, {
-      status: 'error',
-      output: '',
-      error: errorMessage,
-      completedAt: new Date().toISOString(),
-      exitCode: 127,
-    })
+    appendTaskChunk(runtime, errorMessage, true)
+    persistTaskRuntime(runtime, true)
+    finalizeTaskRuntime(runtime, 'error', 127)
     onChunk?.(errorMessage, true)
     onDone?.({ taskId, status: 'error', output: '', errorOutput: errorMessage, exitCode: 127 })
-    return { taskId, kill: () => {} }
+    return { taskId, runtime, kill: () => {} }
   }
 
   const child = spawn(binary, spec.taskArgs(prompt, profile), {
@@ -1649,71 +1893,113 @@ function runTask(prompt, cwd, opts = {}) {
     env: { ...process.env, ...proxyEnv, PATH: process.env.PATH },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-
-  let output = ''
-  let errorOutput = ''
+  runtime.child = child
 
   // Codex --json 输出是 JSON lines 格式，需要解析后提取文本
   const isCodexJson = !!spec.jsonTaskOutput
   let jsonBuffer = ''
 
+  function emitTaskChunk(chunk, isErr) {
+    if (!chunk) return
+    appendTaskChunk(runtime, chunk, isErr)
+    onChunk?.(chunk, isErr)
+  }
+
+  function flushJsonBuffer(force = false) {
+    if (!isCodexJson) return
+    const lines = jsonBuffer.split('\n')
+    jsonBuffer = lines.pop() || ''
+    if (force && jsonBuffer.trim()) {
+      lines.push(jsonBuffer)
+      jsonBuffer = ''
+    }
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const parsed = JSON.parse(line)
+        const text = extractTaskText(parsed, line)
+        if (text) emitTaskChunk(text, false)
+      } catch {
+        emitTaskChunk(line, false)
+      }
+    }
+  }
+
   child.stdout.on('data', (data) => {
     const raw = data.toString()
-    output += raw
 
     if (isCodexJson) {
       jsonBuffer += raw
-      // 尝试按行解析 JSON
-      const lines = jsonBuffer.split('\n')
-      jsonBuffer = lines.pop() || '' // 保留不完整的最后一行
-      for (const line of lines) {
-        if (!line.trim()) continue
-        try {
-          const parsed = JSON.parse(line)
-          // Codex JSON 格式: { type: 'output', content: '...' } 或类似
-          const text = parsed.content || parsed.output || parsed.text || parsed.message || line
-          onChunk?.(text, false)
-        } catch {
-          // 非 JSON 行，直接转发
-          onChunk?.(line, false)
-        }
-      }
+      flushJsonBuffer(false)
     } else {
-      onChunk?.(raw, false)
+      emitTaskChunk(raw, false)
     }
   })
+
   child.stderr.on('data', (data) => {
     const chunk = data.toString()
-    errorOutput += chunk
-    onChunk?.(chunk, true)
+    emitTaskChunk(chunk, true)
   })
 
   child.on('close', (code) => {
+    flushJsonBuffer(true)
     const status = code === 0 ? 'success' : 'error'
-    updateTask(taskId, {
-      status,
-      output: output.slice(-10000),
-      error: errorOutput.slice(-1000),
-      completedAt: new Date().toISOString(),
-      exitCode: code,
-    })
-    onDone?.({ taskId, status, output, errorOutput, exitCode: code })
+    finalizeTaskRuntime(runtime, status, code)
+    onDone?.({ taskId, status, output: runtime.fullOutput, errorOutput: runtime.fullError, exitCode: code })
   })
 
-  return { taskId, kill: () => { if (!child.killed) child.kill() } }
+  return { taskId, runtime, kill: () => { if (!child.killed) child.kill() } }
 }
 
 // GET /api/tasks — 获取任务历史
 app.get('/api/tasks', authMiddleware, (req, res) => {
   const tasks = loadTasks()
-  res.json(tasks.slice(-50).reverse()) // 最近50条，倒序
+  res.json(tasks.slice(-50).reverse().map(mergeTaskSnapshot)) // 最近50条，倒序
+})
+
+// GET /api/tasks/:id — 获取单条任务快照
+app.get('/api/tasks/:id', authMiddleware, (req, res) => {
+  const task = getTaskSnapshot(req.params.id)
+  if (!task) return res.status(404).json({ error: 'task not found' })
+  res.json(task)
+})
+
+// GET /api/tasks/:id/events — 订阅任务输出，支持断线续连
+app.get('/api/tasks/:id/events', authMiddleware, (req, res) => {
+  const taskId = req.params.id
+  const task = getTaskSnapshot(taskId)
+  if (!task) return res.status(404).json({ error: 'task not found' })
+
+  initSse(res)
+  writeSseEvent(res, 'snapshot', { task })
+
+  const fromSeq = Math.max(0, Number.parseInt(String(req.query.from_seq || '0'), 10) || 0)
+  const runtime = taskRuntimeMap.get(taskId)
+  if (runtime) {
+    subscribeTaskStream(taskId, res, fromSeq)
+  } else {
+    if (task.status !== 'running') {
+      writeSseEvent(res, 'done', {
+        taskId: task.id,
+        seq: task.last_seq || fromSeq,
+        status: task.status,
+        exitCode: task.exitCode ?? null,
+      })
+    }
+    res.end()
+  }
 })
 
 // DELETE /api/tasks/:id — 删除单条任务记录
 app.delete('/api/tasks/:id', authMiddleware, (req, res) => {
+  const runtime = taskRuntimeMap.get(req.params.id)
+  if (runtime && !runtime.finished) {
+    return res.status(409).json({ error: 'task still running' })
+  }
   const tasks = loadTasks()
   const filtered = tasks.filter(t => t.id !== req.params.id)
   saveTasks(filtered)
+  if (runtime) taskRuntimeMap.delete(req.params.id)
   res.json({ ok: true })
 })
 
@@ -1735,30 +2021,23 @@ app.post('/api/tasks', authMiddleware, (req, res) => {
     }
   } catch {}
 
-  // 设置 SSE headers
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
+  initSse(res)
 
-  const createdAt = new Date().toISOString()
-  const { taskId, kill } = runTask(prompt, cwd, {
+  const { taskId, runtime } = runTask(prompt, cwd, {
     sessionName: session_name,
     source: 'web',
     tmuxSession: targetSession,
     profile,
     agentType: agent_type,
-    onChunk: (chunk, isErr) => {
-      const ev = isErr ? 'error' : 'output'
-      res.write(`event: ${ev}\ndata: ${JSON.stringify({ chunk })}\n\n`)
-    },
-    onDone: ({ taskId: tid, status, exitCode }) => {
-      res.write(`event: done\ndata: ${JSON.stringify({ taskId: tid, status, exitCode })}\n\n`)
-      res.end()
-    },
   })
 
-  res.write(`event: start\ndata: ${JSON.stringify({ taskId, session_name, prompt, createdAt })}\n\n`)
-  req.on('close', kill)
+  writeSseEvent(res, 'start', {
+    taskId,
+    session_name,
+    prompt,
+    createdAt: runtime.record.createdAt,
+  })
+  subscribeTaskStream(taskId, res, 0)
 })
 
 

@@ -219,6 +219,9 @@
   },
   "tasks": {
     "title": "Task Panel",
+    "currentTarget": "Current target",
+    "agentType": "Agent",
+    "profile": "Profile",
     "session": "Session:",
     "promptPlaceholder": "Enter task prompt and run the selected agent non-interactively...",
     "sendTask": "▶ Send Task",
@@ -229,9 +232,21 @@
     "noTasks": "No task records",
     "cancel": "Cancel",
     "requestFailed": "Request failed: {{status}}",
+    "startFailed": "Failed to start task",
     "waitingOutput": "Waiting for output...",
     "noOutput": "(no output)",
-    "notificationTitle": "agentmobile: Task Complete"
+    "notificationTitle": "agentmobile: Task Complete",
+    "resumeNotice": "Running tasks keep going after disconnects. Reopening this panel will reconnect automatically.",
+    "noActiveChannel": "No active channel available for task dispatch",
+    "deleteConfirm": "Delete this task record?",
+    "project": "Project",
+    "channel": "Channel",
+    "source": "Source",
+    "startedAt": "Started",
+    "updatedAt": "Updated",
+    "completedAt": "Completed",
+    "stderr": "Error Output",
+    "selectTask": "Select a task to view its output"
   },
   "files": {
     "title": "Uploaded Files",
