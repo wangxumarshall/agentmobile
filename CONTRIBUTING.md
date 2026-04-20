@@ -1,4 +1,4 @@
-# Contributing to Nexus4CC
+# Contributing to agentmobile4CC
 
 Thanks for taking the time to contribute. Whether it's a bug fix, new feature, or docs improvement — every contribution matters.
 
@@ -10,7 +10,7 @@ Thanks for taking the time to contribute. Whether it's a bug fix, new feature, o
 
 ```bash
 # Clone
-git clone https://github.com/librae8226/nexus4cc.git && cd nexus4cc
+git clone https://github.com/librae8226/agentmobile4cc.git && cd agentmobile4cc
 
 # Install dependencies
 npm install

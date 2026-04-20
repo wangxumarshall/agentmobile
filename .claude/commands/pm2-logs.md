@@ -1,4 +1,4 @@
-View PM2 logs for nexus.
+View PM2 logs for agentmobile.
 ```bash
-pm2 logs nexus
+pm2 logs agentmobile
 ```

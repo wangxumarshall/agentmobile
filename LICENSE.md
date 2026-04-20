@@ -1,4 +1,4 @@
-Nexus Authors: librae8226, faywong
+agentmobile Authors: librae8226, faywong
 
 This software is dual-licensed. You may choose either license below.
 
@@ -35,7 +35,7 @@ Option 2: Commercial License
 
 ================================================================================
 
-For use cases not covered by the GPL v3 — such as embedding Nexus in a
+For use cases not covered by the GPL v3 — such as embedding agentmobile in a
 proprietary product, SaaS offering, or any scenario where you prefer not to
 be subject to the copyleft requirements — a commercial license is available.
 

@@ -2,37 +2,43 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Nexus CSS Variables - Theme System */
+html,
+body,
+#root {
+  overscroll-behavior-y: none;
+}
+
+/* agentmobile CSS Variables - Theme System */
 /* Dark theme (default) */
 :root {
-  --nexus-bg: #0f172a;
-  --nexus-bg2: #1e293b;
-  --nexus-menu-bg: #1e293b;
-  --nexus-border: #334155;
-  --nexus-text: #f1f5f9;
-  --nexus-text2: #94a3b8;
-  --nexus-muted: #475569;
-  --nexus-tab-active: #1e293b;
-  --nexus-accent: #3b82f6;
-  --nexus-success: #22c55e;
-  --nexus-warning: #f59e0b;
-  --nexus-error: #ef4444;
+  --agentmobile-bg: #0f172a;
+  --agentmobile-bg2: #1e293b;
+  --agentmobile-menu-bg: #1e293b;
+  --agentmobile-border: #334155;
+  --agentmobile-text: #f1f5f9;
+  --agentmobile-text2: #94a3b8;
+  --agentmobile-muted: #475569;
+  --agentmobile-tab-active: #1e293b;
+  --agentmobile-accent: #3b82f6;
+  --agentmobile-success: #22c55e;
+  --agentmobile-warning: #f59e0b;
+  --agentmobile-error: #ef4444;
 }
 
 /* Light theme */
 :root.light {
-  --nexus-bg: #ffffff;
-  --nexus-bg2: #f1f5f9;
-  --nexus-menu-bg: #ffffff;
-  --nexus-border: #e2e8f0;
-  --nexus-text: #0f172a;
-  --nexus-text2: #64748b;
-  --nexus-muted: #94a3b8;
-  --nexus-tab-active: #f1f5f9;
-  --nexus-accent: #3b82f6;
-  --nexus-success: #22c55e;
-  --nexus-warning: #f59e0b;
-  --nexus-error: #ef4444;
+  --agentmobile-bg: #ffffff;
+  --agentmobile-bg2: #f1f5f9;
+  --agentmobile-menu-bg: #ffffff;
+  --agentmobile-border: #e2e8f0;
+  --agentmobile-text: #0f172a;
+  --agentmobile-text2: #64748b;
+  --agentmobile-muted: #94a3b8;
+  --agentmobile-tab-active: #f1f5f9;
+  --agentmobile-accent: #3b82f6;
+  --agentmobile-success: #22c55e;
+  --agentmobile-warning: #f59e0b;
+  --agentmobile-error: #ef4444;
 }
 
 /* 移动端启用触摸覆盖层（桌面端保持 none，不拦截鼠标事件） */
@@ -52,7 +58,9 @@
   z-index: 0 !important;
   height: 100% !important;
   width: 100% !important;
+  overflow-y: auto !important;
   overflow-x: hidden !important;
+  overscroll-behavior: contain;
 }
 .xterm-screen {
   height: 100% !important;

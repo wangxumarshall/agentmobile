@@ -1,6 +1,6 @@
-# CLAUDE.md — Nexus Development Standards
+# CLAUDE.md — agentmobile Development Standards
 
-Project: **Nexus** — WebSocket tmux 桥接，AI 终端移动端面板
+Project: **agentmobile** — WebSocket tmux 桥接，AI 终端移动端面板
 Anchor: `docs/NORTH-STAR.md` — 修改任何文档前先对照锚点三原则
 
 ---

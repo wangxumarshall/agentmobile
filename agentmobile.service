@@ -1,0 +1,18 @@
+[Unit]
+Description=agentmobile WebSocket tmux bridge service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/agentmobile/server.js
+WorkingDirectory=/opt/agentmobile
+Restart=on-failure
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=agentmobile
+Environment=NODE_ENV=production
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/bin:/home/ubuntu/.npm-global/bin:/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

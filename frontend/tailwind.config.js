@@ -8,19 +8,19 @@ export default {
   theme: {
     extend: {
       colors: {
-        nexus: {
-          bg: 'var(--nexus-bg)',
-          'bg-2': 'var(--nexus-bg2)',
-          'menu-bg': 'var(--nexus-menu-bg)',
-          border: 'var(--nexus-border)',
-          text: 'var(--nexus-text)',
-          'text-2': 'var(--nexus-text2)',
-          muted: 'var(--nexus-muted)',
-          'tab-active': 'var(--nexus-tab-active)',
-          accent: 'var(--nexus-accent)',
-          success: 'var(--nexus-success)',
-          warning: 'var(--nexus-warning)',
-          error: 'var(--nexus-error)',
+        agentmobile: {
+          bg: 'var(--agentmobile-bg)',
+          'bg-2': 'var(--agentmobile-bg2)',
+          'menu-bg': 'var(--agentmobile-menu-bg)',
+          border: 'var(--agentmobile-border)',
+          text: 'var(--agentmobile-text)',
+          'text-2': 'var(--agentmobile-text2)',
+          muted: 'var(--agentmobile-muted)',
+          'tab-active': 'var(--agentmobile-tab-active)',
+          accent: 'var(--agentmobile-accent)',
+          success: 'var(--agentmobile-success)',
+          warning: 'var(--agentmobile-warning)',
+          error: 'var(--agentmobile-error)',
         },
       },
       fontFamily: {

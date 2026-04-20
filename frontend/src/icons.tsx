@@ -1,4 +1,4 @@
-// Unified Icon Library — Nexus
+// Unified Icon Library — agentmobile
 // All icons: 20×20, stroke-width 2, currentColor fill
 // Usage: <Icon name="sun" className="optional-class" />
 

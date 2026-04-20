@@ -1,15 +1,15 @@
-# Nexus 高可用与 Claude Profile 启动流程分析
+# agentmobile 高可用与 Claude Profile 启动流程分析
 
 **日期**: 2026-04-02
-**分析范围**: nexus 服务防挂/自恢复机制 + nexus 目录下 Claude profile 启动链路
+**分析范围**: agentmobile 服务防挂/自恢复机制 + agentmobile 目录下 Claude profile 启动链路
 
 ---
 
 ## 1. 执行摘要
 
-1. **nexus 服务已重启 102 次**，PM2 配置过弱，且 `server.js` 缺少全局异常捕获和端口占用处理。
-2. **nexus 目录下启动 "anthropic" profile 仍走 kimi 模型**的根因：
-   - `CLAUDE_CONFIG_DIR=/mnt/c/Users/libra/work/nexus/.claude-data` 被注入到 nexus → tmux → claude 的完整链路中
+1. **agentmobile 服务已重启 102 次**，PM2 配置过弱，且 `server.js` 缺少全局异常捕获和端口占用处理。
+2. **agentmobile 目录下启动 "anthropic" profile 仍走 kimi 模型**的根因：
+   - `CLAUDE_CONFIG_DIR=/mnt/c/Users/libra/work/agentmobile/.claude-data` 被注入到 agentmobile → tmux → claude 的完整链路中
    - `.claude-data` 目录下**没有 Anthropic 登录凭证**（`.credentials.json` 缺失）
    - `data/configs/anthropic.json` 的 `API_KEY` 和 `AUTH_TOKEN` 为空
    - claude CLI 读不到官方 API 凭证，只能回退/复用本地历史中残留的 kimi 配置
@@ -17,14 +17,14 @@
 
 ---
 
-## 2. Nexus 服务启动链路与脆弱性分析
+## 2. agentmobile 服务启动链路与脆弱性分析
 
 ### 2.1 启动链路（从系统到进程）
 
 ```
 systemd (pm2-<user>.service)
   └── PM2 God Daemon
-        └── nexus (node server.js, pid 72736)
+        └── agentmobile (node server.js, pid 72736)
               └── tmux server
                     └── tmux windows (zsh / claude instances)
 ```
@@ -36,17 +36,17 @@ systemd (pm2-<user>.service)
   - `Type=forking`
   - `Restart=on-failure`
   - `ExecStart=pm2 resurrect`（从 `~/.pm2/dump.pm2` 恢复进程）
-- **现状**: 当前状态为 `inactive(dead)`。PM2 daemon 更可能来自**交互式 shell 会话启动**，而非 systemd 开机自启。这意味着如果 WSL2 彻底关机或用户会话退出，nexus **不会自动恢复**。
+- **现状**: 当前状态为 `inactive(dead)`。PM2 daemon 更可能来自**交互式 shell 会话启动**，而非 systemd 开机自启。这意味着如果 WSL2 彻底关机或用户会话退出，agentmobile **不会自动恢复**。
 
 ### 2.3 Layer 2 — PM2
 
-- **文件**: `/mnt/c/Users/libra/work/nexus/ecosystem.config.cjs`
+- **文件**: `/mnt/c/Users/libra/work/agentmobile/ecosystem.config.cjs`
 - **当前配置**:
   ```js
   module.exports = {
     apps: [{
-      name: 'nexus',
-      cwd: '/mnt/c/Users/libra/work/nexus',
+      name: 'agentmobile',
+      cwd: '/mnt/c/Users/libra/work/agentmobile',
       script: 'server.js',
       env: { PORT: 59000, NODE_ENV: 'production' },
     }],
@@ -70,30 +70,30 @@ systemd (pm2-<user>.service)
 
 ### 2.5 Layer 4 — 独立生命线（ttyd Web 终端）
 
-- **服务**: `claude-host-mnt-c-Users-libra-work-nexus.service`
+- **服务**: `claude-host-mnt-c-Users-libra-work-agentmobile.service`
 - **特点**:
-  - **完全独立于 PM2/nexus**
+  - **完全独立于 PM2/agentmobile**
   - 运行 `ttyd` 提供 Web Terminal，直连 tmux 中的 claude
   - 配置了 `Restart=always`，`RestartSec=5`
-- **意义**: 即使 nexus 完全挂掉，仍可通过浏览器访问 `55001` 端口的终端。
+- **意义**: 即使 agentmobile 完全挂掉，仍可通过浏览器访问 `55001` 端口的终端。
 
 ---
 
 ## 3. Claude Profile 启动流程（三条路径）
 
-### 路径 A：Nexus Web UI / 终端内新建窗口（最常见）
+### 路径 A：agentmobile Web UI / 终端内新建窗口（最常见）
 
 **触发点**: 前端调用 `POST /api/windows` 或 `POST /api/sessions`
 
 **后端处理** (`server.js:100-161`):
 1. 收集代理变量（`CLAUDE_PROXY=http://127.0.0.1:6789`）
 2. 构建 `shellCmd`:
-   - **带 profile**: `bash "/mnt/c/Users/libra/work/nexus/nexus-run-claude.sh" <profile> <cwd>`
+   - **带 profile**: `bash "/mnt/c/Users/libra/work/agentmobile/agentmobile-run-claude.sh" <profile> <cwd>`
    - **不带 profile**: `claude --dangerously-skip-permissions; exec zsh -i`
 3. 通过 `tmux new-window` 执行
 
-**脚本** (`nexus-run-claude.sh`):
-1. 读取 `/mnt/c/Users/libra/work/nexus/data/configs/${PROFILE}.json`
+**脚本** (`agentmobile-run-claude.sh`):
+1. 读取 `/mnt/c/Users/libra/work/agentmobile/data/configs/${PROFILE}.json`
 2. 提取 `BASE_URL`, `AUTH_TOKEN`, `API_KEY`, `DEFAULT_MODEL` 等字段
 3. **仅当字段非空时才导出**对应的 `ANTHROPIC_*` 环境变量
 4. 设置代理变量，执行 `claude --dangerously-skip-permissions`
@@ -126,7 +126,7 @@ spawn('claude', claudeArgs, {
 
 ### 路径 C：ttyd Web 终端（备用入口）
 
-**触发点**: `claude-host-mnt-c-Users-libra-work-nexus.service`
+**触发点**: `claude-host-mnt-c-Users-libra-work-agentmobile.service`
 
 **启动命令链**:
 ```
@@ -153,12 +153,12 @@ systemd
 **污染链路**:
 
 ```
-交互式 shell (带 CLAUDE_CONFIG_DIR=/mnt/c/Users/libra/work/nexus/.claude-data)
-  └── pm2 start/restart nexus
-        └── nexus 进程 (pid 72736，环境变量中已证实包含 CLAUDE_CONFIG_DIR)
+交互式 shell (带 CLAUDE_CONFIG_DIR=/mnt/c/Users/libra/work/agentmobile/.claude-data)
+  └── pm2 start/restart agentmobile
+        └── agentmobile 进程 (pid 72736，环境变量中已证实包含 CLAUDE_CONFIG_DIR)
               └── tmux new-window
                     └── tmux 窗口内的 claude 进程
-                          └── 强制读取 /mnt/c/Users/libra/work/nexus/.claude-data/ 作为配置根目录
+                          └── 强制读取 /mnt/c/Users/libra/work/agentmobile/.claude-data/ 作为配置根目录
 ```
 
 ### 4.2 凭证断层
@@ -166,11 +166,11 @@ systemd
 | 配置目录 | `.credentials.json` | 使用情况 |
 |---------|---------------------|---------|
 | `~/.claude/` | **存在**，含 Anthropic pro OAuth token (`sk-ant-oat01-...`) | 全局默认登录 |
-| `/mnt/c/Users/libra/work/nexus/.claude-data/` | **缺失** | nexus 目录下被强制使用 |
+| `/mnt/c/Users/libra/work/agentmobile/.claude-data/` | **缺失** | agentmobile 目录下被强制使用 |
 
 ### 4.3 命令执行脚本不补全凭证
 
-`nexus-run-claude.sh` 对 `anthropic.json` 的处理逻辑:
+`agentmobile-run-claude.sh` 对 `anthropic.json` 的处理逻辑:
 ```bash
 AUTH_TOKEN=$(cfg AUTH_TOKEN)  # 值为空字符串
 if [ -n "$AUTH_TOKEN" ]; then
@@ -191,14 +191,14 @@ claude CLI 在 `.claude-data` 目录下:
 
 ## 5. 修复方案
 
-### 5.1 Nexus 服务高可用
+### 5.1 agentmobile 服务高可用
 
 1. **增强 `ecosystem.config.cjs`**
    ```js
    module.exports = {
      apps: [{
-       name: 'nexus',
-       cwd: '/mnt/c/Users/libra/work/nexus',
+       name: 'agentmobile',
+       cwd: '/mnt/c/Users/libra/work/agentmobile',
        script: 'server.js',
        autorestart: true,
        max_restarts: 10,
@@ -236,18 +236,18 @@ claude CLI 在 `.claude-data` 目录下:
 
 3. **确保 systemd 真正托管 PM2**
    - 验证 `pm2-<user>.service` 状态为 `active (running)`
-   - 运行 `pm2 save` 确保 `dump.pm2` 包含 nexus
+   - 运行 `pm2 save` 确保 `dump.pm2` 包含 agentmobile
    - 如有需要，重新执行:
      ```bash
      sudo systemctl enable pm2-<user>
      sudo systemctl restart pm2-<user>
      ```
 
-### 5.2 修复 nexus 目录下 Anthropic profile 启动
+### 5.2 修复 agentmobile 目录下 Anthropic profile 启动
 
 **推荐方案 A（最简单，立竿见影）**
 
-在 `nexus-run-claude.sh` 开头增加:
+在 `agentmobile-run-claude.sh` 开头增加:
 ```bash
 unset CLAUDE_CONFIG_DIR
 ```
@@ -256,9 +256,9 @@ unset CLAUDE_CONFIG_DIR
 
 **推荐方案 B（保留本地配置根目录）**
 
-将 `~/.claude/.credentials.json` **复制或软链接**到 `/mnt/c/Users/libra/work/nexus/.claude-data/`:
+将 `~/.claude/.credentials.json` **复制或软链接**到 `/mnt/c/Users/libra/work/agentmobile/.claude-data/`:
 ```bash
-cp ~/.claude/.credentials.json /mnt/c/Users/libra/work/nexus/.claude-data/
+cp ~/.claude/.credentials.json /mnt/c/Users/libra/work/agentmobile/.claude-data/
 ```
 - 效果：`.claude-data` 目录能使用 Anthropic 官方登录
 - 风险：官方 OAuth token 刷新时，全局 `.claude/.credentials.json` 会更新，但副本不会自动同步
@@ -266,9 +266,9 @@ cp ~/.claude/.credentials.json /mnt/c/Users/libra/work/nexus/.claude-data/
 **长期方案（推荐执行一次）**
 
 执行之前编写的 `MIGRATION_PLAN.md`：
-1. 将 `.claude-data` 里的 nexus project memory、file history、session 合并到 `~/.claude/projects/...`
+1. 将 `.claude-data` 里的 agentmobile project memory、file history、session 合并到 `~/.claude/projects/...`
 2. 彻底弃用 `CLAUDE_CONFIG_DIR` 的本地注入
-3. 在启动 nexus 的 shell wrapper 中确保 `CLAUDE_CONFIG_DIR` 不被写入环境变量
+3. 在启动 agentmobile 的 shell wrapper 中确保 `CLAUDE_CONFIG_DIR` 不被写入环境变量
 
 ---
 
@@ -276,14 +276,14 @@ cp ~/.claude/.credentials.json /mnt/c/Users/libra/work/nexus/.claude-data/
 
 | 用途 | 路径 |
 |------|------|
-| nexus 后端入口 | `/mnt/c/Users/libra/work/nexus/server.js` |
-| PM2 配置文件 | `/mnt/c/Users/libra/work/nexus/ecosystem.config.cjs` |
-| nexus profile 启动脚本 | `/mnt/c/Users/libra/work/nexus/nexus-run-claude.sh` |
-| nexus profile JSON 目录 | `/mnt/c/Users/libra/work/nexus/data/configs/` |
+| agentmobile 后端入口 | `/mnt/c/Users/libra/work/agentmobile/server.js` |
+| PM2 配置文件 | `/mnt/c/Users/libra/work/agentmobile/ecosystem.config.cjs` |
+| agentmobile profile 启动脚本 | `/mnt/c/Users/libra/work/agentmobile/agentmobile-run-claude.sh` |
+| agentmobile profile JSON 目录 | `/mnt/c/Users/libra/work/agentmobile/data/configs/` |
 | systemd PM2 服务 | `/etc/systemd/system/pm2-<user>.service` |
-| ttyd 备用终端服务 | `/etc/systemd/system/claude-host-mnt-c-Users-libra-work-nexus.service` |
+| ttyd 备用终端服务 | `/etc/systemd/system/claude-host-mnt-c-Users-libra-work-agentmobile.service` |
 | ttyd 启动脚本 | `~/scripts/run-claude-host-anthropic.sh` |
 | 全局 Claude 配置 | `~/.claude/` |
 | 全局 Anthropic 凭证 | `~/.claude/.credentials.json` |
-| nexus 本地 Claude 配置 | `/mnt/c/Users/libra/work/nexus/.claude-data/` |
-| 迁移计划文档 | `/mnt/c/Users/libra/work/nexus/.claude-data/MIGRATION_PLAN.md` |
+| agentmobile 本地 Claude 配置 | `/mnt/c/Users/libra/work/agentmobile/.claude-data/` |
+| 迁移计划文档 | `/mnt/c/Users/libra/work/agentmobile/.claude-data/MIGRATION_PLAN.md` |

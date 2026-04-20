@@ -1,10 +1,10 @@
-# Nexus4CC
+# agentmobile4CC
 
 ### 你的 AI 编程助手，随身携带。
 
 [![Node](https://img.shields.io/badge/node-20+-brightgreen?style=flat-square)](https://nodejs.org/)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3%20%2F%20商业授权-blue?style=flat-square)](LICENSE.md)
-[![GitHub stars](https://img.shields.io/github/stars/librae8226/nexus4cc?style=flat-square)](https://github.com/librae8226/nexus4cc/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/librae8226/agentmobile4cc?style=flat-square)](https://github.com/librae8226/agentmobile4cc/stargazers)
 [![PRs Welcome](https://img.shields.io/badge/PRs-欢迎-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
 <!-- [English](README.md) -->
@@ -33,9 +33,9 @@
 
 ---
 
-## 为什么选 Nexus4CC？
+## 为什么选 agentmobile4CC？
 
-|                              | Anthropic Remote Control | Happy Coder | Omnara  | **nexus4cc** |
+|                              | Anthropic Remote Control | Happy Coder | Omnara  | **agentmobile4cc** |
 |------------------------------|:---:|:---:|:---:|:---:|
 | 双 AI 后端（Claude + Codex） | ❌ | ❌ | ❌ | ✅ |
 | 自托管                       | ❌ | ❌ | ⚠️ | ✅ |
@@ -69,7 +69,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/librae8226/nexus4cc.git && cd nexus4cc
+git clone https://github.com/librae8226/agentmobile4cc.git && cd agentmobile4cc
 cp .env.example .env          # 设置 JWT_SECRET、ACC_PASSWORD_HASH、WORKSPACE_ROOT
 npm install && cd frontend && npm install && npm run build && cd ..
 npm start
@@ -82,14 +82,14 @@ npm start
 
 ## 使用 AI 助手一键安装
 
-如果你是正在帮用户安装 Nexus 的 AI 助手，按以下步骤执行：
+如果你是正在帮用户安装 agentmobile 的 AI 助手，按以下步骤执行：
 
 1. 克隆本仓库并 `cd` 进入目录
 2. 运行 `node scripts/setup.js` — 自动处理依赖安装、前端构建、PM2 启动和 tmux 会话创建
-3. 验证：`pm2 status` 显示 `nexus` 在线 → 打开 `http://localhost:59000`
+3. 验证：`pm2 status` 显示 `agentmobile` 在线 → 打开 `http://localhost:59000`
 
 前置要求：Node.js 20+、tmux。PM2 不存在时会自动全局安装。  
-默认登录密码：`nexus123`（安装完成后可在 `.env` 中修改）。
+默认登录密码：`agentmobile123`（安装完成后可在 `.env` 中修改）。
 
 ---
 
@@ -114,7 +114,7 @@ npm start
 
 ## 双 AI 后端
 
-Nexus 支持 **Claude Code** 和 **OpenAI Codex CLI** 作为并行的 AI 后端。按窗口选择：
+agentmobile 支持 **Claude Code** 和 **OpenAI Codex CLI** 作为并行的 AI 后端。按窗口选择：
 
 | | Claude Code ⚡ | Codex CLI 🔷 |
 |---|---|---|
@@ -129,7 +129,7 @@ Nexus 支持 **Claude Code** 和 **OpenAI Codex CLI** 作为并行的 AI 后端�
 
 ## 安全说明
 
-Nexus 是**单用户自托管工具**，不是多租户平台。
+agentmobile 是**单用户自托管工具**，不是多租户平台。
 
 - 🔒 bcrypt（12 轮）密码哈希 + JWT（30天）
 - ⚠️ WebSocket token 通过 query string 传递 — 生产环境请启用 TLS
@@ -144,7 +144,7 @@ Nexus 是**单用户自托管工具**，不是多租户平台。
 | [QUICKSTART.md](docs/QUICKSTART.md) | 手把手配置指南 |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构设计 |
 | [ROADMAP.md](docs/ROADMAP.md) | 未来规划 |
-| [📖 Nexus 的故事](docs/story.md) | 为什么造了这个东西 |
+| [📖 agentmobile 的故事](docs/story.md) | 为什么造了这个东西 |
 
 ---
 
@@ -164,7 +164,7 @@ Nexus 是**单用户自托管工具**，不是多租户平台。
 
 这三个角色有一个共同点：**最好的想法，从来不在办公桌前产生。**
 
-Nexus4CC 诞生于我自己的真实需求：在机场、出租车、会议间隙，随时能指挥和管理我的 AI 军团在电脑上工作。现在，它是开源的，也是你的。
+agentmobile4CC 诞生于我自己的真实需求：在机场、出租车、会议间隙，随时能指挥和管理我的 AI 军团在电脑上工作。现在，它是开源的，也是你的。
 
 ---
 

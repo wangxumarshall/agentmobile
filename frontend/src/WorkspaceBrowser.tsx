@@ -559,39 +559,39 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     : null
 
   return (
-    <div className="fixed inset-0 z-[450] bg-nexus-bg flex flex-col">
+    <div className="fixed inset-0 z-[450] bg-agentmobile-bg flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border flex-shrink-0">
+      <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border flex-shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
           <Icon name="folder" size={20} />
-          <span className="text-nexus-text font-semibold text-base truncate">
+          <span className="text-agentmobile-text font-semibold text-base truncate">
             {t('workspace.title')}
           </span>
         </div>
         <button
           onClick={onClose}
-          className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md shrink-0"
+          className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md shrink-0"
         >
           <Icon name="x" size={20} />
         </button>
       </div>
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1 px-4 py-2 border-b border-nexus-border bg-nexus-bg-2 flex-shrink-0 overflow-x-auto">
+      <div className="flex items-center gap-1 px-4 py-2 border-b border-agentmobile-border bg-agentmobile-bg-2 flex-shrink-0 overflow-x-auto">
         {/* 根目录按钮 */}
         <button
           onClick={() => setCurrentPath('/')}
-          className={`text-sm whitespace-nowrap ${currentPath === '/' ? 'text-nexus-accent font-medium' : 'text-nexus-text-2 hover:text-nexus-text'}`}
+          className={`text-sm whitespace-nowrap ${currentPath === '/' ? 'text-agentmobile-accent font-medium' : 'text-agentmobile-text-2 hover:text-agentmobile-text'}`}
         >
           /
         </button>
         {/* 面包屑路径：每个片段前显示 / 分隔符 */}
         {breadcrumbs.length > 0 && breadcrumbs.map((crumb, idx) => (
           <span key={idx} className="flex items-center gap-1">
-            {idx > 0 && <span className="text-nexus-muted">/</span>}
+            {idx > 0 && <span className="text-agentmobile-muted">/</span>}
             <button
               onClick={() => navigateToBreadcrumb(idx)}
-              className={`text-sm whitespace-nowrap ${idx === breadcrumbs.length - 1 ? 'text-nexus-accent font-medium' : 'text-nexus-text-2 hover:text-nexus-text'}`}
+              className={`text-sm whitespace-nowrap ${idx === breadcrumbs.length - 1 ? 'text-agentmobile-accent font-medium' : 'text-agentmobile-text-2 hover:text-agentmobile-text'}`}
             >
               {crumb}
             </button>
@@ -600,11 +600,11 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       </div>
 
       {/* Nav toolbar: 上级目录 + 排序 */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-nexus-border flex-shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-agentmobile-border flex-shrink-0">
         {hasParent ? (
           <button
             onClick={navigateUp}
-            className="flex items-center gap-1.5 text-sm text-nexus-text-2 active:text-nexus-text cursor-pointer"
+            className="flex items-center gap-1.5 text-sm text-agentmobile-text-2 active:text-agentmobile-text cursor-pointer"
           >
             <span className="text-base">⬆️</span>
             <span>{t('workspace.parent')}</span>
@@ -618,8 +618,8 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             onClick={() => setShowSortMenu(m => !m)}
             className={`flex items-center gap-1 text-xs px-2 py-1 rounded border cursor-pointer transition-all duration-100 ${
               showSortMenu
-                ? 'bg-nexus-accent border-nexus-accent text-white'
-                : 'bg-transparent border-nexus-border text-nexus-text-2'
+                ? 'bg-agentmobile-accent border-agentmobile-accent text-white'
+                : 'bg-transparent border-agentmobile-border text-agentmobile-text-2'
             }`}
           >
             <Icon name="sort" size={13} />
@@ -629,13 +629,13 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           {showSortMenu && (
             <>
               <div className="fixed inset-0 z-[460]" onClick={() => setShowSortMenu(false)} />
-              <div className="absolute right-0 top-full mt-1 z-[470] bg-nexus-bg border border-nexus-border rounded-lg shadow-lg py-1 min-w-[120px]">
+              <div className="absolute right-0 top-full mt-1 z-[470] bg-agentmobile-bg border border-agentmobile-border rounded-lg shadow-lg py-1 min-w-[120px]">
                 {(['name', 'modified', 'size'] as const).map(key => (
                   <button
                     key={key}
                     onClick={() => { handleSort(key); setShowSortMenu(false) }}
-                    className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-2 hover:bg-nexus-bg-2 transition-colors cursor-pointer ${
-                      sortKey === key ? 'text-nexus-accent' : 'text-nexus-text'
+                    className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-2 hover:bg-agentmobile-bg-2 transition-colors cursor-pointer ${
+                      sortKey === key ? 'text-agentmobile-accent' : 'text-agentmobile-text'
                     }`}
                   >
                     <span>{t(`workspace.sort.${key}`)}</span>
@@ -651,21 +651,21 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {loading ? (
-          <div className="text-nexus-muted text-center py-10 text-sm">
+          <div className="text-agentmobile-muted text-center py-10 text-sm">
             {t('common.loading')}
           </div>
         ) : error ? (
-          <div className="text-nexus-error text-center py-10 text-sm px-4">
+          <div className="text-agentmobile-error text-center py-10 text-sm px-4">
             <Icon name="alert" size={24} className="mx-auto mb-2 opacity-60" />
             {error}
           </div>
         ) : sortedEntries.length === 0 && !hasParent ? (
-          <div className="text-nexus-muted text-center py-10 text-sm px-4">
+          <div className="text-agentmobile-muted text-center py-10 text-sm px-4">
             <div className="text-5xl mb-3">📂</div>
             <div>{t('workspace.empty')}</div>
           </div>
         ) : (
-          <div className="divide-y divide-nexus-border">
+          <div className="divide-y divide-agentmobile-border">
             {/* 目录和文件列表 */}
             {sortedEntries.map((entry) => (
               <button
@@ -714,7 +714,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                   }
                 }}
                 className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left ${
-                  selectedName === entry.name ? 'bg-nexus-bg-2' : 'hover:bg-nexus-bg-2'
+                  selectedName === entry.name ? 'bg-agentmobile-bg-2' : 'hover:bg-agentmobile-bg-2'
                 }`}
                 title={entry.type === 'dir' ? 'Double-click to enter' : 'Double-click to open'}
               >
@@ -722,16 +722,16 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                   {entry.type === 'dir' ? '📁' : getFileIcon(entry.name)}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-nexus-text text-sm overflow-hidden text-ellipsis whitespace-nowrap font-mono">
+                  <div className="text-agentmobile-text text-sm overflow-hidden text-ellipsis whitespace-nowrap font-mono">
                     {entry.name}
                   </div>
                 </div>
                 {entry.type === 'file' && (
-                  <span className="text-nexus-muted text-xs shrink-0">
+                  <span className="text-agentmobile-muted text-xs shrink-0">
                     {sizesReady && entry.size !== undefined ? formatSize(entry.size) : '—'}
                   </span>
                 )}
-                <span className="text-nexus-muted text-xs shrink-0">
+                <span className="text-agentmobile-muted text-xs shrink-0">
                   {formatTime(entry.mtime)}
                 </span>
               </button>
@@ -741,16 +741,16 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       </div>
 
       {/* Footer */}
-      <div className="px-4 py-3 border-t border-nexus-border flex-shrink-0 flex items-center justify-between gap-2">
+      <div className="px-4 py-3 border-t border-agentmobile-border flex-shrink-0 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-nexus-muted text-xs">
+          <span className="text-agentmobile-muted text-xs">
             {currentPath && t('workspace.footer', { count: entries.length })}
           </span>
           {/* 新建按钮 */}
           <div className="flex items-center gap-1.5 ml-2">
             <button
               onClick={() => setShowNewFolderDialog(true)}
-              className="flex items-center gap-1 px-2 py-1.5 bg-nexus-bg-2 hover:bg-nexus-bg-2/80 text-nexus-text text-xs rounded border border-nexus-border transition-colors"
+              className="flex items-center gap-1 px-2 py-1.5 bg-agentmobile-bg-2 hover:bg-agentmobile-bg-2/80 text-agentmobile-text text-xs rounded border border-agentmobile-border transition-colors"
               title={t('workspace.newFolder')}
             >
               <Icon name="folder" size={14} />
@@ -758,7 +758,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             </button>
             <button
               onClick={() => setShowNewFileDialog(true)}
-              className="flex items-center gap-1 px-2 py-1.5 bg-nexus-bg-2 hover:bg-nexus-bg-2/80 text-nexus-text text-xs rounded border border-nexus-border transition-colors"
+              className="flex items-center gap-1 px-2 py-1.5 bg-agentmobile-bg-2 hover:bg-agentmobile-bg-2/80 text-agentmobile-text text-xs rounded border border-agentmobile-border transition-colors"
               title={t('workspace.newFile')}
             >
               <Icon name="file" size={14} />
@@ -772,7 +772,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             {isTextFile(selectedEntry.name) && (
               <button
                 onClick={() => openEditor(selectedEntry.name)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-bg-2 hover:bg-nexus-bg-2/80 text-nexus-text text-xs rounded border border-nexus-border transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-agentmobile-bg-2 hover:bg-agentmobile-bg-2/80 text-agentmobile-text text-xs rounded border border-agentmobile-border transition-colors"
                 title={t('workspace.edit')}
               >
                 <Icon name="edit" size={14} />
@@ -781,7 +781,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             )}
             <button
               onClick={() => openFile(selectedEntry.name)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-bg-2 hover:bg-nexus-bg-2/80 text-nexus-text text-xs rounded border border-nexus-border transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-agentmobile-bg-2 hover:bg-agentmobile-bg-2/80 text-agentmobile-text text-xs rounded border border-agentmobile-border transition-colors"
               title={t('workspace.view')}
             >
               <Icon name="eye" size={14} />
@@ -789,7 +789,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             </button>
             <button
               onClick={() => downloadFile(selectedEntry.name)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-xs rounded transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-agentmobile-accent hover:bg-agentmobile-accent/90 text-white text-xs rounded transition-colors"
               title={t('workspace.download')}
             >
               <Icon name="download" size={14} />
@@ -804,7 +804,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
         <>
           <div className="fixed inset-0 z-[480]" onClick={() => setContextMenu(null)} />
           <div
-            className="fixed z-[490] bg-nexus-bg rounded-lg border border-nexus-border shadow-lg py-1 min-w-[148px]"
+            className="fixed z-[490] bg-agentmobile-bg rounded-lg border border-agentmobile-border shadow-lg py-1 min-w-[148px]"
             style={{
               left: (typeof window !== 'undefined' && contextMenu.x + 160 > window.innerWidth)
                 ? Math.max(8, contextMenu.x - 160)
@@ -814,13 +814,13 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 : contextMenu.y,
             }}
           >
-            <div className="px-3 py-1.5 text-nexus-text text-xs font-medium border-b border-nexus-border truncate" title={contextMenu.entry.name}>
+            <div className="px-3 py-1.5 text-agentmobile-text text-xs font-medium border-b border-agentmobile-border truncate" title={contextMenu.entry.name}>
               {contextMenu.entry.name}
             </div>
             {contextMenu.entry.type === 'file' && isTextFile(contextMenu.entry.name) && (
               <button
                 onClick={() => { openEditor(contextMenu.entry.name); setContextMenu(null) }}
-                className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
+                className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-text"
               >
                 <Icon name="edit" size={14} />
                 {t('workspace.edit')}
@@ -830,21 +830,21 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               <>
                 <button
                   onClick={() => { openFile(contextMenu.entry.name); setContextMenu(null) }}
-                  className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
+                  className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-text"
                 >
                   <Icon name="eye" size={14} />
                   {t('workspace.view')}
                 </button>
                 <button
                   onClick={() => { downloadFile(contextMenu.entry.name); setContextMenu(null) }}
-                  className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
+                  className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-text"
                 >
                   <Icon name="download" size={14} />
                   {t('workspace.download')}
                 </button>
                 <button
                   onClick={() => { copyEntryPath(contextMenu.entry); setContextMenu(null) }}
-                  className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
+                  className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-text"
                 >
                   <Icon name="clipboard" size={14} />
                   {t('workspace.copyPath')}
@@ -853,29 +853,29 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             )}
             <button
               onClick={() => { openRename(contextMenu.entry); setContextMenu(null) }}
-              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
+              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-text"
             >
               <Icon name="pencil" size={14} />
               {t('common.rename')}
             </button>
             <button
               onClick={() => { openPicker('copy', contextMenu.entry); setContextMenu(null) }}
-              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
+              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-text"
             >
               <Icon name="copy" size={14} />
               {t('workspace.copyEntry')}
             </button>
             <button
               onClick={() => { openPicker('move', contextMenu.entry); setContextMenu(null) }}
-              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
+              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-text"
             >
               <Icon name="arrowRight" size={14} />
               {t('workspace.moveEntry')}
             </button>
-            <div className="border-t border-nexus-border my-1" />
+            <div className="border-t border-agentmobile-border my-1" />
             <button
               onClick={() => { deleteEntry(contextMenu.entry); setContextMenu(null) }}
-              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-error"
+              className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-agentmobile-bg-2 transition-colors text-agentmobile-error"
             >
               <Icon name="trash" size={14} />
               {t('common.delete')}
@@ -887,31 +887,31 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       {/* 重命名对话框 */}
       {showRenameDialog && (
         <div className="fixed inset-0 z-[460] bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-nexus-bg rounded-lg border border-nexus-border w-full max-w-sm p-4">
-            <h3 className="text-nexus-text font-medium mb-3">{t('common.rename')}</h3>
+          <div className="bg-agentmobile-bg rounded-lg border border-agentmobile-border w-full max-w-sm p-4">
+            <h3 className="text-agentmobile-text font-medium mb-3">{t('common.rename')}</h3>
             <input
               type="text"
               value={renameName}
               onChange={(e) => setRenameName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && doRename()}
               placeholder={t('workspace.fileNamePlaceholder')}
-              className="w-full px-3 py-2 bg-nexus-bg-2 border border-nexus-border rounded text-nexus-text text-sm focus:outline-none focus:border-nexus-accent"
+              className="w-full px-3 py-2 bg-agentmobile-bg-2 border border-agentmobile-border rounded text-agentmobile-text text-sm focus:outline-none focus:border-agentmobile-accent overflow-x-auto"
               autoFocus
             />
             {renameError && (
-              <div className="text-nexus-error text-xs mt-2">{renameError}</div>
+              <div className="text-agentmobile-error text-xs mt-2">{renameError}</div>
             )}
             <div className="flex justify-end gap-2 mt-4">
               <button
                 onClick={() => { setShowRenameDialog(false); setRenameTarget(null); setRenameName(''); setRenameError('') }}
-                className="px-3 py-1.5 text-nexus-text-2 text-sm hover:text-nexus-text"
+                className="px-3 py-1.5 text-agentmobile-text-2 text-sm hover:text-agentmobile-text"
               >
                 {t('common.cancel')}
               </button>
               <button
                 onClick={doRename}
                 disabled={!renameName.trim() || renameName.trim() === renameTarget?.name || isRenaming}
-                className="px-3 py-1.5 bg-nexus-accent text-white text-sm rounded disabled:opacity-50"
+                className="px-3 py-1.5 bg-agentmobile-accent text-white text-sm rounded disabled:opacity-50"
               >
                 {isRenaming ? t('common.loading') : t('common.confirm')}
               </button>
@@ -922,39 +922,39 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
 
       {/* 复制 / 移动目标目录选择器 */}
       {pickerMode && (
-        <div className="fixed inset-0 z-[460] bg-nexus-bg flex flex-col">
-          <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border flex-shrink-0">
+        <div className="fixed inset-0 z-[460] bg-agentmobile-bg flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border flex-shrink-0">
             <div className="flex items-center gap-2.5 min-w-0">
               <Icon name="folder" size={20} />
-              <span className="text-nexus-text font-semibold text-base truncate">
+              <span className="text-agentmobile-text font-semibold text-base truncate">
                 {pickerMode === 'copy' ? t('workspace.copyEntry') : t('workspace.moveEntry')}
               </span>
             </div>
             <button
               onClick={() => { setPickerMode(null); setPickerSource(null); setPickerPath(null) }}
-              className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md shrink-0"
+              className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md shrink-0"
             >
               <Icon name="x" size={20} />
             </button>
           </div>
 
           {/* Breadcrumb */}
-          <div className="flex items-center gap-1 px-4 py-2 border-b border-nexus-border bg-nexus-bg-2 flex-shrink-0 overflow-x-auto">
+          <div className="flex items-center gap-1 px-4 py-2 border-b border-agentmobile-border bg-agentmobile-bg-2 flex-shrink-0 overflow-x-auto">
             <button
               onClick={() => setPickerPath('/')}
-              className={`text-sm whitespace-nowrap ${pickerPath === '/' ? 'text-nexus-accent font-medium' : 'text-nexus-text-2 hover:text-nexus-text'}`}
+              className={`text-sm whitespace-nowrap ${pickerPath === '/' ? 'text-agentmobile-accent font-medium' : 'text-agentmobile-text-2 hover:text-agentmobile-text'}`}
             >
               /
             </button>
             {(pickerPath && pickerPath !== '/' ? pickerPath.split('/').filter(Boolean) : []).map((crumb, idx, arr) => (
               <span key={idx} className="flex items-center gap-1">
-                {idx > 0 && <span className="text-nexus-muted">/</span>}
+                {idx > 0 && <span className="text-agentmobile-muted">/</span>}
                 <button
                   onClick={() => {
                     const path = '/' + arr.slice(0, idx + 1).join('/')
                     setPickerPath(path)
                   }}
-                  className={`text-sm whitespace-nowrap ${idx === arr.length - 1 ? 'text-nexus-accent font-medium' : 'text-nexus-text-2 hover:text-nexus-text'}`}
+                  className={`text-sm whitespace-nowrap ${idx === arr.length - 1 ? 'text-agentmobile-accent font-medium' : 'text-agentmobile-text-2 hover:text-agentmobile-text'}`}
                 >
                   {crumb}
                 </button>
@@ -963,10 +963,10 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           </div>
 
           {/* 选择当前目录按钮 */}
-          <div className="px-4 py-3 border-b border-nexus-border flex-shrink-0">
+          <div className="px-4 py-3 border-b border-agentmobile-border flex-shrink-0">
             <button
               onClick={performCopyMove}
-              className="w-full py-2 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-sm rounded transition-colors"
+              className="w-full py-2 bg-agentmobile-accent hover:bg-agentmobile-accent/90 text-white text-sm rounded transition-colors"
             >
               {pickerMode === 'copy' ? t('workspace.copyHere') : t('workspace.moveHere')}
               <span className="opacity-80 mx-1">·</span>
@@ -977,9 +977,9 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           {/* 目录列表 */}
           <div className="flex-1 overflow-y-auto">
             {pickerLoading ? (
-              <div className="text-nexus-muted text-center py-10 text-sm">{t('common.loading')}</div>
+              <div className="text-agentmobile-muted text-center py-10 text-sm">{t('common.loading')}</div>
             ) : (
-              <div className="divide-y divide-nexus-border">
+              <div className="divide-y divide-agentmobile-border">
                 {pickerPath !== '/' && pickerPath !== '' && (
                   <button
                     onClick={() => {
@@ -987,24 +987,24 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                       const idx = pickerPath.lastIndexOf('/')
                       setPickerPath(idx <= 0 ? '/' : pickerPath.slice(0, idx))
                     }}
-                    className="w-full flex items-center gap-3 px-4 py-3 transition-colors text-left hover:bg-nexus-bg-2"
+                    className="w-full flex items-center gap-3 px-4 py-3 transition-colors text-left hover:bg-agentmobile-bg-2"
                   >
                     <span className="text-xl shrink-0">⬆️</span>
-                    <span className="text-nexus-text text-sm">{t('workspace.parent')}</span>
+                    <span className="text-agentmobile-text text-sm">{t('workspace.parent')}</span>
                   </button>
                 )}
                 {pickerEntries.map((entry) => (
                   <button
                     key={entry.name}
                     onClick={() => setPickerPath(pickerPath?.endsWith('/') ? `${pickerPath}${entry.name}` : `${pickerPath}/${entry.name}`)}
-                    className="w-full flex items-center gap-3 px-4 py-3 transition-colors text-left hover:bg-nexus-bg-2"
+                    className="w-full flex items-center gap-3 px-4 py-3 transition-colors text-left hover:bg-agentmobile-bg-2"
                   >
                     <span className="text-xl shrink-0">📁</span>
-                    <span className="text-nexus-text text-sm font-mono truncate">{entry.name}</span>
+                    <span className="text-agentmobile-text text-sm font-mono truncate">{entry.name}</span>
                   </button>
                 ))}
                 {pickerEntries.length === 0 && (
-                  <div className="text-nexus-muted text-center py-10 text-sm px-4">{t('workspace.empty')}</div>
+                  <div className="text-agentmobile-muted text-center py-10 text-sm px-4">{t('workspace.empty')}</div>
                 )}
               </div>
             )}
@@ -1015,31 +1015,31 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       {/* 新建文件夹对话框 */}
       {showNewFolderDialog && (
         <div className="fixed inset-0 z-[460] bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-nexus-bg rounded-lg border border-nexus-border w-full max-w-sm p-4">
-            <h3 className="text-nexus-text font-medium mb-3">{t('workspace.newFolder')}</h3>
+          <div className="bg-agentmobile-bg rounded-lg border border-agentmobile-border w-full max-w-sm p-4">
+            <h3 className="text-agentmobile-text font-medium mb-3">{t('workspace.newFolder')}</h3>
             <input
               type="text"
               value={newItemName}
               onChange={(e) => setNewItemName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && createFolder()}
               placeholder={t('workspace.folderNamePlaceholder')}
-              className="w-full px-3 py-2 bg-nexus-bg-2 border border-nexus-border rounded text-nexus-text text-sm focus:outline-none focus:border-nexus-accent"
+              className="w-full px-3 py-2 bg-agentmobile-bg-2 border border-agentmobile-border rounded text-agentmobile-text text-sm focus:outline-none focus:border-agentmobile-accent overflow-x-auto"
               autoFocus
             />
             {newItemError && (
-              <div className="text-nexus-error text-xs mt-2">{newItemError}</div>
+              <div className="text-agentmobile-error text-xs mt-2">{newItemError}</div>
             )}
             <div className="flex justify-end gap-2 mt-4">
               <button
                 onClick={() => { setShowNewFolderDialog(false); setNewItemName(''); setNewItemError('') }}
-                className="px-3 py-1.5 text-nexus-text-2 text-sm hover:text-nexus-text"
+                className="px-3 py-1.5 text-agentmobile-text-2 text-sm hover:text-agentmobile-text"
               >
                 {t('common.cancel')}
               </button>
               <button
                 onClick={createFolder}
                 disabled={!newItemName.trim() || isCreating}
-                className="px-3 py-1.5 bg-nexus-accent text-white text-sm rounded disabled:opacity-50"
+                className="px-3 py-1.5 bg-agentmobile-accent text-white text-sm rounded disabled:opacity-50"
               >
                 {isCreating ? t('common.creating') : t('common.create')}
               </button>
@@ -1051,34 +1051,34 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       {/* 新建文件对话框 */}
       {showNewFileDialog && (
         <div className="fixed inset-0 z-[460] bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-nexus-bg rounded-lg border border-nexus-border w-full max-w-sm p-4">
-            <h3 className="text-nexus-text font-medium mb-3">{t('workspace.newFile')}</h3>
+          <div className="bg-agentmobile-bg rounded-lg border border-agentmobile-border w-full max-w-sm p-4">
+            <h3 className="text-agentmobile-text font-medium mb-3">{t('workspace.newFile')}</h3>
             <input
               type="text"
               value={newItemName}
               onChange={(e) => setNewItemName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && createFile()}
               placeholder={t('workspace.fileNamePlaceholder')}
-              className="w-full px-3 py-2 bg-nexus-bg-2 border border-nexus-border rounded text-nexus-text text-sm focus:outline-none focus:border-nexus-accent"
+              className="w-full px-3 py-2 bg-agentmobile-bg-2 border border-agentmobile-border rounded text-agentmobile-text text-sm focus:outline-none focus:border-agentmobile-accent overflow-x-auto"
               autoFocus
             />
-            <div className="text-nexus-muted text-xs mt-2">
+            <div className="text-agentmobile-muted text-xs mt-2">
               {t('workspace.fileExtensionsHint')}
             </div>
             {newItemError && (
-              <div className="text-nexus-error text-xs mt-2">{newItemError}</div>
+              <div className="text-agentmobile-error text-xs mt-2">{newItemError}</div>
             )}
             <div className="flex justify-end gap-2 mt-4">
               <button
                 onClick={() => { setShowNewFileDialog(false); setNewItemName(''); setNewItemError('') }}
-                className="px-3 py-1.5 text-nexus-text-2 text-sm hover:text-nexus-text"
+                className="px-3 py-1.5 text-agentmobile-text-2 text-sm hover:text-agentmobile-text"
               >
                 {t('common.cancel')}
               </button>
               <button
                 onClick={createFile}
                 disabled={!newItemName.trim() || isCreating}
-                className="px-3 py-1.5 bg-nexus-accent text-white text-sm rounded disabled:opacity-50"
+                className="px-3 py-1.5 bg-agentmobile-accent text-white text-sm rounded disabled:opacity-50"
               >
                 {isCreating ? t('common.creating') : t('common.create')}
               </button>
@@ -1089,12 +1089,12 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
 
       {/* 文件编辑器 */}
       {editingFile && (
-        <div className="fixed inset-0 z-[470] bg-nexus-bg flex flex-col">
+        <div className="fixed inset-0 z-[470] bg-agentmobile-bg flex flex-col">
           {/* Editor Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-nexus-border flex-shrink-0">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-agentmobile-border flex-shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               <Icon name="file" size={18} />
-              <span className="text-nexus-text font-medium text-sm truncate">
+              <span className="text-agentmobile-text font-medium text-sm truncate">
                 {editingFile.name}
               </span>
             </div>
@@ -1102,7 +1102,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               <button
                 onClick={saveFile}
                 disabled={isSaving}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-xs rounded transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-agentmobile-accent hover:bg-agentmobile-accent/90 text-white text-xs rounded transition-colors disabled:opacity-50"
               >
                 <Icon name="save" size={14} />
                 {isSaving ? t('common.saving') : t('common.save')}
@@ -1112,8 +1112,8 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                   onClick={() => setIsPreviewMode(!isPreviewMode)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
                     isPreviewMode
-                      ? 'bg-nexus-accent text-white border-nexus-accent'
-                      : 'bg-nexus-bg-2 text-nexus-text border-nexus-border hover:bg-nexus-bg-2/80'
+                      ? 'bg-agentmobile-accent text-white border-agentmobile-accent'
+                      : 'bg-agentmobile-bg-2 text-agentmobile-text border-agentmobile-border hover:bg-agentmobile-bg-2/80'
                   }`}
                 >
                   <Icon name="eye" size={14} />
@@ -1122,7 +1122,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               )}
               <button
                 onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setEditorFontSize(14) }}
-                className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
+                className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
               >
                 <Icon name="x" size={20} />
               </button>
@@ -1137,7 +1137,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           >
             {editingFile && isMarkdownFile(editingFile.name) && isPreviewMode ? (
               <div
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-y-auto"
+                className="w-full h-full bg-agentmobile-bg-2 border border-agentmobile-border rounded p-4 overflow-y-auto"
                 style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
               >
                 <MarkdownPreview content={editorContent} fontSize={editorFontSize} />
@@ -1146,20 +1146,20 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               <textarea
                 value={editorContent}
                 onChange={(e) => setEditorContent(e.target.value)}
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-3 text-nexus-text font-mono resize-none focus:outline-none focus:border-nexus-accent"
+                className="w-full h-full bg-agentmobile-bg-2 border border-agentmobile-border rounded p-3 text-agentmobile-text font-mono resize-none focus:outline-none focus:border-agentmobile-accent"
                 style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
                 spellCheck={false}
               />
             )}
           </div>
           {/* Editor Footer */}
-          <div className="px-4 py-2 border-t border-nexus-border flex items-center justify-between text-xs text-nexus-muted">
+          <div className="px-4 py-2 border-t border-agentmobile-border flex items-center justify-between text-xs text-agentmobile-muted">
             <div className="flex items-center gap-3">
               <span>{editorContent.length} {t('workspace.chars')}</span>
               {editorFontSize !== 14 && (
                 <button
                   onClick={resetEditorFontSize}
-                  className="text-nexus-accent hover:underline"
+                  className="text-agentmobile-accent hover:underline"
                 >
                   {editorFontSize}px
                 </button>
@@ -1213,30 +1213,30 @@ function MarkdownPreview({ content, fontSize = 14 }: { content: string; fontSize
 
   return (
     <div
-      className="markdown-body max-w-none text-nexus-text
-        [&_h1]:text-[2em] [&_h1]:font-bold [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-nexus-border
-        [&_h2]:text-[1.5em] [&_h2]:font-bold [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-nexus-border
+      className="markdown-body max-w-none text-agentmobile-text
+        [&_h1]:text-[2em] [&_h1]:font-bold [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-agentmobile-border
+        [&_h2]:text-[1.5em] [&_h2]:font-bold [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-agentmobile-border
         [&_h3]:text-[1.25em] [&_h3]:font-semibold [&_h3]:mt-3 [&_h3]:mb-1
         [&_h4]:text-[1.1em] [&_h4]:font-semibold [&_h4]:mt-3 [&_h4]:mb-1
         [&_h5]:text-[1em] [&_h5]:font-semibold [&_h5]:mt-2 [&_h5]:mb-1
-        [&_h6]:text-[0.9em] [&_h6]:font-semibold [&_h6]:mt-2 [&_h6]:mb-1 [&_h6]:text-nexus-text/70
+        [&_h6]:text-[0.9em] [&_h6]:font-semibold [&_h6]:mt-2 [&_h6]:mb-1 [&_h6]:text-agentmobile-text/70
         [&_p]:my-2 [&_p]:leading-relaxed
         [&_ul]:my-2 [&_ul]:pl-5 [&_ul]:list-disc
         [&_ol]:my-2 [&_ol]:pl-5 [&_ol]:list-decimal
         [&_li]:my-1
-        [&_blockquote]:my-3 [&_blockquote]:pl-3 [&_blockquote]:border-l-4 [&_blockquote]:border-nexus-accent/50 [&_blockquote]:text-nexus-text/70
-        [&_code]:font-mono [&_code]:text-[0.875em] [&_code]:bg-nexus-bg-2 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded
-        [&_pre]:my-3 [&_pre]:p-3 [&_pre]:bg-nexus-bg-2 [&_pre]:rounded [&_pre]:overflow-x-auto
+        [&_blockquote]:my-3 [&_blockquote]:pl-3 [&_blockquote]:border-l-4 [&_blockquote]:border-agentmobile-accent/50 [&_blockquote]:text-agentmobile-text/70
+        [&_code]:font-mono [&_code]:text-[0.875em] [&_code]:bg-agentmobile-bg-2 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded
+        [&_pre]:my-3 [&_pre]:p-3 [&_pre]:bg-agentmobile-bg-2 [&_pre]:rounded [&_pre]:overflow-x-auto
         [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:rounded-none
-        [&_hr]:my-4 [&_hr]:border-nexus-border
-        [&_a]:text-nexus-accent [&_a]:underline
+        [&_hr]:my-4 [&_hr]:border-agentmobile-border
+        [&_a]:text-agentmobile-accent [&_a]:underline
         [&_img]:max-w-full [&_img]:rounded
         [&_strong]:font-semibold
         [&_table]:w-full [&_table]:border-collapse [&_table]:my-3
-        [&_th]:border [&_th]:border-nexus-border [&_th]:bg-nexus-bg-2 [&_th]:p-2 [&_th]:text-left [&_th]:text-nexus-text
-        [&_td]:border [&_td]:border-nexus-border [&_td]:p-2 [&_td]:text-nexus-text
-        [&_tr:nth-child(even)]:bg-nexus-bg-2/50
-        [&_input[type='checkbox']]:mr-2 [&_input[type='checkbox']]:accent-nexus-accent"
+        [&_th]:border [&_th]:border-agentmobile-border [&_th]:bg-agentmobile-bg-2 [&_th]:p-2 [&_th]:text-left [&_th]:text-agentmobile-text
+        [&_td]:border [&_td]:border-agentmobile-border [&_td]:p-2 [&_td]:text-agentmobile-text
+        [&_tr:nth-child(even)]:bg-agentmobile-bg-2/50
+        [&_input[type='checkbox']]:mr-2 [&_input[type='checkbox']]:accent-agentmobile-accent"
       style={{ fontSize: `${fontSize}px`, lineHeight: '1.6' }}
       dangerouslySetInnerHTML={{ __html: cleanHtml }}
     />

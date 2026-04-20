@@ -1,4 +1,4 @@
-# Quick Start — 从零开始运行 Nexus
+# Quick Start — 从零开始运行 agentmobile
 
 > 预计时间：10-15 分钟  
 > 适用平台：Linux / WSL2 / macOS
@@ -43,8 +43,8 @@ codex login
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/user/nexus4cc.git
-cd nexus4cc
+git clone https://github.com/user/agentmobile4cc.git
+cd agentmobile4cc
 
 # 2. 安装依赖
 npm install
@@ -65,10 +65,10 @@ cp .env.example .env
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `JWT_SECRET` | 已预填 | JWT 签名密钥 |
-| `ACC_PASSWORD_HASH` | 已预填 | 默认密码：**`nexus123`** |
+| `ACC_PASSWORD_HASH` | 已预填 | 默认密码：**`agentmobile`** |
 | `TMUX_SESSION` | `main` | tmux 会话名 |
 | `WORKSPACE_ROOT` | `/home` | AI agent 能访问的目录根 |
-| `PORT` | `59000` | 服务端口 |
+| `PORT` | `5000` | 服务端口 |
 | `CLAUDE_PROXY` | 空 | Claude Code 专用代理 |
 | `CODEX_PROXY` | 空 | Codex CLI 专用代理 |
 | `OPENAI_API_KEY` | 空 | 用于自动创建 codex profile |
@@ -93,7 +93,7 @@ CODEX_PROXY=http://127.0.0.1:6789   # Codex CLI 代理
 
 ## 第三步：创建 AI Agent Profile（关键步骤）
 
-**这是新用户最容易遗漏的一步。** Nexus 通过 `data/configs/` 下的 JSON 文件来管理不同的 AI agent 配置。
+**这是新用户最容易遗漏的一步。** agentmobile 通过 `data/configs/` 下的 JSON 文件来管理不同的 AI agent 配置。
 
 ### 3.1 创建 configs 目录
 
@@ -214,20 +214,17 @@ cd frontend && npm run dev
 # 直接启动
 npm start
 
-# 或使用 PM2 守护进程
-pm2 start ecosystem.config.cjs
+# 推荐：自动安装并配置服务（优先 systemd，失败时回退到 PM2）
+node scripts/setup.js
 
-# 查看状态
-pm2 status
-
-# 查看日志
-pm2 logs nexus
+# 或手动直接启动
+npm start
 ```
 
 服务启动后，访问：
 
 ```
-http://localhost:59000
+http://localhost:5000
 ```
 
 ---
@@ -236,7 +233,7 @@ http://localhost:59000
 
 ### 1. 登录
 
-首次访问需要输入密码。如果使用默认配置，密码是 **`nexus123`**。
+首次访问需要输入密码。如果使用默认配置，密码是 **`agentmobile`**。
 
 ### 2. 创建工作区
 
@@ -254,7 +251,7 @@ http://localhost:59000
 **Claude 会话**（如果你选择了 Claude）：
 ```
 ╔══════════════════════════════════════════╗
-║  Nexus · Claude Session
+║  agentmobile · Claude Session
 ╗
 ║  Project : /home/yourname/workspace/my-project
 ╚══════════════════════════════════════════╝
@@ -263,7 +260,7 @@ http://localhost:59000
 **Codex 会话**（如果你选择了 Codex）：
 ```
 ╔══════════════════════════════════════════╗
-║  Nexus · Codex Session
+║  agentmobile · Codex Session
 ║  Profile : OpenAI Codex
 ║  Project : /home/yourname/workspace/my-project
 ║  API     : OpenAI (官方)
@@ -279,7 +276,7 @@ http://localhost:59000
 ip addr show | grep "inet " | head -1
 
 # 手机浏览器访问
-http://192.168.x.x:59000
+http://192.168.x.x:5000
 ```
 
 **远程访问建议：** 使用 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) 或 [Tailscale](https://tailscale.com/)，避免暴露端口。
@@ -304,8 +301,8 @@ http://192.168.x.x:59000
 ### Q: 手机访问不了
 
 - 确认手机和电脑在同一网络
-- 检查防火墙：`sudo ufw allow 59000`
-- 或者使用 SSH 隧道：`ssh -L 59000:localhost:59000 your-server`
+- 检查防火墙：`sudo ufw allow 5000`
+- 或者使用 SSH 隧道：`ssh -L 5000:localhost:5000 your-server`
 
 ---
 
@@ -317,4 +314,4 @@ http://192.168.x.x:59000
 
 ---
 
-*有问题？提交 [Issue](https://github.com/user/nexus4cc/issues) 或查看 [Troubleshooting](TROUBLESHOOTING.md)*
+*有问题？提交 [Issue](https://github.com/user/agentmobile4cc/issues) 或查看 [Troubleshooting](TROUBLESHOOTING.md)*

@@ -165,15 +165,15 @@ export default function FilePanel({ token, session, onClose }: Props) {
   const totalFiles = groups.reduce((sum, g) => sum + g.files.length, 0)
 
   return (
-    <div className="fixed inset-0 z-[450] bg-nexus-bg flex flex-col">
+    <div className="fixed inset-0 z-[450] bg-agentmobile-bg flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border flex-shrink-0">
+      <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border flex-shrink-0">
         <div className="flex items-center gap-2.5">
           <Icon name="folder" size={20} />
-          <span className="text-nexus-text font-semibold text-base">
+          <span className="text-agentmobile-text font-semibold text-base">
             {t('files.title')}
           </span>
-          <span className="text-nexus-muted text-[13px] bg-nexus-bg-2 px-2 py-0.5 rounded-[10px]">
+          <span className="text-agentmobile-muted text-[13px] bg-agentmobile-bg-2 px-2 py-0.5 rounded-[10px]">
             {totalFiles}
           </span>
         </div>
@@ -181,7 +181,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
           {totalFiles > 0 && (
             <button
               onClick={deleteAllFiles}
-              className="bg-transparent border border-nexus-error text-nexus-error cursor-pointer px-2.5 py-1.5 flex items-center gap-1 rounded-md text-xs font-medium transition-all duration-100 active:scale-95"
+              className="bg-transparent border border-agentmobile-error text-agentmobile-error cursor-pointer px-2.5 py-1.5 flex items-center gap-1 rounded-md text-xs font-medium transition-all duration-100 active:scale-95"
               title="清除所有文件"
             >
               <Icon name="trash" size={14} />
@@ -190,7 +190,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
           )}
           <button
             onClick={onClose}
-            className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
+            className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
           >
             <Icon name="x" size={20} />
           </button>
@@ -198,16 +198,16 @@ export default function FilePanel({ token, session, onClose }: Props) {
       </div>
 
       {/* Sort Bar */}
-      <div className="flex items-center gap-1.5 px-4 py-2 border-b border-nexus-border flex-shrink-0">
-        <span className="text-nexus-muted text-xs mr-0.5">{t('files.sortBy')}</span>
+      <div className="flex items-center gap-1.5 px-4 py-2 border-b border-agentmobile-border flex-shrink-0">
+        <span className="text-agentmobile-muted text-xs mr-0.5">{t('files.sortBy')}</span>
         {(['name', 'modified', 'size'] as SortKey[]).map(key => (
           <button
             key={key}
             onClick={() => handleSort(key)}
             className={`text-xs px-2 py-1 rounded-md flex items-center gap-0.5 transition-all duration-100 cursor-pointer border ${
               sortKey === key
-                ? 'bg-nexus-accent border-nexus-accent text-white'
-                : 'bg-transparent border-nexus-border text-nexus-text-2'
+                ? 'bg-agentmobile-accent border-agentmobile-accent text-white'
+                : 'bg-transparent border-agentmobile-border text-agentmobile-text-2'
             }`}
           >
             {t(`files.sort.${key}`)}
@@ -219,11 +219,11 @@ export default function FilePanel({ token, session, onClose }: Props) {
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {loading ? (
-          <div className="text-nexus-muted text-center py-10 text-sm">
+          <div className="text-agentmobile-muted text-center py-10 text-sm">
             {t('common.loading')}
           </div>
         ) : groups.length === 0 ? (
-          <div className="text-nexus-muted text-center py-10 text-sm">
+          <div className="text-agentmobile-muted text-center py-10 text-sm">
             <div className="text-5xl mb-3">📁</div>
             <div>{t('files.noFiles')}</div>
             <div className="text-xs mt-2 opacity-70">
@@ -231,7 +231,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
             </div>
           </div>
         ) : sortedFiles ? (
-          <div className="bg-nexus-bg-2 rounded-lg border border-nexus-border overflow-hidden">
+          <div className="bg-agentmobile-bg-2 rounded-lg border border-agentmobile-border overflow-hidden">
             {sortedFiles.map((file, idx) => {
               const fullPath = file.fullPath
               const isCopied = copiedUrl === file.url
@@ -239,23 +239,23 @@ export default function FilePanel({ token, session, onClose }: Props) {
               return (
                 <div
                   key={`${file.date}/${file.name}`}
-                  className={`flex items-center gap-2.5 px-3 py-2.5 ${idx < sortedFiles.length - 1 ? 'border-b border-nexus-border' : ''}`}
+                  className={`flex items-center gap-2.5 px-3 py-2.5 ${idx < sortedFiles.length - 1 ? 'border-b border-agentmobile-border' : ''}`}
                 >
                   <span className="text-base">{isImage ? '🖼️' : '📄'}</span>
                   <div className="flex-1 min-w-0">
                     <div
-                      className="text-nexus-text text-[13px] overflow-hidden text-ellipsis whitespace-nowrap font-mono"
+                      className="text-agentmobile-text text-[13px] overflow-hidden text-ellipsis whitespace-nowrap font-mono"
                       title={file.name}
                     >
                       {file.name}
                     </div>
-                    <div className="text-nexus-muted text-[11px] mt-0.5">
+                    <div className="text-agentmobile-muted text-[11px] mt-0.5">
                       {formatSize(file.size)} · {formatDate(file.date)}
                     </div>
                   </div>
                   <button
                     onClick={() => copyToClipboard(file.url, fullPath)}
-                    className={`rounded-md cursor-pointer text-xs flex items-center gap-1 transition-all duration-150 ${isCopied ? 'bg-nexus-success border-none text-white px-2.5 py-1.5' : 'bg-transparent border border-nexus-border text-nexus-text-2 px-2.5 py-1.5'}`}
+                    className={`rounded-md cursor-pointer text-xs flex items-center gap-1 transition-all duration-150 ${isCopied ? 'bg-agentmobile-success border-none text-white px-2.5 py-1.5' : 'bg-transparent border border-agentmobile-border text-agentmobile-text-2 px-2.5 py-1.5'}`}
                     title={t('files.copyPath')}
                   >
                     <Icon name={isCopied ? 'check' : 'copy'} size={14} />
@@ -263,7 +263,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
                   </button>
                   <button
                     onClick={() => deleteFile(file.fullPath, file.name)}
-                    className="bg-transparent border-none text-nexus-error cursor-pointer p-1.5 flex items-center justify-center opacity-60"
+                    className="bg-transparent border-none text-agentmobile-error cursor-pointer p-1.5 flex items-center justify-center opacity-60"
                     title={t('common.delete')}
                   >
                     <Icon name="trash" size={16} />
@@ -275,11 +275,11 @@ export default function FilePanel({ token, session, onClose }: Props) {
         ) : (
           groups.map((group) => (
             <div key={group.date} className="mb-5">
-              <div className="text-nexus-muted text-xs font-semibold uppercase tracking-wide mb-2 flex items-center gap-1.5">
+              <div className="text-agentmobile-muted text-xs font-semibold uppercase tracking-wide mb-2 flex items-center gap-1.5">
                 <span>{formatDate(group.date)}</span>
                 <span className="opacity-50">({group.files.length})</span>
               </div>
-              <div className="bg-nexus-bg-2 rounded-lg border border-nexus-border overflow-hidden">
+              <div className="bg-agentmobile-bg-2 rounded-lg border border-agentmobile-border overflow-hidden">
                 {group.files.map((file, idx) => {
                   const fullPath = file.fullPath
                   const isCopied = copiedUrl === file.url
@@ -287,23 +287,23 @@ export default function FilePanel({ token, session, onClose }: Props) {
                   return (
                     <div
                       key={file.name}
-                      className={`flex items-center gap-2.5 px-3 py-2.5 ${idx < group.files.length - 1 ? 'border-b border-nexus-border' : ''}`}
+                      className={`flex items-center gap-2.5 px-3 py-2.5 ${idx < group.files.length - 1 ? 'border-b border-agentmobile-border' : ''}`}
                     >
                       <span className="text-base">{isImage ? '🖼️' : '📄'}</span>
                       <div className="flex-1 min-w-0">
                         <div
-                          className="text-nexus-text text-[13px] overflow-hidden text-ellipsis whitespace-nowrap font-mono"
+                          className="text-agentmobile-text text-[13px] overflow-hidden text-ellipsis whitespace-nowrap font-mono"
                           title={file.name}
                         >
                           {file.name}
                         </div>
-                        <div className="text-nexus-muted text-[11px] mt-0.5">
+                        <div className="text-agentmobile-muted text-[11px] mt-0.5">
                           {formatSize(file.size)}
                         </div>
                       </div>
                       <button
                         onClick={() => copyToClipboard(file.url, fullPath)}
-                        className={`rounded-md cursor-pointer text-xs flex items-center gap-1 transition-all duration-150 ${isCopied ? 'bg-nexus-success border-none text-white px-2.5 py-1.5' : 'bg-transparent border border-nexus-border text-nexus-text-2 px-2.5 py-1.5'}`}
+                        className={`rounded-md cursor-pointer text-xs flex items-center gap-1 transition-all duration-150 ${isCopied ? 'bg-agentmobile-success border-none text-white px-2.5 py-1.5' : 'bg-transparent border border-agentmobile-border text-agentmobile-text-2 px-2.5 py-1.5'}`}
                         title={t('files.copyPath')}
                       >
                         <Icon name={isCopied ? 'check' : 'copy'} size={14} />
@@ -311,7 +311,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
                       </button>
                       <button
                         onClick={() => deleteFile(file.fullPath, file.name)}
-                        className="bg-transparent border-none text-nexus-error cursor-pointer p-1.5 flex items-center justify-center opacity-60"
+                        className="bg-transparent border-none text-agentmobile-error cursor-pointer p-1.5 flex items-center justify-center opacity-60"
                         title={t('common.delete')}
                       >
                         <Icon name="trash" size={16} />
@@ -326,7 +326,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
       </div>
 
       {/* Footer hint */}
-      <div className="px-4 py-3 border-t border-nexus-border text-nexus-muted text-xs text-center">
+      <div className="px-4 py-3 border-t border-agentmobile-border text-agentmobile-muted text-xs text-center">
         {t('files.footerNote')}
       </div>
     </div>

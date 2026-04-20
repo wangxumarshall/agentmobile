@@ -1,10 +1,10 @@
-# Nexus4CC
+# agentmobile4CC
 
 ### Your AI Coding Agent, Everywhere.
 
 [![Node](https://img.shields.io/badge/node-20+-brightgreen?style=flat-square)](https://nodejs.org/)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3%20%2F%20Commercial-blue?style=flat-square)](LICENSE.md)
-[![GitHub stars](https://img.shields.io/github/stars/librae8226/nexus4cc?style=flat-square)](https://github.com/librae8226/nexus4cc/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/librae8226/agentmobile4cc?style=flat-square)](https://github.com/librae8226/agentmobile4cc/stargazers)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
 [🇨🇳 中文](README_CN.md)
@@ -33,9 +33,9 @@
 
 ---
 
-## Why Nexus 4 CC?
+## Why agentmobile 4 CC?
 
-|                          | Anthropic Remote Control | Happy Coder | Omnara  | **nexus4cc** |
+|                          | Anthropic Remote Control | Happy Coder | Omnara  | **agentmobile4cc** |
 |--------------------------|:---:|:---:|:---:|:---:|
 | Dual AI backend (Claude + Codex) | ❌ | ❌ | ❌ | ✅ |
 | Self-hosted              | ❌ | ❌ | ⚠️ | ✅ |
@@ -69,27 +69,30 @@
 ## Quick Start
 
 ```bash
-git clone https://github.com/librae8226/nexus4cc.git && cd nexus4cc
+git clone https://github.com/librae8226/agentmobile4cc.git && cd agentmobile4cc
 cp .env.example .env          # set JWT_SECRET, ACC_PASSWORD_HASH, WORKSPACE_ROOT
 npm install && cd frontend && npm install && npm run build && cd ..
 npm start
-# Open http://localhost:59000 on any device 🚀
+# Open http://localhost:5000 on any device 🚀
 ```
 
-> Full setup guide including Claude profile config, PM2, and mobile access: **[QUICKSTART.md →](docs/QUICKSTART.md)**
+> Full setup guide including Claude profile config, service install, and mobile access: **[QUICKSTART.md →](docs/QUICKSTART.md)**
 
 ---
 
 ## Install with an AI Assistant
 
-If you're an AI assistant helping a user install Nexus, follow this path:
+If you're an AI assistant helping a user install agentmobile, follow this path:
 
 1. Clone this repo and `cd` into it
-2. Run `node scripts/setup.js` — handles deps, frontend build, PM2, and first tmux session
-3. Verify: `pm2 status` shows `nexus` online → open `http://localhost:59000`
+2. Run `node scripts/setup.js` — handles deps, frontend build, service install, and first tmux session
+3. Verify:
+   - `systemctl status agentmobile` if systemd is available
+   - `pm2 status` if setup fell back to PM2
+   - then open `http://localhost:5000`
 
-Prerequisites: Node.js 20+, tmux. PM2 is installed automatically if missing.  
-Default login password: `nexus123` (user can change it in `.env` after setup).
+Prerequisites: Node.js 20+, tmux. Setup prefers `systemd` and automatically falls back to PM2 when `systemd` is unavailable.  
+Default login password: `agentmobile` (user can change it in `.env` after setup).
 
 ---
 
@@ -105,7 +108,7 @@ Expose securely without port forwarding via [Cloudflare Tunnel](https://develope
 |---|---|---|
 | Node.js | 20+ | |
 | tmux | any recent | |
-| PM2 | any recent | auto-installed by `setup.js` |
+| PM2 | any recent | auto-installed by `setup.js` when fallback is needed |
 | **Claude Code** | latest | for Claude backend |
 | **Codex CLI** | latest | for Codex backend (optional) |
 | OS | Linux / WSL2 | |
@@ -114,7 +117,7 @@ Expose securely without port forwarding via [Cloudflare Tunnel](https://develope
 
 ## Security
 
-Nexus is a **single-user, self-hosted tool** — not a multi-tenant platform.
+agentmobile is a **single-user, self-hosted tool** — not a multi-tenant platform.
 
 - 🔒 bcrypt (12 rounds) password hash + JWT (30d)
 - ⚠️ WebSocket token passed via query string — enable TLS in production
@@ -124,7 +127,7 @@ Nexus is a **single-user, self-hosted tool** — not a multi-tenant platform.
 
 ## Dual AI Backend
 
-Nexus supports **Claude Code** and **OpenAI Codex CLI** as parallel AI backends. Choose per window:
+agentmobile supports **Claude Code** and **OpenAI Codex CLI** as parallel AI backends. Choose per window:
 
 | | Claude Code ⚡ | Codex CLI 🔷 |
 |---|---|---|
@@ -145,7 +148,7 @@ Both backends share the same tmux bridge, file browser, project management, and 
 | [QUICKSTART.md](docs/QUICKSTART.md) | Step-by-step setup guide |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design |
 | [ROADMAP.md](docs/ROADMAP.md) | What's next |
-| [📖 The story behind Nexus](docs/story.md) | Why this was built |
+| [📖 The story behind agentmobile](docs/story.md) | Why this was built |
 
 ---
 

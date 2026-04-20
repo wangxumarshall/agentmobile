@@ -1,5 +1,5 @@
 #!/bin/bash
-# Nexus 启动脚本
+# agentmobile 启动脚本
 # 在宿主机（WSL2）上直接运行: bash start.sh
 # 或: PORT=5000 bash start.sh
 
@@ -34,5 +34,5 @@ set +a
 
 export PORT="${PORT:-5000}"
 
-echo "启动 Nexus on :$PORT ..."
+echo "启动 agentmobile on :$PORT ..."
 exec node server.js

@@ -1,4 +1,4 @@
-Restart nexus service.
+Restart agentmobile service.
 ```bash
-pm2 restart nexus
+pm2 restart agentmobile
 ```

@@ -18,7 +18,7 @@ i18n
     detection: {
       order: ['localStorage', 'navigator'],
       caches: ['localStorage'],
-      lookupLocalStorage: 'nexus_language',
+      lookupLocalStorage: 'agentmobile_language',
     },
     interpolation: { escapeValue: false },
   })

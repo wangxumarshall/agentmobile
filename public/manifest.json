@@ -1,6 +1,6 @@
 {
-  "name": "Nexus Terminal",
-  "short_name": "Nexus",
+  "name": "agentmobile Terminal",
+  "short_name": "agentmobile",
   "description": "AI Agent 终端面板",
   "start_url": "/",
   "display": "standalone",

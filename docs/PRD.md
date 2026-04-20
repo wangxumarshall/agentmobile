@@ -1,4 +1,4 @@
-# PRD — Nexus AI 终端面板 **(v1 Complete / 已完成)**
+# PRD — agentmobile AI 终端面板 **(v1 Complete / 已完成)**
 
 **版本**: v1.0.0  **状态**: Complete  **锚点**: `docs/NORTH-STAR.md`  **完成日期**: 2026-04-01
 
@@ -135,7 +135,7 @@ POST /api/windows
 │  会话管理              [×]   │
 ├─────────────────────────────┤
 │                             │
-│  📂 nexus ~/work/nexus      │  ← 标题：当前 Project 名+路径
+│  📂 agentmobile ~/work/agentmobile      │  ← 标题：当前 Project 名+路径
 │  ─────────────────────────  │
 │  #general        ●         │  ← Channel 列表（tmux windows）
 │  #backend        ○         │
@@ -146,7 +146,7 @@ POST /api/windows
 │  ═════════════════════════  │  ← 粗分隔线
 │                             │
 │  📁 Projects               │
-│  ● nexus           (3)     │  ← Project 列表（tmux sessions）
+│  ● agentmobile           (3)     │  ← Project 列表（tmux sessions）
 │  ○ my-app          (1)     │
 │  ○ backend-api     (2)     │
 │                             │
@@ -173,7 +173,7 @@ Channel 列表项（带 # 前缀）：
   #shell       💤    ← 灰色 = shell 状态
 
 Project 列表项：
-  ● nexus      (3)   ← 蓝色高亮 = 当前激活，(3)=3个channel
+  ● agentmobile      (3)   ← 蓝色高亮 = 当前激活，(3)=3个channel
   ○ my-app     (1)   ← 未激活，有1个channel
   ○ backend-api (2)  ← 未激活，有2个channel
   ○ legacy          ← 无括号 = 该session没有窗口（异常）
@@ -245,11 +245,11 @@ DELETE /api/channels/:index       → 关闭 Channel（已有接口）
 
 ```
 第一个 Channel（创建 Project 时）：
-  - 默认：目录名（如 nexus）
+  - 默认：目录名（如 agentmobile）
   - 或：#general
 
 后续 Channels：
-  - 默认：目录名-序号（如 nexus-1, nexus-2）
+  - 默认：目录名-序号（如 agentmobile-1, agentmobile-2）
   - 用户可重命名（重命名 tmux window）
 ```
 
@@ -268,7 +268,7 @@ Project 列表区域：
 **当前 Project 无 Channel（异常情况）：**
 ```
 Channel 列表区域：
-  "📂 nexus ~/work/nexus"
+  "📂 agentmobile ~/work/agentmobile"
   「该 Project 没有 Channel」
   [+ 创建第一个 Channel]
 ```
@@ -292,13 +292,13 @@ Channel 列表区域：
 
 /* Project 列表区域（下部）*/
 - 标题栏："📁 Projects"
-- 背景：var(--nexus-bg2) - 稍暗，与 Channel 区形成层次
+- 背景：var(--agentmobile-bg2) - 稍暗，与 Channel 区形成层次
 - Project 项：简洁显示，名称 + 右侧 channel 计数
 - +按钮：在区域底部
 
 /* 分隔线 */
-- Channel 区标题下：1px solid var(--nexus-border)
-- 两区域之间：2px solid var(--nexus-border)
+- Channel 区标题下：1px solid var(--agentmobile-border)
+- 两区域之间：2px solid var(--agentmobile-border)
 ```
 
 ### 数据结构（前端状态）

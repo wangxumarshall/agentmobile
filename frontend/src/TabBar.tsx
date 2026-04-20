@@ -120,8 +120,8 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
     <>
       <div style={{
         ...s.container,
-        borderBottom: position !== 'bottom' ? '1px solid var(--nexus-border)' : 'none',
-        borderTop: position === 'bottom' ? '1px solid var(--nexus-border)' : 'none',
+        borderBottom: position !== 'bottom' ? '1px solid var(--agentmobile-border)' : 'none',
+        borderTop: position === 'bottom' ? '1px solid var(--agentmobile-border)' : 'none',
       }}>
         <div ref={scrollRef} style={s.tabs}>
           {windows.map(item => (
@@ -200,8 +200,8 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
             top: position !== 'bottom' ? 44 : undefined,
             bottom: position === 'bottom' ? 44 : undefined,
             right: 0,
-            background: 'var(--nexus-menu-bg)',
-            border: '1px solid var(--nexus-border)',
+            background: 'var(--agentmobile-menu-bg)',
+            border: '1px solid var(--agentmobile-border)',
             borderRadius: position !== 'bottom' ? '0 0 0 8px' : '8px 0 0 0',
             zIndex: 201,
             minWidth: 160,
@@ -213,11 +213,11 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
                 style={{
                   padding: '12px 16px',
                   cursor: 'pointer',
-                  background: sess === activeSession ? 'var(--nexus-tab-active)' : 'transparent',
-                  color: sess === activeSession ? 'var(--nexus-text)' : 'var(--nexus-text2)',
+                  background: sess === activeSession ? 'var(--agentmobile-tab-active)' : 'transparent',
+                  color: sess === activeSession ? 'var(--agentmobile-text)' : 'var(--agentmobile-text2)',
                   fontSize: 14,
                   fontFamily: 'Menlo, Monaco, "Cascadia Code", "Fira Code", monospace',
-                  borderBottom: '1px solid var(--nexus-border)',
+                  borderBottom: '1px solid var(--agentmobile-border)',
                 }}
                 onClick={() => {
                   onSwitchSession?.(sess)
@@ -237,8 +237,8 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
           bottom: position === 'bottom' ? 44 : undefined,
           left: '50%',
           transform: 'translateX(-50%)',
-          background: 'var(--nexus-menu-bg)',
-          border: '1px solid var(--nexus-border)',
+          background: 'var(--agentmobile-menu-bg)',
+          border: '1px solid var(--agentmobile-border)',
           borderRadius: 8,
           padding: '8px 12px',
           maxWidth: 600,
@@ -247,14 +247,14 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
           zIndex: 300,
           boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
         }}>
-          <div style={{ color: 'var(--nexus-text2)', fontSize: 11, marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ color: 'var(--agentmobile-text2)', fontSize: 11, marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
             <span>最后输出 ({windows.find(w => w.index === hoverIndex)?.name})</span>
             {windowOutputs[hoverIndex].clients > 0 && (
-              <span style={{ color: 'var(--nexus-success)' }}>● 在线</span>
+              <span style={{ color: 'var(--agentmobile-success)' }}>● 在线</span>
             )}
           </div>
           <pre style={{
-            color: 'var(--nexus-text)',
+            color: 'var(--agentmobile-text)',
             fontSize: 12,
             fontFamily: 'Menlo, Monaco, "Cascadia Code", "Fira Code", monospace',
             margin: 0,
@@ -303,8 +303,8 @@ const s: Record<string, React.CSSProperties> = {
   container: {
     display: 'flex',
     alignItems: 'center',
-    background: 'var(--nexus-bg)',
-    borderBottom: '1px solid var(--nexus-border)',
+    background: 'var(--agentmobile-bg)',
+    borderBottom: '1px solid var(--agentmobile-border)',
     flexShrink: 0,
     height: 44,
   },
@@ -339,10 +339,10 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   tabActive: {
-    background: 'var(--nexus-tab-active)',
+    background: 'var(--agentmobile-tab-active)',
   },
   tabName: {
-    color: 'var(--nexus-text2)',
+    color: 'var(--agentmobile-text2)',
     fontSize: 13,
     fontFamily: 'Menlo, Monaco, "Cascadia Code", monospace',
     overflow: 'hidden',
@@ -350,7 +350,7 @@ const s: Record<string, React.CSSProperties> = {
     maxWidth: 100,
   },
   tabNameActive: {
-    color: 'var(--nexus-text)',
+    color: 'var(--agentmobile-text)',
     fontWeight: 500,
   },
   activeIndicator: {
@@ -359,7 +359,7 @@ const s: Record<string, React.CSSProperties> = {
     left: '20%',
     right: '20%',
     height: 2,
-    background: 'var(--nexus-accent)',
+    background: 'var(--agentmobile-accent)',
     borderRadius: 1,
   },
   runningDot: {
@@ -369,20 +369,20 @@ const s: Record<string, React.CSSProperties> = {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: 'var(--nexus-success)',
+    background: 'var(--agentmobile-success)',
   },
   actions: {
     display: 'flex',
     alignItems: 'center',
     gap: 4,
     padding: '0 8px',
-    borderLeft: '1px solid var(--nexus-border)',
+    borderLeft: '1px solid var(--agentmobile-border)',
     flexShrink: 0,
   },
   iconBtn: {
     background: 'transparent',
     border: 'none',
-    color: 'var(--nexus-muted)',
+    color: 'var(--agentmobile-muted)',
     cursor: 'pointer',
     fontSize: 18,
     padding: '6px 10px',
@@ -401,19 +401,19 @@ const s: Record<string, React.CSSProperties> = {
   },
   contextMenu: {
     position: 'fixed',
-    background: 'var(--nexus-menu-bg)',
+    background: 'var(--agentmobile-menu-bg)',
     borderRadius: 8,
     padding: '8px 0',
     minWidth: 140,
     boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-    border: '1px solid var(--nexus-border)',
+    border: '1px solid var(--agentmobile-border)',
     zIndex: 200,
   },
   menuTitle: {
-    color: 'var(--nexus-muted)',
+    color: 'var(--agentmobile-muted)',
     fontSize: 11,
     padding: '4px 16px 8px',
-    borderBottom: '1px solid var(--nexus-border)',
+    borderBottom: '1px solid var(--agentmobile-border)',
     marginBottom: 4,
     maxWidth: 200,
     overflow: 'hidden',
@@ -425,7 +425,7 @@ const s: Record<string, React.CSSProperties> = {
     gap: 8,
     background: 'transparent',
     border: 'none',
-    color: 'var(--nexus-error)',
+    color: 'var(--agentmobile-error)',
     cursor: 'pointer',
     fontSize: 14,
     padding: '8px 16px',
@@ -442,7 +442,7 @@ const s: Record<string, React.CSSProperties> = {
     gap: 8,
     background: 'transparent',
     border: 'none',
-    color: 'var(--nexus-error)',
+    color: 'var(--agentmobile-error)',
     cursor: 'pointer',
     fontSize: 14,
     padding: '8px 16px',
@@ -451,10 +451,10 @@ const s: Record<string, React.CSSProperties> = {
     transition: 'background 0.15s',
   },
   renameInput: {
-    background: 'var(--nexus-bg)',
-    border: '1px solid var(--nexus-border)',
+    background: 'var(--agentmobile-bg)',
+    border: '1px solid var(--agentmobile-border)',
     borderRadius: 4,
-    color: 'var(--nexus-text)',
+    color: 'var(--agentmobile-text)',
     fontSize: 13,
     fontFamily: 'Menlo, Monaco, "Cascadia Code", monospace',
     padding: '2px 6px',

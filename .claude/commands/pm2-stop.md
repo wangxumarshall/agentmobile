@@ -1,4 +1,4 @@
-Stop nexus service.
+Stop agentmobile service.
 ```bash
-pm2 stop nexus
+pm2 stop agentmobile
 ```

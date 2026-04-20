@@ -1,9 +1,9 @@
-# Nexus4CC 源码深度解析
+# agentmobile4CC 源码深度解析
 
 
 ## 项目概述
 
-Nexus4CC 是一个专为 Claude Code 打造的跨设备 AI 终端桥接工具，核心理念是让用户能够在任何设备（尤其是移动设备）上无缝访问和操作运行在服务器上的 Claude Code 会话。它不是一个通用的终端模拟器，而是围绕“随时随地运行 Claude Code”这一核心工作流精心设计的解决方案。
+agentmobile4CC 是一个专为 Claude Code 打造的跨设备 AI 终端桥接工具，核心理念是让用户能够在任何设备（尤其是移动设备）上无缝访问和操作运行在服务器上的 Claude Code 会话。它不是一个通用的终端模拟器，而是围绕“随时随地运行 Claude Code”这一核心工作流精心设计的解决方案。
 
 **核心价值主张**：解决 Claude Code 被锁定在笔记本终端的痛点，通过 WebSocket 桥接技术实现跨设备访问，提供移动端优先的用户体验。
 
@@ -23,7 +23,7 @@ Nexus4CC 是一个专为 Claude Code 打造的跨设备 AI 终端桥接工具，
 
 ### 整体架构
 
-Nexus4CC 采用经典的 C/S 架构，通过 WebSocket 实现浏览器与 tmux 会话之间的实时双向通信：
+agentmobile4CC 采用经典的 C/S 架构，通过 WebSocket 实现浏览器与 tmux 会话之间的实时双向通信：
 
 ```plaintext
 ┌─────────────┐         WebSocket          ┌──────────────┐
@@ -719,12 +719,12 @@ pty.on('exit', (code) => {
 ## 项目结构
 
 ```plaintext
-nexus4cc/
+agentmobile4cc/
 ├── server.js                    # 服务端主文件（1775行）
 ├── package.json                 # 后端依赖
 ├── .env.example                 # 环境变量模板
 ├── ecosystem.config.cjs         # PM2 配置
-├── nexus-run-claude.sh          # Claude 启动脚本
+├── agentmobile-run-claude.sh          # Claude 启动脚本
 ├── data/                        # 持久化数据目录
 │   ├── configs/                 # Claude 配置
 │   ├── uploads/                 # 上传文件
@@ -820,7 +820,7 @@ CMD ["npm", "start"]
 ```yaml
 version: '3.8'
 services:
-  nexus:
+  agentmobile:
     build: .
     ports:
       - "59000:3000"
@@ -841,7 +841,7 @@ services:
 // ecosystem.config.cjs
 module.exports = {
   apps: [{
-    name: 'nexus4cc',
+    name: 'agentmobile4cc',
     script: './server.js',
     instances: 1,
     exec_mode: 'fork',
@@ -875,13 +875,13 @@ brew install cloudflared  # macOS
 cloudflared tunnel login
 
 # 创建隧道
-cloudflared tunnel create nexus
+cloudflared tunnel create agentmobile
 
 # 配置路由
-cloudflared tunnel route dns nexus nexus.yourdomain.com
+cloudflared tunnel route dns agentmobile agentmobile.yourdomain.com
 
 # 启动隧道
-cloudflared tunnel run nexus
+cloudflared tunnel run agentmobile
 ```
 
 配置文件 `~/.cloudflared/config.yml`：
@@ -891,7 +891,7 @@ tunnel: <tunnel-id>
 credentials-file: /path/to/credentials.json
 
 ingress:
-  - hostname: nexus.yourdomain.com
+  - hostname: agentmobile.yourdomain.com
     service: http://localhost:3000
   - service: http_status:404
 </tunnel-id>
@@ -941,7 +941,7 @@ ingress:
 
 ## 核心设计原则
 
-根据 [NORTH-STAR.md](http://NORTH-STAR.md)，Nexus4CC 遵循以下核心原则：
+根据 [NORTH-STAR.md](http://NORTH-STAR.md)，agentmobile4CC 遵循以下核心原则：
 
 ### 1. 移动端优先
 
@@ -1051,7 +1051,7 @@ WebSocket 断线自动重连，PTY 异常退出通知客户端，文件操作失
 
 ## 总结
 
-Nexus4CC 是一个设计精良、实现扎实的跨设备终端桥接工具。它不追求大而全，而是专注于解决一个具体问题：让 Claude Code 可以在任何设备上使用。通过 WebSocket + tmux + node-pty 的技术组合，实现了低延迟、高可用的终端访问体验。
+agentmobile4CC 是一个设计精良、实现扎实的跨设备终端桥接工具。它不追求大而全，而是专注于解决一个具体问题：让 Claude Code 可以在任何设备上使用。通过 WebSocket + tmux + node-pty 的技术组合，实现了低延迟、高可用的终端访问体验。
 
 项目的核心价值在于：
 
@@ -1069,7 +1069,7 @@ Nexus4CC 是一个设计精良、实现扎实的跨设备终端桥接工具。�
 
 ---
 
-**项目地址**：<https://github.com/librae8226/nexus4cc>
+**项目地址**：<https://github.com/librae8226/agentmobile4cc>
 
 **许可证**：MIT
 

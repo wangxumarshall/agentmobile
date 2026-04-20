@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nexus-v3';
+const CACHE_NAME = 'agentmobile-v4';
 // Cache only truly static assets — NOT index.html (references hashed JS bundles that change each build)
 const STATIC_ASSETS = ['/icon.svg', '/manifest.json'];
 

@@ -1,4 +1,4 @@
-# ARCHITECTURE — Nexus 架构现状
+# ARCHITECTURE — agentmobile 架构现状
 
 **Last Updated**: 2026-04-15  **版本**: v4.5.0  **锚点**: `docs/NORTH-STAR.md`
 
@@ -12,7 +12,7 @@
 Browser (任意设备)
     ↕  WSS /ws?token=<jwt>          ← WebSocket（原始 VT100 流）
     ↕  HTTPS /api/*                ← REST（认证后端 JSON API）
-Nexus Server（Node.js，server.js）
+agentmobile Server（Node.js，server.js）
     ↕  node-pty (ptyMap)           ← PTY 桥（每个 session:window 独立实例）
 tmux attach-session -t <session>:<window>
     ├── window 0: vault (⚡ Claude)
@@ -119,8 +119,8 @@ function buildAgentShellCmd(agentType, profile, cwd, proxyPrefix) {
   if (profile) {
     // profile 中 agent_type 字段决定使用哪个 run 脚本
     return agentType === 'codex'
-      ? `nexus-run-codex.sh ${profile} ${cwd}`
-      : `nexus-run-claude.sh ${profile} ${cwd}`
+      ? `agentmobile-run-codex.sh ${profile} ${cwd}`
+      : `agentmobile-run-claude.sh ${profile} ${cwd}`
   }
   return agentType === 'codex'
     ? `codex --yolo`
@@ -260,12 +260,12 @@ data/
 ## 部署结构
 
 ```
-nexus/
+agentmobile/
 ├── server.js              # 唯一后端（ESM，Node 20）
 ├── package.json           # 依赖：express ws node-pty bcrypt
 ├── ecosystem.config.cjs   # PM2 配置（当前部署方式）
 ├── start.sh               # 手动启动脚本
-├── nexus-run-claude.sh    # claude 会话启动脚本（server.js 调用）
+├── agentmobile-run-claude.sh    # claude 会话启动脚本（server.js 调用）
 ├── frontend/
 │   ├── src/               # React + TypeScript 源码
 │   └── dist/              # Vite 构建产物（server.js 静态伺服）

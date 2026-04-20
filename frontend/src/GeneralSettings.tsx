@@ -16,7 +16,7 @@ const LANGUAGES = [
   { code: 'zh-CN', label: '简体中文' },
 ]
 
-const UPDATE_CMD = 'git pull && cd frontend && npm run build && cd .. && pm2 restart nexus'
+const UPDATE_CMD = 'git pull && cd frontend && npm run build && cd .. && sudo systemctl restart agentmobile'
 
 type UpdateStatus = 'idle' | 'checking' | 'upToDate' | 'available' | 'dirty' | 'error'
 
@@ -74,12 +74,12 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
   return (
     <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-5">
       <GhostShield />
-      <div className="bg-nexus-bg border border-nexus-border rounded-xl flex flex-col text-nexus-text w-full max-w-[400px] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
+      <div className="bg-agentmobile-bg border border-agentmobile-border rounded-xl flex flex-col text-agentmobile-text w-full max-w-[400px] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border">
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border">
           <span className="text-base font-semibold">{t('settings.title')}</span>
           <button
-            className="bg-transparent border-none text-nexus-text-2 cursor-pointer flex items-center justify-center"
+            className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer flex items-center justify-center"
             onPointerDown={onClose}
           >
             <Icon name="x" size={20} />
@@ -89,15 +89,15 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
         <div className="px-4 py-4 flex flex-col gap-5">
           {/* Appearance section */}
           <div>
-            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-3">
+            <div className="text-[11px] text-agentmobile-text-2 tracking-wider uppercase mb-3">
               {t('settings.appearance')}
             </div>
 
             {/* Language */}
             <div className="flex items-center justify-between mb-3">
-              <span className="text-sm text-nexus-text">{t('settings.language')}</span>
+              <span className="text-sm text-agentmobile-text">{t('settings.language')}</span>
               <select
-                className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-2.5 py-1.5 outline-none cursor-pointer"
+                className="bg-agentmobile-bg-2 border border-agentmobile-border rounded-md text-agentmobile-text text-sm px-2.5 py-1.5 outline-none cursor-pointer"
                 value={i18n.language}
                 onChange={handleLanguageChange}
               >
@@ -109,16 +109,16 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
 
             {/* Theme */}
             <div className="flex items-center justify-between">
-              <span className="text-sm text-nexus-text">{t('settings.theme')}</span>
+              <span className="text-sm text-agentmobile-text">{t('settings.theme')}</span>
               <div className="flex gap-1">
                 <button
-                  className={`text-sm px-3 py-1.5 rounded-md border-none cursor-pointer transition-colors ${themeMode === 'dark' ? 'bg-nexus-accent text-white' : 'bg-nexus-bg-2 text-nexus-text-2'}`}
+                  className={`text-sm px-3 py-1.5 rounded-md border-none cursor-pointer transition-colors ${themeMode === 'dark' ? 'bg-agentmobile-accent text-white' : 'bg-agentmobile-bg-2 text-agentmobile-text-2'}`}
                   onPointerDown={themeMode !== 'dark' ? onToggleTheme : undefined}
                 >
                   {t('settings.themeDark')}
                 </button>
                 <button
-                  className={`text-sm px-3 py-1.5 rounded-md border-none cursor-pointer transition-colors ${themeMode === 'light' ? 'bg-nexus-accent text-white' : 'bg-nexus-bg-2 text-nexus-text-2'}`}
+                  className={`text-sm px-3 py-1.5 rounded-md border-none cursor-pointer transition-colors ${themeMode === 'light' ? 'bg-agentmobile-accent text-white' : 'bg-agentmobile-bg-2 text-agentmobile-text-2'}`}
                   onPointerDown={themeMode !== 'light' ? onToggleTheme : undefined}
                 >
                   {t('settings.themeLight')}
@@ -128,15 +128,15 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
           </div>
 
           {/* API Config Profiles section */}
-          <div className="border-t border-nexus-border pt-4">
-            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-3">
+          <div className="border-t border-agentmobile-border pt-4">
+            <div className="text-[11px] text-agentmobile-text-2 tracking-wider uppercase mb-3">
               {t('settings.apiProfiles')}
             </div>
-            <p className="text-sm text-nexus-text-2 mb-3">
+            <p className="text-sm text-agentmobile-text-2 mb-3">
               {t('settings.apiProfilesDesc')}
             </p>
             <button
-              className="flex items-center gap-1.5 bg-transparent border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-2 cursor-pointer"
+              className="flex items-center gap-1.5 bg-transparent border border-agentmobile-border rounded-md text-agentmobile-text text-sm px-3 py-2 cursor-pointer"
               onPointerDown={onOpenApiConfig}
             >
               <span>{t('settings.manageProfiles')}</span>
@@ -145,21 +145,21 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
           </div>
 
           {/* About section */}
-          <div className="border-t border-nexus-border pt-4">
-            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-3">
+          <div className="border-t border-agentmobile-border pt-4">
+            <div className="text-[11px] text-agentmobile-text-2 tracking-wider uppercase mb-3">
               {t('settings.about')}
             </div>
 
             <div className="flex items-center justify-between mb-3">
-              <span className="text-sm text-nexus-text">{t('settings.currentVersion')}</span>
-              <span className="text-sm text-nexus-text-2 font-mono">
+              <span className="text-sm text-agentmobile-text">{t('settings.currentVersion')}</span>
+              <span className="text-sm text-agentmobile-text-2 font-mono">
                 {currentVersion || '—'}
               </span>
             </div>
 
             {updateStatus === 'idle' || updateStatus === 'checking' ? (
               <button
-                className="flex items-center gap-1.5 bg-transparent border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-2 cursor-pointer disabled:opacity-50"
+                className="flex items-center gap-1.5 bg-transparent border border-agentmobile-border rounded-md text-agentmobile-text text-sm px-3 py-2 cursor-pointer disabled:opacity-50"
                 onPointerDown={updateStatus === 'idle' ? handleCheckUpdate : undefined}
                 disabled={updateStatus === 'checking'}
               >
@@ -171,14 +171,14 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
               <p className="text-sm text-red-400">{t('settings.checkFailed')}</p>
             ) : updateStatus === 'dirty' ? (
               <div>
-                <p className="text-sm text-nexus-accent mb-2">
+                <p className="text-sm text-agentmobile-accent mb-2">
                   {t('settings.updateAvailable', { version: latestVersion })}
                 </p>
                 <p className="text-sm text-yellow-400">{t('settings.dirtyWarning')}</p>
               </div>
             ) : updateStatus === 'available' ? (
               <div className="flex flex-col gap-2">
-                <p className="text-sm text-nexus-accent">
+                <p className="text-sm text-agentmobile-accent">
                   {t('settings.updateAvailable', { version: latestVersion })}
                 </p>
                 <div className="flex gap-2 flex-wrap">
@@ -186,12 +186,12 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
                     href={releaseUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-sm text-nexus-text-2 underline"
+                    className="text-sm text-agentmobile-text-2 underline"
                   >
                     {t('settings.viewRelease')}
                   </a>
                   <button
-                    className="flex items-center gap-1.5 bg-transparent border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-1.5 cursor-pointer"
+                    className="flex items-center gap-1.5 bg-transparent border border-agentmobile-border rounded-md text-agentmobile-text text-sm px-3 py-1.5 cursor-pointer"
                     onPointerDown={handleCopyCmd}
                   >
                     <span>{copied ? '✓' : t('settings.copyUpdateCmd')}</span>
