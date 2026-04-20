@@ -20,7 +20,7 @@
     "noData": "暂无数据"
   },
   "login": {
-    "title": "Nexus",
+    "title": "agentmobile",
     "subtitle": "AI Agent 终端面板",
     "passwordPlaceholder": "输入密码",
     "loginButton": "登录",
@@ -38,7 +38,9 @@
     "agentType": "Agent 类型",
     "shellClaude": "Claude",
     "shellCodex": "Codex",
-    "shellZsh": "Zsh",
+    "shellTrae": "Trae CLI",
+    "shellOpenCode": "OpenCode",
+    "shellZsh": "Bash",
     "profileLabel": "配置 Profile (可选)",
     "profileDefault": "默认 (不使用 profile)",
     "profileHelp": "选择 profile 会使用该配置的 API key 和模型设置，数据隔离在项目目录",
@@ -159,7 +161,7 @@
     "themeDark": "暗色",
     "themeLight": "亮色",
     "apiProfiles": "API 配置 Profiles",
-    "apiProfilesDesc": "管理 Claude 会话的 API Key、模型设置和 Profile。",
+    "apiProfilesDesc": "管理所有受支持 Agent 会话的 API Key、模型设置和 Profile。",
     "manageProfiles": "管理 Profiles",
     "about": "关于",
     "currentVersion": "当前版本",
@@ -178,6 +180,7 @@
     "newConfig": "新建配置",
     "editConfig": "编辑配置",
     "idLabel": "配置 ID（唯一标识）",
+    "agentType": "Agent 类型",
     "labelName": "显示名称",
     "labelNamePlaceholder": "Kimi (kimi-for-coding)",
     "apiBaseUrl": "API Base URL",
@@ -189,10 +192,12 @@
     "longContextModel": "长上下文模型",
     "haikuModel": "Haiku 模型",
     "timeout": "Timeout (ms)",
+    "reasoningEffort": "推理强度",
+    "sandboxMode": "沙箱模式",
     "noConfigs": "暂无配置。点击「+ 新建」添加 API 配置。",
     "addNew": "+ 新建",
     "notes": "说明",
-    "notesDesc": "配置文件存储在 .claude-data/ 目录"
+    "notesDesc": "配置文件存储在 data/configs/ 目录"
   },
   "sessionMgr": {
     "title": "会话管理",
@@ -215,7 +220,7 @@
   "tasks": {
     "title": "任务面板",
     "session": "会话:",
-    "promptPlaceholder": "输入任务 prompt，claude -p 非交互执行...",
+    "promptPlaceholder": "输入任务 prompt，使用当前所选 Agent 非交互执行...",
     "sendTask": "▶ 发送任务",
     "running": "执行中...",
     "runningStatus": "执行中",
@@ -226,7 +231,7 @@
     "requestFailed": "请求失败: {{status}}",
     "waitingOutput": "等待输出...",
     "noOutput": "(无输出)",
-    "notificationTitle": "Nexus: 任务完成"
+    "notificationTitle": "agentmobile: 任务完成"
   },
   "files": {
     "title": "上传文件",

@@ -1,4 +1,4 @@
-// server.js — Nexus WebSocket tmux 桥接服务
+// server.js — agentmobile WebSocket tmux 桥接服务
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import * as pty from 'node-pty';
@@ -27,6 +27,30 @@ try {
     if (key && !(key in process.env)) process.env[key] = val;
   }
 } catch { /* .env 不存在时忽略 */ }
+
+function buildRuntimePath() {
+  const home = process.env.HOME || '/home/ubuntu';
+  const dirs = [
+    ...(process.env.PATH || '').split(':'),
+    join(home, '.local', 'bin'),
+    join(home, '.opencode', 'bin'),
+    join(home, 'bin'),
+    join(home, '.npm-global', 'bin'),
+    join(home, '.local', 'share', 'pnpm'),
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ].filter(Boolean);
+
+  try {
+    const npmPrefix = execSync('npm prefix -g', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    if (npmPrefix) dirs.push(join(npmPrefix, 'bin'));
+  } catch {}
+
+  return [...new Set(dirs)].join(':');
+}
+
+process.env.PATH = buildRuntimePath();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -64,7 +88,7 @@ if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
         DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5-20251001',
         API_TIMEOUT_MS: '3000000',
       }, null, 2), 'utf8');
-      console.log(`[Nexus] Auto-created anthropic profile (${isLoggedIn ? 'oauth login' : 'API key from env'})`);
+      console.log(`[agentmobile] Auto-created anthropic profile (${isLoggedIn ? 'oauth login' : 'API key from env'})`);
     }
   }
 }
@@ -93,7 +117,7 @@ if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
         REASONING_EFFORT: 'high',
         SANDBOX_MODE: 'danger-full-access',
       }, null, 2), 'utf8');
-      console.log(`[Nexus] Auto-created codex profile (${isCodexInstalled ? 'codex installed' : 'API key from env'})`);
+      console.log(`[agentmobile] Auto-created codex profile (${isCodexInstalled ? 'codex installed' : 'API key from env'})`);
     }
   }
 }
@@ -111,7 +135,7 @@ const {
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_WEBHOOK_SECRET,
   TELEGRAM_DEFAULT_SESSION = '',
-  GITHUB_REPO = 'librae8226/nexus4cc',
+  GITHUB_REPO = 'wangxumarshall/agentmobile',
 } = process.env;
 
 if (!JWT_SECRET || !ACC_PASSWORD_HASH) {
@@ -121,11 +145,68 @@ if (!JWT_SECRET || !ACC_PASSWORD_HASH) {
 
 function commandExists(cmd) {
   try {
-    execSync(`command -v ${cmd} >/dev/null 2>&1`);
+    execSync(`command -v ${cmd} >/dev/null 2>&1`, { env: { ...process.env, PATH: process.env.PATH } });
     return true;
   } catch {
     return false;
   }
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+const AGENT_SPECS = {
+  claude: {
+    label: 'Claude',
+    binaries: ['claude'],
+    runScript: 'agentmobile-run-claude.sh',
+    interactiveArgs: ['--dangerously-skip-permissions'],
+    taskArgs: (prompt, profile) => ['-p', prompt, '--dangerously-skip-permissions', ...(profile ? ['--profile', profile] : [])],
+    jsonTaskOutput: false,
+  },
+  codex: {
+    label: 'Codex',
+    binaries: ['codex'],
+    runScript: 'agentmobile-run-codex.sh',
+    interactiveArgs: ['--yolo'],
+    taskArgs: (prompt, profile) => ['exec', prompt, '--yolo', ...(profile ? ['--profile', profile] : []), '--json'],
+    jsonTaskOutput: true,
+  },
+  trae: {
+    label: 'Trae CLI',
+    binaries: ['trae-cli', 'trae'],
+    runScript: 'agentmobile-run-trae.sh',
+    interactiveArgs: [],
+    taskArgs: (prompt, profile) => ['exec', prompt, ...(profile ? ['--profile', profile] : []), '--json'],
+    jsonTaskOutput: true,
+  },
+  opencode: {
+    label: 'OpenCode',
+    binaries: ['opencode'],
+    runScript: 'agentmobile-run-opencode.sh',
+    interactiveArgs: [],
+    taskArgs: (prompt, profile) => ['exec', prompt, ...(profile ? ['--profile', profile] : []), '--json'],
+    jsonTaskOutput: true,
+  },
+};
+
+function resolveAgentBinary(agentType) {
+  const spec = AGENT_SPECS[agentType];
+  if (!spec) return null;
+  for (const bin of spec.binaries) {
+    try {
+      const resolved = execSync(`command -v ${bin}`, { env: { ...process.env, PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+      if (resolved) return resolved;
+    } catch {}
+  }
+  return null;
+}
+
+function buildMissingAgentCmd(agentType, prefix = '') {
+  const label = AGENT_SPECS[agentType]?.label || agentType;
+  const binaries = AGENT_SPECS[agentType]?.binaries?.join(' / ') || agentType;
+  return `${prefix}echo "[agentmobile] ${label} command not found: ${binaries}. Install the CLI and restart the session."; ${INTERACTIVE_SHELL_CMD}`;
 }
 
 const INTERACTIVE_SHELL = commandExists('zsh') ? 'zsh' : 'bash';
@@ -140,7 +221,7 @@ function buildInteractiveShellCmd(prefix = '') {
 /**
  * 从 profile JSON 文件中读取 agent_type
  * @param {string} profileId - profile 文件名（不含 .json）
- * @returns {string} 'claude' | 'codex'
+ * @returns {string} 'claude' | 'codex' | 'trae' | 'opencode'
  */
 function getAgentTypeFromProfile(profileId) {
   const profilePath = join(CONFIGS_DIR, `${profileId}.json`)
@@ -153,9 +234,22 @@ function getAgentTypeFromProfile(profileId) {
   }
 }
 
+function normalizeRequestedAgentType(shellType, reqAgentType, profile) {
+  if (reqAgentType === 'bash') return 'bash'
+  if (reqAgentType && AGENT_SPECS[reqAgentType]) return reqAgentType
+  if (shellType === 'bash') return 'bash'
+  if (shellType && AGENT_SPECS[shellType]) return shellType
+  return profile ? getAgentTypeFromProfile(profile) : 'claude'
+}
+
+function sanitizeProfileForAgent(agentType, profile) {
+  if (!profile || agentType === 'bash') return null
+  return getAgentTypeFromProfile(profile) === agentType ? profile : null
+}
+
 /**
  * 构建 AI Agent 的 shell 启动命令
- * @param {string} agentType - 'claude' | 'codex' | 'bash'
+ * @param {string} agentType - 'claude' | 'codex' | 'trae' | 'opencode' | 'bash'
  * @param {string|null} profile - profile 文件名（可选）
  * @param {string} cwd - 工作目录
  * @param {string} proxyPrefix - 代理变量导出的 shell 前缀
@@ -164,20 +258,11 @@ function getAgentTypeFromProfile(profileId) {
 function buildAgentShellCmd(agentType, profile, cwd, proxyPrefix) {
   if (agentType === 'bash') return buildInteractiveShellCmd(proxyPrefix)
 
-  // 有 profile：使用对应的 run 脚本
-  if (profile) {
-    const runScript = agentType === 'codex'
-      ? join(__dirname, 'nexus-run-codex.sh')
-      : join(__dirname, 'nexus-run-claude.sh')
-    return `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`
-  }
-
-  // 无 profile：直接启动 agent
-  if (agentType === 'codex') {
-    return `${proxyPrefix}codex --yolo; ${INTERACTIVE_SHELL_CMD}`
-  }
-  // 默认 claude
-  return `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`
+  const runScriptName = AGENT_SPECS[agentType]?.runScript
+  if (!runScriptName) return buildMissingAgentCmd(agentType, proxyPrefix)
+  const runScript = join(__dirname, runScriptName)
+  const profileArg = profile || '__none__'
+  return `${proxyPrefix}bash ${shellQuote(runScript)} ${shellQuote(profileArg)} ${shellQuote(cwd)}`
 }
 
 /**
@@ -206,14 +291,96 @@ function proxyVarsToShellPrefix(proxyVars) {
   return exports ? `${exports}; ` : ''
 }
 
+function listProjects() {
+  try {
+    const stdout = execSync('tmux list-sessions -F "#{session_name}|#{session_windows}|#{session_attached}" 2>/dev/null').toString().trim()
+    if (!stdout) return []
+    const lines = stdout.split('\n').filter(Boolean)
+    const projects = lines.map(line => {
+      const [name, windows] = line.split('|')
+      let path = ''
+      try {
+        const envOutput = execSync(`tmux show-environment -t ${name} NEXUS_CWD 2>/dev/null`).toString().trim()
+        const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
+        if (match) path = match[1]
+      } catch {}
+      if (!path && windows !== '0') {
+        try {
+          const cwdOutput = execSync(`tmux list-windows -t ${name} -F '#{pane_current_path}' 2>/dev/null | head -1`).toString().trim()
+          if (cwdOutput) path = cwdOutput
+        } catch {}
+      }
+      return {
+        name,
+        path: path || WORKSPACE_ROOT,
+        active: name === TMUX_SESSION,
+        channelCount: Number(windows) || 0,
+      }
+    })
+    projects.reverse()
+    return projects
+  } catch {
+    return []
+  }
+}
+
+function getProjectsSnapshot() {
+  return JSON.stringify(listProjects().map(project => ({
+    name: project.name,
+    path: project.path,
+    channelCount: project.channelCount,
+  })))
+}
+
+let projectRevision = 0
+let lastProjectsSnapshot = getProjectsSnapshot()
+const projectEventClients = new Set()
+
+function writeProjectEvent(res, payload) {
+  res.write(`event: projects_changed\ndata: ${JSON.stringify(payload)}\n\n`)
+}
+
+function broadcastProjectsChanged(source = 'server') {
+  projectRevision += 1
+  const payload = { revision: projectRevision, source }
+  for (const res of Array.from(projectEventClients)) {
+    try {
+      writeProjectEvent(res, payload)
+    } catch {
+      projectEventClients.delete(res)
+    }
+  }
+}
+
+function refreshProjectsSnapshot(source = 'server') {
+  lastProjectsSnapshot = getProjectsSnapshot()
+  broadcastProjectsChanged(source)
+}
+
+function pollProjectChanges() {
+  const snapshot = getProjectsSnapshot()
+  if (snapshot === lastProjectsSnapshot) return
+  lastProjectsSnapshot = snapshot
+  broadcastProjectsChanged('poll')
+}
+
+const projectPollTimer = setInterval(pollProjectChanges, 2000)
+projectPollTimer.unref?.()
+
 // 静态文件：frontend/dist 和 public
 app.use(express.static(join(__dirname, 'public')));
 app.use(express.static(join(__dirname, 'frontend', 'dist')));
 
 // Auth middleware
-function authMiddleware(req, res, next) {
+function getRequestToken(req) {
   const auth = req.headers.authorization || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
+  return headerToken || queryToken;
+}
+
+function authMiddleware(req, res, next) {
+  const token = getRequestToken(req);
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     jwt.verify(token, JWT_SECRET);
@@ -237,9 +404,36 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+app.get('/api/projects/events', authMiddleware, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  projectEventClients.add(res);
+  writeProjectEvent(res, { revision: projectRevision, source: 'connect' });
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(heartbeat);
+      projectEventClients.delete(res);
+    }
+  }, 15000);
+  heartbeat.unref?.();
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    projectEventClients.delete(res);
+    res.end();
+  });
+});
+
 // POST /api/windows — F-19: 项目-窗口两级结构
 // body: { rel_path?, shell_type?, agent_type?, profile? }
-// - agent_type: 'claude' | 'codex' | 'bash'（默认: 'claude'，向后兼容 shell_type）
+// - agent_type: 'claude' | 'codex' | 'trae' | 'opencode' | 'bash'（默认: 'claude'，向后兼容 shell_type）
 // - 提供 rel_path: 设置 NEXUS_CWD 并在此目录创建窗口（新项目）
 // - 不提供 rel_path: 读取 NEXUS_CWD 并在此目录创建窗口（新窗口）
 app.post('/api/windows', authMiddleware, (req, res) => {
@@ -303,11 +497,12 @@ app.post('/api/sessions', authMiddleware, (req, res) => {
   const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'session';
 
   // agent_type 优先于 shell_type（向后兼容）
-  const agentType = reqAgentType || (shell_type === 'bash' ? 'bash' : getAgentTypeFromProfile(profile));
+  const agentType = normalizeRequestedAgentType(shell_type, reqAgentType, profile)
+  const resolvedProfile = sanitizeProfileForAgent(agentType, profile)
 
   const proxyVars = collectProxyVars(CLAUDE_PROXY);
   const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
-  let shellCmd = buildAgentShellCmd(agentType, profile, cwd, proxyPrefix);
+  let shellCmd = buildAgentShellCmd(agentType, resolvedProfile, cwd, proxyPrefix);
 
   // 确保 tmux session 存在
   try {
@@ -414,7 +609,7 @@ app.get('/api/version/latest', authMiddleware, (req, res) => {
   const options = {
     hostname: 'api.github.com',
     path: `/repos/${GITHUB_REPO}/tags`,
-    headers: { 'User-Agent': 'nexus-update-check' },
+    headers: { 'User-Agent': 'agentmobile-update-check' },
   };
   https.get(options, (ghRes) => {
     let data = '';
@@ -1040,35 +1235,7 @@ app.get('/api/tmux-sessions', authMiddleware, (req, res) => {
 
 // GET /api/projects — 列出所有 Projects（tmux sessions）
 app.get('/api/projects', authMiddleware, (req, res) => {
-  exec('tmux list-sessions -F "#{session_name}|#{session_windows}|#{session_attached}"', (err, stdout) => {
-    if (err) return res.json([])
-    const lines = stdout.trim().split('\n').filter(Boolean)
-    const projects = lines.map(line => {
-      const [name, windows, attached] = line.split('|')
-      // 尝试读取 NEXUS_CWD
-      let path = ''
-      try {
-        const envOutput = execSync(`tmux show-environment -t ${name} NEXUS_CWD 2>/dev/null`).toString().trim()
-        const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
-        if (match) path = match[1]
-      } catch {}
-      // 没有 NEXUS_CWD，尝试取第一个 window 的 pane_current_path
-      if (!path && windows !== '0') {
-        try {
-          const cwdOutput = execSync(`tmux list-windows -t ${name} -F '#{pane_current_path}' 2>/dev/null | head -1`).toString().trim()
-          if (cwdOutput) path = cwdOutput
-        } catch {}
-      }
-      return {
-        name,
-        path: path || WORKSPACE_ROOT,
-        active: name === TMUX_SESSION,
-        channelCount: Number(windows) || 0
-      }
-    })
-    projects.reverse()
-    res.json(projects)
-  })
+  res.json(listProjects())
 })
 
 // GET /api/session-cwd — 获取指定 session 的 NEXUS_CWD
@@ -1144,15 +1311,16 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   } catch {}
 
   // agent_type 优先于 shell_type（向后兼容）
-  const agentType = reqAgentType || (shell_type === 'bash' ? 'bash' : getAgentTypeFromProfile(profile));
+  const agentType = normalizeRequestedAgentType(shell_type, reqAgentType, profile)
+  const resolvedProfile = sanitizeProfileForAgent(agentType, profile)
 
   const proxyVars = collectProxyVars(CLAUDE_PROXY);
   const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
-  let shellCmd = buildAgentShellCmd(agentType, profile, cwd, proxyPrefix);
+  let shellCmd = buildAgentShellCmd(agentType, resolvedProfile, cwd, proxyPrefix);
 
   // 初始窗口名使用目录名[-profile名]（取路径最后一部分）
   const dirName = cwd.replace(/^\/+|\/+$/g, '').split('/').pop() || '~'
-  const initialWindowName = profile ? `${dirName}-${profile}` : dirName
+  const initialWindowName = resolvedProfile ? `${dirName}-${resolvedProfile}` : dirName
 
   // 创建 tmux session（如果不存在）
   try {
@@ -1167,7 +1335,8 @@ app.post('/api/projects', authMiddleware, (req, res) => {
     return res.status(500).json({ error: 'failed to create project: ' + err.message })
   }
 
-  res.json({ name: finalName, path: cwd, agent_type: agentType, profile: profile || null })
+  refreshProjectsSnapshot('create_project')
+  res.json({ name: finalName, path: cwd, agent_type: agentType, profile: resolvedProfile, profile_mismatch: !!profile && !resolvedProfile })
 })
 
 // POST /api/projects/:name/channels — 在指定 Project 中新建 Channel（window）
@@ -1187,23 +1356,39 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
     } catch {}
   }
 
-  // Channel 命名：profile 名[-序号]
-  const baseName = profile || 'channel'
-  let channelName = baseName
+  // agent_type 优先于 shell_type（向后兼容）
+  const agentType = normalizeRequestedAgentType(shell_type, reqAgentType, profile)
+  const resolvedProfile = sanitizeProfileForAgent(agentType, profile)
+
+  const agentBaseName = (() => {
+    switch (agentType) {
+      case 'claude':
+        return 'claude'
+      case 'codex':
+        return 'codex'
+      case 'opencode':
+        return 'opencode'
+      case 'trae':
+        return 'trae-cli'
+      case 'bash':
+        return INTERACTIVE_SHELL
+      default:
+        return 'channel'
+    }
+  })()
+
+  let channelName = agentBaseName
   try {
     const existing = execSync(`tmux list-windows -t ${sessionName} -F "#{window_name}"`).toString().trim().split('\n')
     let counter = 1
     while (existing.includes(channelName)) {
-      channelName = `${baseName}-${counter++}`
+      channelName = `${agentBaseName}-${counter++}`
     }
   } catch {}
 
-  // agent_type 优先于 shell_type（向后兼容）
-  const agentType = reqAgentType || (shell_type === 'bash' ? 'bash' : getAgentTypeFromProfile(profile));
-
   const proxyVars = collectProxyVars(CLAUDE_PROXY);
   const proxyPrefix = proxyVarsToShellPrefix(proxyVars);
-  let shellCmd = buildAgentShellCmd(agentType, profile, cwd, proxyPrefix);
+  let shellCmd = buildAgentShellCmd(agentType, resolvedProfile, cwd, proxyPrefix);
 
   // 确保 session 存在
   try {
@@ -1214,7 +1399,8 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
   const cmd = `tmux new-window -t ${sessionName} -c "${cwd}" -n "${channelName}" "${shellCmd}"`
   exec(cmd, (err) => {
     if (err) return res.status(500).json({ error: err.message })
-    res.json({ name: channelName, cwd, agent_type: agentType, profile: profile || null, project: sessionName })
+    refreshProjectsSnapshot('create_channel')
+    res.json({ name: channelName, cwd, agent_type: agentType, profile: resolvedProfile, profile_mismatch: !!profile && !resolvedProfile, project: sessionName })
   })
 })
 
@@ -1276,6 +1462,7 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
   // 执行重命名
   exec(`tmux rename-session -t ${oldName} ${sanitizedNewName}`, (err) => {
     if (err) return res.status(500).json({ error: err.message })
+    refreshProjectsSnapshot('rename_project')
     res.json({ ok: true, oldName, newName: sanitizedNewName })
   })
 })
@@ -1292,6 +1479,7 @@ app.delete('/api/projects/:name', authMiddleware, (req, res) => {
   // kill session
   exec(`tmux kill-session -t ${sessionName}`, (err) => {
     if (err) return res.status(500).json({ error: err.message })
+    refreshProjectsSnapshot('delete_project')
     res.json({ ok: true })
   })
 })
@@ -1414,31 +1602,33 @@ function runTask(prompt, cwd, opts = {}) {
 
   const proxyEnv = CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY } : {}
 
-  let child
-  if (agentType === 'codex') {
-    const codexArgs = ['exec', prompt, '--yolo']
-    if (profile) codexArgs.push('--profile', profile)
-    codexArgs.push('--json')
-    child = spawn('codex', codexArgs, {
-      cwd,
-      env: { ...process.env, ...proxyEnv },
-      stdio: ['ignore', 'pipe', 'pipe'],
+  const spec = AGENT_SPECS[agentType] || AGENT_SPECS.claude
+  const binary = resolveAgentBinary(agentType)
+  if (!binary) {
+    const errorMessage = `${spec.label} command not found: ${spec.binaries.join(' / ')}`
+    updateTask(taskId, {
+      status: 'error',
+      output: '',
+      error: errorMessage,
+      completedAt: new Date().toISOString(),
+      exitCode: 127,
     })
-  } else {
-    const claudeArgs = ['-p', prompt, '--dangerously-skip-permissions']
-    if (profile) claudeArgs.push('--profile', profile)
-    child = spawn('claude', claudeArgs, {
-      cwd,
-      env: { ...process.env, ...proxyEnv },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    onChunk?.(errorMessage, true)
+    onDone?.({ taskId, status: 'error', output: '', errorOutput: errorMessage, exitCode: 127 })
+    return { taskId, kill: () => {} }
   }
+
+  const child = spawn(binary, spec.taskArgs(prompt, profile), {
+    cwd,
+    env: { ...process.env, ...proxyEnv, PATH: process.env.PATH },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
 
   let output = ''
   let errorOutput = ''
 
   // Codex --json 输出是 JSON lines 格式，需要解析后提取文本
-  const isCodexJson = agentType === 'codex'
+  const isCodexJson = !!spec.jsonTaskOutput
   let jsonBuffer = ''
 
   child.stdout.on('data', (data) => {
@@ -1644,7 +1834,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
   // /start 欢迎消息
   if (message.text?.trim() === '/start') {
     const agentSymbol = telegramAgentType === 'codex' ? '🔷' : '⚡'
-    telegramSend(chatId, `👋 *Nexus Bot* 已就绪 (${agentSymbol} ${telegramAgentType})\n\n发送任意文字，我会用 \`${telegramAgentType}\` 在你的服务器上执行并回复结果。\n\n发送图片或文件，我会保存到当前 session 目录。\n\n\`/sessions\` — 查看 tmux 窗口列表\n\`/switch <编号>\` — 切换目标窗口\n\`/agent claude|codex\` — 切换 AI 后端`)
+    telegramSend(chatId, `👋 *agentmobile Bot* 已就绪 (${agentSymbol} ${telegramAgentType})\n\n发送任意文字，我会用 \`${telegramAgentType}\` 在你的服务器上执行并回复结果。\n\n发送图片或文件，我会保存到当前 session 目录。\n\n\`/sessions\` — 查看 tmux 窗口列表\n\`/switch <编号>\` — 切换目标窗口\n\`/agent claude|codex\` — 切换 AI 后端`)
     return
   }
 
@@ -2035,7 +2225,7 @@ try {
 } catch {}
 
 server.listen(Number(PORT), '0.0.0.0', () => {
-  console.log(`Nexus listening on :${PORT}`);
+  console.log(`agentmobile listening on :${PORT}`);
   console.log(`tmux session: ${TMUX_SESSION}`);
   console.log(`workspace: ${WORKSPACE_ROOT}`);
   // 启动时确保默认 tmux session 存在，窗口名使用 WORKSPACE_ROOT 的目录名

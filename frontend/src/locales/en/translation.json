@@ -20,7 +20,7 @@
     "noData": "No data"
   },
   "login": {
-    "title": "Nexus",
+    "title": "agentmobile",
     "subtitle": "AI Agent Terminal Panel",
     "passwordPlaceholder": "Enter password",
     "loginButton": "Login",
@@ -38,7 +38,9 @@
     "agentType": "Agent Type",
     "shellClaude": "Claude",
     "shellCodex": "Codex",
-    "shellZsh": "Zsh",
+    "shellTrae": "Trae CLI",
+    "shellOpenCode": "OpenCode",
+    "shellZsh": "Bash",
     "profileLabel": "Config Profile (optional)",
     "profileDefault": "Default (no profile)",
     "profileHelp": "Profile sets the API key and model. Data is isolated per project directory.",
@@ -159,7 +161,7 @@
     "themeDark": "Dark",
     "themeLight": "Light",
     "apiProfiles": "API Config Profiles",
-    "apiProfilesDesc": "Manage API keys, model settings, and profiles for Claude sessions.",
+    "apiProfilesDesc": "Manage API keys, model settings, and profiles for all supported agent sessions.",
     "manageProfiles": "Manage Profiles",
     "about": "About",
     "currentVersion": "Current Version",
@@ -178,6 +180,7 @@
     "newConfig": "New Config",
     "editConfig": "Edit Config",
     "idLabel": "Config ID (unique)",
+    "agentType": "Agent Type",
     "labelName": "Display Name",
     "labelNamePlaceholder": "Kimi (kimi-for-coding)",
     "apiBaseUrl": "API Base URL",
@@ -189,10 +192,12 @@
     "longContextModel": "Long Context Model",
     "haikuModel": "Haiku Model",
     "timeout": "Timeout (ms)",
+    "reasoningEffort": "Reasoning Effort",
+    "sandboxMode": "Sandbox Mode",
     "noConfigs": "No configs. Click \"+ New\" to add an API config.",
     "addNew": "+ New",
     "notes": "Notes",
-    "notesDesc": "Configs are stored in .claude-data/"
+    "notesDesc": "Configs are stored in data/configs/"
   },
   "sessionMgr": {
     "title": "Session Manager",
@@ -215,7 +220,7 @@
   "tasks": {
     "title": "Task Panel",
     "session": "Session:",
-    "promptPlaceholder": "Enter task prompt, runs claude -p non-interactively...",
+    "promptPlaceholder": "Enter task prompt and run the selected agent non-interactively...",
     "sendTask": "▶ Send Task",
     "running": "Running...",
     "runningStatus": "Running",
@@ -226,7 +231,7 @@
     "requestFailed": "Request failed: {{status}}",
     "waitingOutput": "Waiting for output...",
     "noOutput": "(no output)",
-    "notificationTitle": "Nexus: Task Complete"
+    "notificationTitle": "agentmobile: Task Complete"
   },
   "files": {
     "title": "Uploaded Files",

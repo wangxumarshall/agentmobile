@@ -111,9 +111,9 @@ interface Props {
   token: string
 }
 
-const FONT_SIZE_KEY = 'nexus_font_size'
-const THEME_KEY = 'nexus_theme'
-const WINDOW_KEY = 'nexus_window'
+const FONT_SIZE_KEY = 'agentmobile_font_size'
+const THEME_KEY = 'agentmobile_theme'
+const WINDOW_KEY = 'agentmobile_window'
 const TAP_THRESHOLD = 8
 const MAX_UPLOAD_NOTIFICATIONS = 5
 
@@ -174,6 +174,35 @@ export const THEMES: Record<ThemeMode, ITheme> = {
   light: LIGHT_THEME,
 }
 
+const AUTH_TOKEN_KEY = 'agentmobile_token'
+
+async function parseApiError(r: Response, fallback?: string): Promise<string> {
+  if (r.status === 401) {
+    localStorage.removeItem(AUTH_TOKEN_KEY)
+    window.location.reload()
+    return ''
+  }
+  try {
+    const data = await r.json()
+    if (data?.error) return data.error
+  } catch {
+    // ignore invalid JSON bodies
+  }
+  return fallback ?? `请求失败 (${r.status})`
+}
+
+function parseNetworkError(e: unknown, fallback: string): string {
+  if (e instanceof TypeError) return '无法连接服务器，请检查服务是否已启动'
+  if (e instanceof Error && e.message) return e.message
+  return fallback
+}
+
+function refreshTerminalViewport(term: XTerm) {
+  if (term.rows > 0) {
+    term.refresh(0, term.rows - 1)
+  }
+}
+
 export function getInitialTheme(): ThemeMode {
   const saved = localStorage.getItem(THEME_KEY)
   if (saved === 'light' || saved === 'dark') return saved
@@ -181,23 +210,23 @@ export function getInitialTheme(): ThemeMode {
 }
 
 // 主题色板 — 统一 Tailwind slate 色阶
-function applyNexusCssVars(mode: ThemeMode) {
+function applyAgentmobileCssVars(mode: ThemeMode) {
   const isDark = mode === 'dark'
   const root = document.documentElement
-  root.style.setProperty('--nexus-bg',         isDark ? '#0f172a' : '#ffffff')   // slate-900 / white
-  root.style.setProperty('--nexus-bg2',        isDark ? '#1e293b' : '#f1f5f9')   // slate-800 / slate-100
-  root.style.setProperty('--nexus-menu-bg',    isDark ? '#1e293b' : '#ffffff')    // 面板/弹层背景
-  root.style.setProperty('--nexus-border',     isDark ? '#334155' : '#e2e8f0')   // slate-700 / slate-200
-  root.style.setProperty('--nexus-text',       isDark ? '#f1f5f9' : '#0f172a')   // slate-100 / slate-900
-  root.style.setProperty('--nexus-text2',      isDark ? '#94a3b8' : '#64748b')   // slate-400 / slate-500
-  root.style.setProperty('--nexus-muted',      isDark ? '#475569' : '#94a3b8')   // slate-600 / slate-400
-  root.style.setProperty('--nexus-tab-active', isDark ? '#1e293b' : '#f1f5f9')   // 选中标签高亮
-  root.style.setProperty('--nexus-accent',     '#3b82f6')                         // blue-500
-  root.style.setProperty('--nexus-success',    '#22c55e')                         // green-500
-  root.style.setProperty('--nexus-warning',    '#f59e0b')                         // amber-500
-  root.style.setProperty('--nexus-error',      '#ef4444')                         // red-500
+  root.style.setProperty('--agentmobile-bg',         isDark ? '#0f172a' : '#ffffff')
+  root.style.setProperty('--agentmobile-bg2',        isDark ? '#1e293b' : '#f1f5f9')
+  root.style.setProperty('--agentmobile-menu-bg',    isDark ? '#1e293b' : '#ffffff')
+  root.style.setProperty('--agentmobile-border',     isDark ? '#334155' : '#e2e8f0')
+  root.style.setProperty('--agentmobile-text',       isDark ? '#f1f5f9' : '#0f172a')
+  root.style.setProperty('--agentmobile-text2',      isDark ? '#94a3b8' : '#64748b')
+  root.style.setProperty('--agentmobile-muted',      isDark ? '#475569' : '#94a3b8')
+  root.style.setProperty('--agentmobile-tab-active', isDark ? '#1e293b' : '#f1f5f9')
+  root.style.setProperty('--agentmobile-accent',     '#3b82f6')
+  root.style.setProperty('--agentmobile-success',    '#22c55e')
+  root.style.setProperty('--agentmobile-warning',    '#f59e0b')
+  root.style.setProperty('--agentmobile-error',      '#ef4444')
 }
-applyNexusCssVars(getInitialTheme())
+applyAgentmobileCssVars(getInitialTheme())
 
 // Agent 状态推断（F-15）
 export default function Terminal({ token }: Props) {
@@ -218,6 +247,7 @@ export default function Terminal({ token }: Props) {
   const [showNewWindow, setShowNewWindow] = useState(false)
   const [showSessionDrawer, setShowSessionDrawer] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
+  const [sessionActionError, setSessionActionError] = useState<string | null>(null)
 
   const [isWidePC, setIsWidePC] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768)
   const [isConnecting, setIsConnecting] = useState(false)
@@ -228,6 +258,7 @@ export default function Terminal({ token }: Props) {
   const [showScrollback, setShowScrollback] = useState(false)
   const [scrollbackContent, setScrollbackContent] = useState('')
   const [scrollbackLoading, setScrollbackLoading] = useState(false)
+  const [scrollbackHintVisible, setScrollbackHintVisible] = useState(true)
   const showScrollbackRef = useRef(false)
   const swipeUpAccumRef = useRef(0)
   const scrollbackOverlayRef = useRef<HTMLDivElement>(null)
@@ -247,11 +278,12 @@ export default function Terminal({ token }: Props) {
   const windowsRef = useRef<TmuxWindow[]>([])
   windowsRef.current = windows
   const attachWindowFnRef = useRef<(index: number) => void>(() => {})
-  const [showGuide, setShowGuide] = useState(() => localStorage.getItem('nexus_guide_seen') !== 'true')
+  const [showGuide, setShowGuide] = useState(() => localStorage.getItem('agentmobile_guide_seen') !== 'true')
   const [isScrolledUp, setIsScrolledUp] = useState(false)
   const toolbarWrapRef = useRef<HTMLDivElement>(null)
   const toolbarHeightRef = useRef(0)
   const keyboardVisibleRef = useRef(false)
+  const [mobileKeyboardVisible, setMobileKeyboardVisible] = useState(false)
   // Viewport height is handled by CSS 100dvh, not JS
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
   const [drawerRenameIndex, setDrawerRenameIndex] = useState<number | null>(null)
@@ -259,7 +291,7 @@ export default function Terminal({ token }: Props) {
   // Toolbar 展开状态（移动端点击空白区域时收起）
   // 初始值与 Toolbar 内部逻辑保持一致，确保首次加载时 ref 能正确反映展开状态
   const [toolbarCollapsed, setToolbarCollapsed] = useState<boolean | undefined>(() => {
-    const saved = localStorage.getItem('nexus_toolbar_collapsed')
+    const saved = localStorage.getItem('agentmobile_toolbar_collapsed')
     if (saved !== null) return saved === 'true'
     return window.innerWidth >= 1024 // PC 默认收起，移动端默认展开
   })
@@ -267,11 +299,12 @@ export default function Terminal({ token }: Props) {
   useEffect(() => { toolbarCollapsedRef.current = toolbarCollapsed }, [toolbarCollapsed])
   const [uploadNotifications, setUploadNotifications] = useState<Array<{ id: string; filename: string; path: string }>>([])
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const wheelScrollRemainderRef = useRef(0)
 
   // F-18: 多 tmux session 支持
   const [tmuxSessions, setTmuxSessions] = useState<string[]>([])
-  const [activeTmuxSession, setActiveTmuxSession] = useState<string>(() => localStorage.getItem('nexus_session') || '~')
-  const [wsSessionKey, setWsSessionKey] = useState<string>(() => localStorage.getItem('nexus_session') || '~')
+  const [activeTmuxSession, setActiveTmuxSession] = useState<string>(() => localStorage.getItem('agentmobile_session') || '~')
+  const [wsSessionKey, setWsSessionKey] = useState<string>(() => localStorage.getItem('agentmobile_session') || '~')
   const activeTmuxSessionRef = useRef(activeTmuxSession)
   activeTmuxSessionRef.current = activeTmuxSession
   const sessionManagerRef = useRef<SessionManagerV2Handle>(null)
@@ -291,7 +324,7 @@ export default function Terminal({ token }: Props) {
     fetch('/api/config', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then(d => {
-        if (d.tmuxSession && !localStorage.getItem('nexus_session')) {
+        if (d.tmuxSession && !localStorage.getItem('agentmobile_session')) {
           setActiveTmuxSession(d.tmuxSession)
           setWsSessionKey(d.tmuxSession)
         }
@@ -299,33 +332,84 @@ export default function Terminal({ token }: Props) {
       .catch(() => {})
   }, [token])
 
+  const syncMobileKeyboard = useCallback((visible: boolean) => {
+    keyboardVisibleRef.current = visible
+    setMobileKeyboardVisible(visible)
+  }, [])
+
+  const keepMobileInputCaretVisible = useCallback((input: HTMLInputElement) => {
+    requestAnimationFrame(() => {
+      const len = input.value.length
+      try {
+        input.setSelectionRange(len, len)
+      } catch {
+        // Some mobile browsers reject setSelectionRange for certain input states.
+      }
+      input.scrollLeft = input.scrollWidth
+    })
+  }, [])
+
+  const focusMobileInput = useCallback(() => {
+    syncMobileKeyboard(true)
+    const xtermTa = termRef.current?.textarea
+    if (xtermTa) {
+      xtermTa.inputMode = 'none'
+      xtermTa.blur()
+    }
+    const input = inputRef.current
+    if (!input) return
+    input.inputMode = 'text'
+    input.focus()
+    keepMobileInputCaretVisible(input)
+  }, [keepMobileInputCaretVisible, syncMobileKeyboard])
+
+  const blurMobileInput = useCallback(() => {
+    syncMobileKeyboard(false)
+    const input = inputRef.current
+    if (input) {
+      input.inputMode = 'none'
+      input.blur()
+    }
+    const xtermTa = termRef.current?.textarea
+    if (xtermTa) {
+      xtermTa.inputMode = 'none'
+      xtermTa.blur()
+    }
+  }, [syncMobileKeyboard])
+
+  const fetchTmuxSessions = useCallback(async () => {
+    try {
+      const r = await fetch('/api/tmux-sessions', { headers: { Authorization: `Bearer ${token}` } })
+      if (r.ok) {
+        const sessions = await r.json()
+        setTmuxSessions(sessions.map((s: any) => s.name))
+      }
+    } catch {
+      // ignore passive refresh failures
+    }
+  }, [token])
+
+  const fetchProjectsList = useCallback(async () => {
+    try {
+      const r = await fetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
+      if (r.ok) {
+        setProjects(await r.json())
+      }
+    } catch {
+      // ignore passive refresh failures
+    }
+  }, [token])
+
   // 获取所有 tmux sessions 和 projects
   useEffect(() => {
-    const fetchSessions = async () => {
-      try {
-        const r = await fetch('/api/tmux-sessions', { headers: { Authorization: `Bearer ${token}` } })
-        if (r.ok) {
-          const sessions = await r.json()
-          setTmuxSessions(sessions.map((s: any) => s.name))
-        }
-      } catch {}
-    }
-    const fetchProjects = async () => {
-      try {
-        const r = await fetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
-        if (r.ok) {
-          setProjects(await r.json())
-        }
-      } catch {}
-    }
-    fetchSessions()
-    fetchProjects()
+    fetchTmuxSessions()
+    fetchProjectsList()
     const interval = setInterval(() => {
-      fetchSessions()
-      fetchProjects()
+      fetchTmuxSessions()
+      fetchProjectsList()
     }, 10000)
     return () => clearInterval(interval)
-  }, [token])
+  }, [fetchTmuxSessions, fetchProjectsList])
 
   useEffect(() => {
     const check = () => setIsWidePC(window.innerWidth >= 768)
@@ -354,7 +438,7 @@ export default function Terminal({ token }: Props) {
 
   // CSS vars 统一调用模块级函数，保证一致性
   const applyCssVars = useCallback((mode: ThemeMode) => {
-    applyNexusCssVars(mode)
+    applyAgentmobileCssVars(mode)
   }, [])
 
   const applyTheme = useCallback((mode: ThemeMode) => {
@@ -417,11 +501,11 @@ export default function Terminal({ token }: Props) {
   useEffect(() => {
     const win = windows.find(w => w.index === activeWindowIndex)
     const taskBadge = ''
-    if (!win) { document.title = `${taskBadge}Nexus`; return }
+    if (!win) { document.title = `${taskBadge}agentmobile`; return }
     const status = getWindowStatus(windowOutputs[activeWindowIndex])
     const statusSymbol = status === 'running' ? '⚡' : status === 'waiting' ? '⏳' : status === 'shell' ? '💤' : ''
-    document.title = `${taskBadge}${statusSymbol ? statusSymbol + ' ' : ''}${win.name} — Nexus`
-    return () => { document.title = 'Nexus' }
+    document.title = `${taskBadge}${statusSymbol ? statusSymbol + ' ' : ''}${win.name} — agentmobile`
+    return () => { document.title = 'agentmobile' }
   }, [windows, activeWindowIndex, windowOutputs])
 
   // 定期刷新窗口列表（每 2 秒），保持与 tmux 同步
@@ -471,6 +555,7 @@ export default function Terminal({ token }: Props) {
       requestAnimationFrame(() => {
         const wasAtBottom = !userScrolledRef.current
         fitAddon.fit()
+        refreshTerminalViewport(term)
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
         }
@@ -512,6 +597,7 @@ export default function Terminal({ token }: Props) {
         rafId = requestAnimationFrame(() => {
           const wasAtBottom = !userScrolledRef.current
           fitAddon.fit()
+          refreshTerminalViewport(term)
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
           }
@@ -650,25 +736,31 @@ export default function Terminal({ token }: Props) {
     }
   }
 
-  async function createSession(relPath: string, agentType: 'claude' | 'codex' | 'bash' = 'claude', profile?: string) {
+  async function createSession(relPath: string, agentType: 'claude' | 'codex' | 'trae' | 'opencode' | 'bash' = 'claude', profile?: string) {
+    setSessionActionError(null)
     try {
       const r = await fetch('/api/projects', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: relPath, agent_type: agentType, profile }),
       })
-      if (r.ok) {
-        const { name: newProjectName } = await r.json()
-        // 切换到新创建的 project
-        handleSwitchSession(newProjectName, 0)
+      if (!r.ok) {
+        setSessionActionError(await parseApiError(r, '创建项目失败'))
+        return
       }
-    } catch {
-      // ignore
+      const { name: newProjectName } = await r.json()
+      handleSwitchSession(newProjectName, 0)
+      await fetchProjectsList()
+      await fetchTmuxSessions()
+      sessionManagerRef.current?.refresh()
+    } catch (e: unknown) {
+      setSessionActionError(parseNetworkError(e, '创建项目失败'))
     }
   }
 
   // F-19: 创建新窗口（继承当前项目目录）
-  async function createWindow(agentType: 'claude' | 'codex' | 'bash' = 'claude', profile?: string) {
+  async function createWindow(agentType: 'claude' | 'codex' | 'trae' | 'opencode' | 'bash' = 'claude', profile?: string) {
+    setSessionActionError(null)
     try {
       const session = activeTmuxSessionRef.current
       // 获取当前 project 的路径
@@ -679,25 +771,32 @@ export default function Terminal({ token }: Props) {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent_type: agentType, profile, path: projectPath }),
       })
-      if (r.ok) {
-        const { name: newWindowName } = await r.json()
-        await new Promise(resolve => setTimeout(resolve, 300))
-        const sessionNow = activeTmuxSessionRef.current
-        const listRes = await fetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-        if (listRes.ok) {
-          const d = await listRes.json()
-          const wins: TmuxWindow[] = d.windows ?? []
-          setWindows(wins)
-          const newWin = wins.find(w => w.name === newWindowName)
-          if (newWin) {
-            attachToWindow(newWin.index)
-          }
-        }
+      if (!r.ok) {
+        setSessionActionError(await parseApiError(r, '创建窗口失败'))
+        return
       }
-    } catch {
-      // ignore
+      const { name: newWindowName } = await r.json()
+      await new Promise(resolve => setTimeout(resolve, 300))
+      const sessionNow = activeTmuxSessionRef.current
+      const listRes = await fetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!listRes.ok) {
+        setSessionActionError(await parseApiError(listRes, '刷新窗口列表失败'))
+        return
+      }
+      const d = await listRes.json()
+      const wins: TmuxWindow[] = d.windows ?? []
+      setWindows(wins)
+      const newWin = wins.find(w => w.name === newWindowName)
+      if (newWin) {
+        attachToWindow(newWin.index)
+      }
+      await fetchProjectsList()
+      await fetchTmuxSessions()
+      sessionManagerRef.current?.refresh()
+    } catch (e: unknown) {
+      setSessionActionError(parseNetworkError(e, '创建窗口失败'))
     }
   }
 
@@ -705,7 +804,7 @@ export default function Terminal({ token }: Props) {
     setShowNewSession(true)
   }
 
-  function handleCreateSession(path: string, agentType: 'claude' | 'codex' | 'bash', profile?: string) {
+  function handleCreateSession(path: string, agentType: 'claude' | 'codex' | 'trae' | 'opencode' | 'bash', profile?: string) {
     setShowNewSession(false)
     createSession(path, agentType, profile)
   }
@@ -715,14 +814,15 @@ export default function Terminal({ token }: Props) {
     setShowNewWindow(true)
   }
 
-  function handleNewWindowConfirm(agentType: 'claude' | 'codex' | 'bash', profile?: string) {
+  function handleNewWindowConfirm(agentType: 'claude' | 'codex' | 'trae' | 'opencode' | 'bash', profile?: string) {
     setShowNewWindow(false)
     createWindow(agentType, profile)
     setTimeout(() => sessionManagerRef.current?.refresh(), 500)
   }
 
   function handleSwitchSession(newSession: string, lastChannel?: number) {
-    localStorage.setItem('nexus_session', newSession)
+    setSessionActionError(null)
+    localStorage.setItem('agentmobile_session', newSession)
     // 同步更新 ref，确保 fetchWindows 能立即读到新 session
     activeTmuxSessionRef.current = newSession
     setActiveTmuxSession(newSession)
@@ -770,18 +870,18 @@ export default function Terminal({ token }: Props) {
       const data = await res.json()
       const fullPath = data.fullPath || data.url || ''
       const filename = data.originalName || data.filename || file.name
-      if (!fullPath) console.warn('[Nexus] Upload response missing fullPath:', data)
+      if (!fullPath) console.warn('[agentmobile] Upload response missing fullPath:', data)
       addUploadNotification(filename, fullPath)
       const term = termRef.current
       if (term) {
-        term.writeln(`\r\n\x1b[32m[Nexus: 文件已上传]\x1b[0m ${filename}`)
+        term.writeln(`\r\n\x1b[32m[agentmobile: 文件已上传]\x1b[0m ${filename}`)
         if (fullPath) term.writeln(`\x1b[36m路径: ${fullPath}\x1b[0m`)
       }
     } catch (e: any) {
       console.error('Upload failed:', e)
       const term = termRef.current
       if (term) {
-        term.writeln(`\r\n\x1b[31m[Nexus: 上传失败]\x1b[0m ${e.message || 'unknown error'}`)
+        term.writeln(`\r\n\x1b[31m[agentmobile: 上传失败]\x1b[0m ${e.message || 'unknown error'}`)
       }
     }
   }
@@ -797,7 +897,7 @@ export default function Terminal({ token }: Props) {
     setUploadConflict({ show: false, file: null, filename: '' })
     const term = termRef.current
     if (term) {
-      term.writeln(`\r\n\x1b[33m[Nexus: 上传已取消]\x1b[0m ${uploadConflict.filename}`)
+      term.writeln(`\r\n\x1b[33m[agentmobile: 上传已取消]\x1b[0m ${uploadConflict.filename}`)
     }
   }
 
@@ -873,6 +973,30 @@ export default function Terminal({ token }: Props) {
     // Enable text selection in the terminal screen element
     const screen = container.querySelector('.xterm-screen') as HTMLElement
     if (screen) screen.style.userSelect = 'text'
+
+    function onDesktopWheel(e: WheelEvent) {
+      if (window.innerWidth < 768) return
+      if (showScrollbackRef.current) return
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+      if (!(e.target instanceof Node)) return
+      if (!container.contains(e.target)) return
+      e.preventDefault()
+      e.stopPropagation()
+
+      const lineDelta = e.deltaMode === 1
+        ? e.deltaY
+        : e.deltaMode === 2
+          ? e.deltaY * Math.max(term.rows, 1)
+          : e.deltaY / 16
+      const next = wheelScrollRemainderRef.current + lineDelta
+      const lines = next < 0 ? Math.ceil(next) : Math.floor(next)
+      wheelScrollRemainderRef.current = next - lines
+      if (lines !== 0) {
+        term.scrollLines(lines)
+      }
+    }
+
+    container.addEventListener('wheel', onDesktopWheel, { passive: false, capture: true })
 
     // PC端：全局键盘捕获，仅拦截特殊键和快捷键；可打印字符走 xterm 原生路径（支持 IME）
     function onGlobalKeyDown(e: KeyboardEvent) {
@@ -1131,29 +1255,13 @@ export default function Terminal({ token }: Props) {
         // Prevent the subsequent click event so xterm's internal handler
         // doesn't steal focus from our managed input.
         e.preventDefault()
-        const xtermTa = termRef.current?.textarea
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
         // Tap toggles keyboard: tap to show, tap again to hide
         // Always toggle, regardless of toolbar state
         if (keyboardVisibleRef.current) {
-          keyboardVisibleRef.current = false
-          if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
-          if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
+          blurMobileInput()
         } else {
-          keyboardVisibleRef.current = true
           if (toolbarCollapsedRef.current === false) setToolbarCollapsed(true)
-          if (isIOS) {
-            // iOS Safari won't reliably show the keyboard for xterm's internal
-            // textarea (tiny element + restrictive attributes). Use our standard
-            // <input> instead — iOS handles it correctly.
-            if (xtermTa) xtermTa.inputMode = 'none'
-            if (inputRef.current) { inputRef.current.inputMode = 'text'; inputRef.current.focus() }
-          } else {
-            // Android / other: focus xterm's own textarea — term.onData handles
-            // all input natively (letters, numbers, IME/CJK).
-            if (xtermTa) { xtermTa.inputMode = 'text'; xtermTa.focus() }
-            if (inputRef.current) inputRef.current.inputMode = 'text'
-          }
+          focusMobileInput()
         }
       }
     }
@@ -1171,7 +1279,7 @@ export default function Terminal({ token }: Props) {
     function onDragEnter(e: DragEvent) {
       e.preventDefault()
       e.stopPropagation()
-      container.style.boxShadow = 'inset 0 0 0 3px var(--nexus-accent)'
+      container.style.boxShadow = 'inset 0 0 0 3px var(--agentmobile-accent)'
     }
     function onDragLeave(e: DragEvent) {
       e.preventDefault()
@@ -1204,6 +1312,7 @@ export default function Terminal({ token }: Props) {
     function sendResize() {
       const wasAtBottom = !userScrolledRef.current
       fitAddonRef.current?.fit()
+      refreshTerminalViewport(term)
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
       }
@@ -1230,6 +1339,7 @@ export default function Terminal({ token }: Props) {
       container.removeEventListener('touchstart', onTouchStart)
       container.removeEventListener('touchmove', onTouchMove)
       container.removeEventListener('touchend', onTouchEnd)
+      container.removeEventListener('wheel', onDesktopWheel, true)
       container.removeEventListener('dragover', onDragOver)
       container.removeEventListener('dragenter', onDragEnter)
       container.removeEventListener('dragleave', onDragLeave)
@@ -1239,7 +1349,7 @@ export default function Terminal({ token }: Props) {
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, [token])
+  }, [blurMobileInput, focusMobileInput, token])
 
   // Effect B: WebSocket connection (reconnects on window switch, xterm persists)
   useEffect(() => {
@@ -1277,7 +1387,7 @@ export default function Terminal({ token }: Props) {
 
       newWs.onopen = () => {
         if (isReconnect) {
-          writeTerm('\r\n\x1b[32m[Nexus: 已重新连接]\x1b[0m\r\n')
+          writeTerm('\r\n\x1b[32m[agentmobile: 已重新连接]\x1b[0m\r\n')
         } else {
           clearTimeout(loadingTimer)
           // Reset xterm parser state for the new window so the incoming
@@ -1290,6 +1400,7 @@ export default function Terminal({ token }: Props) {
         fitAddonRef.current?.fit()
         const term = termRef.current
         if (term) {
+          refreshTerminalViewport(term)
           // Send rows-1 first: tmux only repaints on an *actual* dimension change.
           // If the PTY already has the same cols/rows (same device, same viewport),
           // a same-size resize is a no-op in tmux and no repaint is sent.
@@ -1302,6 +1413,7 @@ export default function Terminal({ token }: Props) {
         requestAnimationFrame(() => {
           fitAddonRef.current?.fit()
           if (wsRef.current?.readyState === WebSocket.OPEN && termRef.current) {
+            refreshTerminalViewport(termRef.current)
             wsRef.current.send(JSON.stringify({ type: 'resize', cols: termRef.current.cols, rows: termRef.current.rows }))
           }
         })
@@ -1315,20 +1427,20 @@ export default function Terminal({ token }: Props) {
       newWs.onclose = (e) => {
         if (intentionalClose) return
         if (e.code === 4001) {
-          writeTerm('\r\n\x1b[31m[Nexus: 认证失败，请刷新重新登录]\x1b[0m\r\n')
+          writeTerm('\r\n\x1b[31m[agentmobile: 认证失败，请刷新重新登录]\x1b[0m\r\n')
           return
         }
         if (reconnectAttempts >= maxReconnectAttempts) {
-          writeTerm('\r\n\x1b[31m[Nexus: 重连失败，请刷新页面]\x1b[0m\r\n')
+          writeTerm('\r\n\x1b[31m[agentmobile: 重连失败，请刷新页面]\x1b[0m\r\n')
           return
         }
         reconnectAttempts++
         const delay = reconnectDelay()
-        writeTerm(`\r\n\x1b[33m[Nexus: 连接断开，${delay / 1000}s 后重连 (${reconnectAttempts}/${maxReconnectAttempts})...]\x1b[0m\r\n`)
+        writeTerm(`\r\n\x1b[33m[agentmobile: 连接断开，${delay / 1000}s 后重连 (${reconnectAttempts}/${maxReconnectAttempts})...]\x1b[0m\r\n`)
         setTimeout(() => createWs(true), delay)
       }
 
-      newWs.onerror = () => writeTerm('\r\n\x1b[31m[Nexus: WebSocket 错误]\x1b[0m\r\n')
+      newWs.onerror = () => writeTerm('\r\n\x1b[31m[agentmobile: WebSocket 错误]\x1b[0m\r\n')
     }
 
     createWs()
@@ -1344,9 +1456,15 @@ export default function Terminal({ token }: Props) {
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (isComposingRef.current) return // handled by compositionEnd
-    // Fallback for Android (keydown fires key='Unidentified', onChange is reliable there)
+    // Mobile fallback: some keyboards emit text via input/change instead of keydown.
     const val = e.target.value
-    if (val) { sendToWs(val); e.target.value = '' }
+    if (val) {
+      sendToWs(val)
+      requestAnimationFrame(() => {
+        e.target.value = ''
+        keepMobileInputCaretVisible(e.target)
+      })
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -1369,11 +1487,12 @@ export default function Terminal({ token }: Props) {
       sendToWs(String.fromCharCode(e.key.toLowerCase().charCodeAt(0) - 96))
     }
     else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-      // Intercept printable chars (letters, digits, punctuation) directly from keydown.
-      // preventDefault stops the browser from updating input.value, so onChange won't
-      // double-fire. This is reliable on iOS/desktop where e.key is always correct.
-      e.preventDefault()
-      sendToWs(e.key)
+      // On mobile, let the input update first so the user gets immediate local
+      // feedback; handleInputChange will forward the text to the terminal.
+      if (isWidePC) {
+        e.preventDefault()
+        sendToWs(e.key)
+      }
     }
   }
 
@@ -1382,6 +1501,7 @@ export default function Terminal({ token }: Props) {
     const text = e.data
     if (text) sendToWs(text)
     ;(e.currentTarget as HTMLInputElement).value = ''
+    keepMobileInputCaretVisible(e.currentTarget)
   }
 
   // Track keyboard visibility and adjust layout height on mobile
@@ -1391,13 +1511,19 @@ export default function Terminal({ token }: Props) {
   useEffect(() => {
     if (isWidePC) {
       setVvHeight(null)
+      setMobileKeyboardVisible(false)
       return
     }
     const vv = window.visualViewport
     if (!vv) return
     const handleResize = () => {
-      keyboardVisibleRef.current = vv.height < window.innerHeight * 0.8
+      const visible = vv.height < window.innerHeight * 0.8
+      keyboardVisibleRef.current = visible
+      setMobileKeyboardVisible(visible)
       setVvHeight(Math.round(vv.height))
+      if (!visible && inputRef.current) {
+        inputRef.current.inputMode = 'none'
+      }
     }
     handleResize()
     vv.addEventListener('resize', handleResize)
@@ -1421,10 +1547,18 @@ export default function Terminal({ token }: Props) {
   }, [isWidePC])
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem('nexus_sidebar_collapsed')
+    const saved = localStorage.getItem('agentmobile_sidebar_collapsed')
     return saved !== null ? saved === 'true' : true // default collapsed
   })
   // Sidebar toggled only by the explicit chevron buttons
+  useEffect(() => {
+    if (!isWidePC) return
+    const timers = [0, 220].map(delay => window.setTimeout(() => {
+      fitTerminal()
+    }, delay))
+    return () => timers.forEach(timer => window.clearTimeout(timer))
+  }, [fitTerminal, isWidePC, sidebarCollapsed])
+
   useEffect(() => {
     const el = toolbarWrapRef.current
     if (!el) return
@@ -1454,6 +1588,11 @@ export default function Terminal({ token }: Props) {
     }
   }, [anyOverlayOpen, isWidePC])
 
+  useEffect(() => {
+    if (isWidePC || !anyOverlayOpen || !mobileKeyboardVisible) return
+    blurMobileInput()
+  }, [anyOverlayOpen, blurMobileInput, isWidePC, mobileKeyboardVisible])
+
   function closeScrollback() {
     showScrollbackRef.current = false
     setShowScrollback(false)
@@ -1475,6 +1614,9 @@ export default function Terminal({ token }: Props) {
     showScrollbackRef.current = true
     swipeUpAccumRef.current = 0
     setShowScrollback(true)
+    setScrollbackHintVisible(true) // 显示提示
+    // 2秒后自动隐藏提示
+    setTimeout(() => setScrollbackHintVisible(false), 2000)
 
     // Use pre-fetched cache if available (no loading flash)
     if (scrollbackCacheRef.current !== null) {
@@ -1531,19 +1673,39 @@ export default function Terminal({ token }: Props) {
     onCollapsedChange: setToolbarCollapsed,
   }
 
+  const showMobileInput = !isWidePC && mobileKeyboardVisible && !anyOverlayOpen
+
   return (
     <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
       <input
         ref={inputRef}
-        className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
+        className={showMobileInput
+          ? 'fixed left-3 right-3 z-[120] rounded-xl border border-agentmobile-border bg-agentmobile-bg/95 px-3 py-2.5 text-agentmobile-text text-base shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm outline-none'
+          : 'fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10'}
+        style={showMobileInput ? { bottom: toolbarHeightRef.current + 8 } : undefined}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
-        onCompositionStart={() => { isComposingRef.current = true }}
+        onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
+        onFocus={(e) => {
+          if (!isWidePC) syncMobileKeyboard(true)
+          keepMobileInputCaretVisible(e.currentTarget)
+        }}
+        onBlur={() => {
+          if (isWidePC) return
+          window.setTimeout(() => {
+            if (document.activeElement !== inputRef.current) {
+              syncMobileKeyboard(false)
+            }
+          }, 0)
+        }}
+        onCompositionStart={() => { isComposingRef.current = true; syncMobileKeyboard(true) }}
+        onCompositionUpdate={(e) => keepMobileInputCaretVisible(e.currentTarget)}
         onCompositionEnd={handleCompositionEnd}
+        placeholder={showMobileInput ? 'Input' : undefined}
         aria-hidden="true"
       />
       <input
@@ -1575,19 +1737,19 @@ export default function Terminal({ token }: Props) {
           <div className="flex flex-1 overflow-hidden min-h-0">
             {/* Collapsible Sidebar */}
             <div
-              className="flex-shrink-0 flex flex-col bg-nexus-bg"
+              className="flex-shrink-0 flex flex-col bg-agentmobile-bg"
               style={{ width: sidebarCollapsed ? 48 : 220, overflow: 'hidden' }}
             >
               {sidebarCollapsed ? (
                 /* Collapsed Sidebar - Icon Only */
                 <div
-                  className="flex-1 flex flex-col min-h-0 overflow-hidden bg-nexus-bg"
+                  className="flex-1 flex flex-col min-h-0 overflow-hidden bg-agentmobile-bg"
                   style={{ maxWidth: 48 }}
                 >
                   {/* Expand button at top */}
                   <button
-                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(false); localStorage.setItem('nexus_sidebar_collapsed', 'false'); }}
-                    className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer shrink-0"
+                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(false); localStorage.setItem('agentmobile_sidebar_collapsed', 'false'); }}
+                    className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer shrink-0"
                     title="展开侧边栏"
                   >
                     <Icon name="chevronRight" size={18} />
@@ -1605,8 +1767,8 @@ export default function Terminal({ token }: Props) {
                           onClick={(e) => { e.stopPropagation(); attachToWindow(win.index); }}
                           className="w-12 h-10 bg-transparent border-none flex items-center justify-center cursor-pointer relative"
                           style={{
-                            background: isActive ? 'var(--nexus-tab-active)' : 'transparent',
-                            borderLeft: isActive ? '3px solid var(--nexus-accent)' : '3px solid transparent',
+                            background: isActive ? 'var(--agentmobile-tab-active)' : 'transparent',
+                            borderLeft: isActive ? '3px solid var(--agentmobile-accent)' : '3px solid transparent',
                           }}
                           title={win.name}
                         >
@@ -1619,7 +1781,7 @@ export default function Terminal({ token }: Props) {
                     })}
                   </div>
 
-                  <div className="border-t border-nexus-border" onPointerDown={(e) => e.stopPropagation()} />
+                  <div className="border-t border-agentmobile-border" onPointerDown={(e) => e.stopPropagation()} />
 
                   {/* Fixed quick actions at bottom */}
                   <div
@@ -1628,7 +1790,7 @@ export default function Terminal({ token }: Props) {
                   >
                     <button
                       onClick={(e) => { e.stopPropagation(); openNewSessionDialog(); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
                       title="新建项目"
                     >
                       <Icon name="folderPlus" size={18} />
@@ -1636,7 +1798,7 @@ export default function Terminal({ token }: Props) {
 
                     <button
                       onClick={(e) => { e.stopPropagation(); handleCreateWindow(); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
                       title="新建窗口"
                     >
                       <Icon name="plus" size={18} />
@@ -1645,7 +1807,7 @@ export default function Terminal({ token }: Props) {
 
                     <button
                       onClick={(e) => { e.stopPropagation(); setShowFiles(true); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
                       title="文件列表"
                     >
                       <Icon name="folder" size={18} />
@@ -1653,7 +1815,7 @@ export default function Terminal({ token }: Props) {
 
                     <button
                       onClick={(e) => { e.stopPropagation(); setShowWorkspace(true); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
                       title="浏览工作目录"
                     >
                       <Icon name="folderOpen" size={18} />
@@ -1661,7 +1823,7 @@ export default function Terminal({ token }: Props) {
 
                     <button
                       onClick={(e) => { e.stopPropagation(); handleFileUpload(); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
                       title="上传文件"
                     >
                       <Icon name="paperclip" size={18} />
@@ -1671,7 +1833,7 @@ export default function Terminal({ token }: Props) {
 
                     <button
                       onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
                       title={themeMode === 'dark' ? '切换亮色' : '切换暗色'}
                     >
                       <Icon name={themeMode === 'dark' ? 'sun' : 'moon'} size={18} />
@@ -1679,7 +1841,7 @@ export default function Terminal({ token }: Props) {
 
                     <button
                       onClick={(e) => { e.stopPropagation(); setShowSessionManagerV2(true); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      className="w-12 h-10 bg-transparent border-none text-agentmobile-text-2 flex items-center justify-center cursor-pointer"
                       title="配置管理"
                     >
                       <Icon name="settings" size={18} />
@@ -1691,8 +1853,8 @@ export default function Terminal({ token }: Props) {
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
                   {/* Collapse button in header area */}
                   <button
-                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(true); localStorage.setItem('nexus_sidebar_collapsed', 'true'); }}
-                    className="absolute top-1 right-1 z-50 w-7 h-7 flex items-center justify-center rounded cursor-pointer bg-nexus-bg/80 border border-nexus-border text-nexus-text-2 hover:bg-nexus-bg transition-colors"
+                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(true); localStorage.setItem('agentmobile_sidebar_collapsed', 'true'); }}
+                    className="absolute top-1 right-1 z-50 w-7 h-7 flex items-center justify-center rounded cursor-pointer bg-agentmobile-bg/80 border border-agentmobile-border text-agentmobile-text-2 hover:bg-agentmobile-bg transition-colors"
                     title="收起侧边栏"
                   >
                     <Icon name="chevronLeft" size={16} />
@@ -1713,22 +1875,22 @@ export default function Terminal({ token }: Props) {
                       layout="sidebar"
                     />
                   </div>
-                  <div className="border-t border-nexus-border shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <div className="border-t border-agentmobile-border shrink-0" onClick={(e) => e.stopPropagation()}>
                     <Toolbar {...toolbarProps} embedded />
                   </div>
                 </div>
               )}
             </div>
-            <div className="flex-1 flex flex-col min-w-0 relative">
+            <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
               <div ref={containerRef} className="flex-1 overflow-hidden relative" />
               {isConnecting && (
-                <div className="absolute inset-0 bg-nexus-bg flex flex-col items-center justify-center gap-3 z-10">
-                  <div className="w-8 h-8 border-[3px] border-nexus-border border-t-nexus-accent rounded-full animate-spin" />
-                  <span className="text-nexus-text-2 text-sm">Connecting...</span>
+                <div className="absolute inset-0 bg-agentmobile-bg flex flex-col items-center justify-center gap-3 z-10">
+                  <div className="w-8 h-8 border-[3px] border-agentmobile-border border-t-agentmobile-accent rounded-full animate-spin" />
+                  <span className="text-agentmobile-text-2 text-sm">Connecting...</span>
                 </div>
               )}
               {isScrolledUp && (
-                <button className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-nexus-accent border-none text-white text-lg cursor-pointer z-50 flex items-center justify-center shadow-lg backdrop-blur-sm" onClick={scrollToBottom} title="滚到底部"><Icon name="arrowDown" size={16} /></button>
+                <button className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-agentmobile-accent border-none text-white text-lg cursor-pointer z-50 flex items-center justify-center shadow-lg backdrop-blur-sm" onClick={scrollToBottom} title="滚到底部"><Icon name="arrowDown" size={16} /></button>
               )}
             </div>
           </div>
@@ -1738,13 +1900,13 @@ export default function Terminal({ token }: Props) {
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
             <div ref={containerRef} className="flex-1 overflow-hidden relative" />
             {isConnecting && (
-              <div className="absolute inset-0 bg-nexus-bg flex flex-col items-center justify-center gap-3 z-10">
-                <div className="w-8 h-8 border-[3px] border-nexus-border border-t-nexus-accent rounded-full animate-spin" />
-                <span className="text-nexus-text-2 text-sm">Connecting...</span>
+              <div className="absolute inset-0 bg-agentmobile-bg flex flex-col items-center justify-center gap-3 z-10">
+                <div className="w-8 h-8 border-[3px] border-agentmobile-border border-t-agentmobile-accent rounded-full animate-spin" />
+                <span className="text-agentmobile-text-2 text-sm">Connecting...</span>
               </div>
             )}
             {isScrolledUp && (
-              <button className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-nexus-accent border-none text-white text-lg cursor-pointer z-50 flex items-center justify-center shadow-lg backdrop-blur-sm" onClick={scrollToBottom} title="滚到底部"><Icon name="arrowDown" size={16} /></button>
+              <button className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-agentmobile-accent border-none text-white text-lg cursor-pointer z-50 flex items-center justify-center shadow-lg backdrop-blur-sm" onClick={scrollToBottom} title="滚到底部"><Icon name="arrowDown" size={16} /></button>
             )}
           </div>
           <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={toolbarHeightRef.current} />
@@ -1757,10 +1919,10 @@ export default function Terminal({ token }: Props) {
         <>
           <GhostShield />
           <div className="fixed inset-0 z-[400] bg-black/50" onClick={() => { setShowSessionDrawer(false); setDrawerMenuIndex(null); setDrawerRenameIndex(null) }} />
-          <div className="fixed bottom-0 left-0 right-0 z-[401] bg-nexus-menu-bg rounded-t-xl border border-nexus-border border-b-0 max-h-[70vh] flex flex-col shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
-            <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border flex-shrink-0">
-              <span className="text-nexus-text font-semibold text-[15px]">会话管理</span>
-              <button type="button" className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center" onClick={() => { setShowSessionDrawer(false); setDrawerMenuIndex(null); setDrawerRenameIndex(null); (document.activeElement as HTMLElement)?.blur() }}><Icon name="x" size={20} /></button>
+          <div className="fixed bottom-0 left-0 right-0 z-[401] bg-agentmobile-menu-bg rounded-t-xl border border-agentmobile-border border-b-0 max-h-[70vh] flex flex-col shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
+            <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border flex-shrink-0">
+              <span className="text-agentmobile-text font-semibold text-[15px]">会话管理</span>
+              <button type="button" className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center" onClick={() => { setShowSessionDrawer(false); setDrawerMenuIndex(null); setDrawerRenameIndex(null); (document.activeElement as HTMLElement)?.blur() }}><Icon name="x" size={20} /></button>
             </div>
             <div className="flex-1 overflow-y-auto py-1.5">
               {windows.map(win => {
@@ -1769,10 +1931,10 @@ export default function Terminal({ token }: Props) {
                 const isMenuOpen = drawerMenuIndex === win.index
                 const isRenaming = drawerRenameIndex === win.index
                 return (
-                  <div key={win.index} className="border-b border-nexus-border">
+                  <div key={win.index} className="border-b border-agentmobile-border">
                     {/* Main row */}
                     <div
-                      className={`flex items-center gap-3 px-4 py-3 ${isActive ? 'bg-nexus-tab-active' : 'bg-transparent'}`}
+                      className={`flex items-center gap-3 px-4 py-3 ${isActive ? 'bg-agentmobile-tab-active' : 'bg-transparent'}`}
                     >
                       <span
                         className="w-2 h-2 rounded-full flex-shrink-0 inline-block"
@@ -1789,32 +1951,32 @@ export default function Terminal({ token }: Props) {
                             if (e.key === 'Escape') setDrawerRenameIndex(null)
                           }}
                           onBlur={() => setDrawerRenameIndex(null)}
-                          className="flex-1 bg-nexus-bg border border-nexus-accent rounded-md text-nexus-text text-sm font-mono py-1 px-2 outline-none"
+                          className="flex-1 bg-agentmobile-bg border border-agentmobile-accent rounded-md text-agentmobile-text text-sm font-mono py-1 px-2 outline-none overflow-x-auto"
                           onClick={e => e.stopPropagation()}
                         />
                       ) : (
                         <span
-                          className="flex-1 text-nexus-text text-sm font-mono overflow-hidden text-ellipsis whitespace-nowrap cursor-pointer"
+                          className="flex-1 text-agentmobile-text text-sm font-mono overflow-hidden text-ellipsis whitespace-nowrap cursor-pointer"
                           onClick={e => { e.stopPropagation(); attachToWindow(win.index); setShowSessionDrawer(false); setDrawerMenuIndex(null) }}
                         >{win.name}</span>
                       )}
-                      {isActive && !isRenaming && <span className="text-nexus-accent text-sm font-semibold flex-shrink-0 flex items-center"><Icon name="check" size={14} /></span>}
+                      {isActive && !isRenaming && <span className="text-agentmobile-accent text-sm font-semibold flex-shrink-0 flex items-center"><Icon name="check" size={14} /></span>}
                         <button
                           type="button"
-                          className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex-shrink-0 flex items-center justify-center"
+                          className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex-shrink-0 flex items-center justify-center"
                           onClick={e => { e.stopPropagation(); setDrawerMenuIndex(isMenuOpen ? null : win.index); setDrawerRenameIndex(null) }}
                         ><Icon name="more" size={18} /></button>
                     </div>
                     {/* Action row */}
                     {isMenuOpen && !isRenaming && (
-                      <div className="flex gap-2 px-4 py-1.5 pb-2.5 bg-nexus-bg">
+                      <div className="flex gap-2 px-4 py-1.5 pb-2.5 bg-agentmobile-bg">
                         <button
-                          className="flex-1 bg-transparent border border-nexus-border rounded-md text-nexus-text text-sm py-1.5 cursor-pointer"
+                          className="flex-1 bg-transparent border border-agentmobile-border rounded-md text-agentmobile-text text-sm py-1.5 cursor-pointer"
                           onClick={e => { e.stopPropagation(); setDrawerRenameValue(win.name); setDrawerRenameIndex(win.index); setDrawerMenuIndex(null) }}
                         ><span className="flex items-center justify-center gap-1"><Icon name="pencil" size={14} />改名</span></button>
                         <button
                           type="button"
-                          className="flex-1 bg-transparent border border-nexus-error rounded-md text-nexus-error text-sm py-1.5 cursor-pointer"
+                          className="flex-1 bg-transparent border border-agentmobile-error rounded-md text-agentmobile-error text-sm py-1.5 cursor-pointer"
                           onClick={e => { e.stopPropagation(); closeWindow(win.index); setDrawerMenuIndex(null); if (windows.length <= 1) setShowSessionDrawer(false) }}
                         ><span className="flex items-center justify-center gap-1"><Icon name="x" size={14} />关闭</span></button>
                       </div>
@@ -1824,21 +1986,21 @@ export default function Terminal({ token }: Props) {
               })}
               {/* tmux session 切换（多 session 时显示） */}
               {tmuxSessions.length > 1 && (
-                <div className="px-4 pt-2.5 pb-1 text-nexus-muted text-[11px] uppercase tracking-wide">Tmux Sessions</div>
+                <div className="px-4 pt-2.5 pb-1 text-agentmobile-muted text-[11px] uppercase tracking-wide">Tmux Sessions</div>
               )}
               {tmuxSessions.length > 1 && tmuxSessions.map(sess => (
                 <div
                   key={sess}
-                  className={`flex items-center gap-2.5 px-4 py-2.5 cursor-pointer ${sess === activeTmuxSession ? 'bg-nexus-tab-active' : 'bg-transparent'}`}
+                  className={`flex items-center gap-2.5 px-4 py-2.5 cursor-pointer ${sess === activeTmuxSession ? 'bg-agentmobile-tab-active' : 'bg-transparent'}`}
                   onClick={() => { handleSwitchSession(sess); setShowSessionDrawer(false) }}
                 >
-                  <span className="flex items-center gap-1.5 text-sm">{sess === activeTmuxSession ? <span className="text-nexus-accent"><Icon name="check" size={14} /></span> : <span className="w-3.5" />}<span className={sess === activeTmuxSession ? 'text-nexus-accent' : 'text-nexus-text-2'}>{sess}</span></span>
+                  <span className="flex items-center gap-1.5 text-sm">{sess === activeTmuxSession ? <span className="text-agentmobile-accent"><Icon name="check" size={14} /></span> : <span className="w-3.5" />}<span className={sess === activeTmuxSession ? 'text-agentmobile-accent' : 'text-agentmobile-text-2'}>{sess}</span></span>
                 </div>
               ))}
             </div>
-            <div className="px-4 py-3 border-t border-nexus-border flex-shrink-0 flex gap-2">
+            <div className="px-4 py-3 border-t border-agentmobile-border flex-shrink-0 flex gap-2">
               <button
-                className="flex-1 bg-nexus-accent border-none rounded-lg text-white text-sm font-semibold py-3 cursor-pointer flex items-center justify-center gap-1.5"
+                className="flex-1 bg-agentmobile-accent border-none rounded-lg text-white text-sm font-semibold py-3 cursor-pointer flex items-center justify-center gap-1.5"
                 style={{ touchAction: 'manipulation' }}
                 onClick={() => { setShowSessionDrawer(false); openNewSessionDialog() }}
               >
@@ -1846,7 +2008,7 @@ export default function Terminal({ token }: Props) {
                 <span>新项目</span>
               </button>
               <button
-                className="flex-1 bg-nexus-bg-2 border border-nexus-border rounded-lg text-nexus-text text-sm font-semibold py-3 cursor-pointer flex items-center justify-center gap-1.5"
+                className="flex-1 bg-agentmobile-bg-2 border border-agentmobile-border rounded-lg text-agentmobile-text text-sm font-semibold py-3 cursor-pointer flex items-center justify-center gap-1.5"
                 style={{ touchAction: 'manipulation' }}
                 onClick={() => { setShowSessionDrawer(false); handleCreateWindow() }}
               >
@@ -1882,13 +2044,13 @@ export default function Terminal({ token }: Props) {
           onClick={() => setCopySheetText(null)}
         >
           <div
-            className="w-full max-w-lg bg-nexus-bg border-t border-nexus-border rounded-t-xl p-4 max-h-[60vh] flex flex-col gap-3"
+            className="w-full max-w-lg bg-agentmobile-bg border-t border-agentmobile-border rounded-t-xl p-4 max-h-[60vh] flex flex-col gap-3"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <span className="text-nexus-text font-medium text-sm">Terminal Content</span>
+              <span className="text-agentmobile-text font-medium text-sm">Terminal Content</span>
               <button
-                className="text-xs px-3 py-1 rounded bg-nexus-accent text-white"
+                className="text-xs px-3 py-1 rounded bg-agentmobile-accent text-white"
                 onClick={() => setCopySheetText(null)}
               >
                 Close
@@ -1897,14 +2059,14 @@ export default function Terminal({ token }: Props) {
             <textarea
               readOnly
               value={copySheetText}
-              className="w-full flex-1 min-h-[200px] bg-nexus-surface text-nexus-text text-xs font-mono p-3 rounded border border-nexus-border resize-none"
+              className="w-full flex-1 min-h-[200px] bg-agentmobile-surface text-agentmobile-text text-xs font-mono p-3 rounded border border-agentmobile-border resize-none"
               style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
               onFocus={(e) => {
                 e.currentTarget.select()
                 e.currentTarget.setSelectionRange(0, e.currentTarget.value.length)
               }}
             />
-            <p className="text-nexus-text-2 text-xs text-center">Long press to select and copy</p>
+            <p className="text-agentmobile-text-2 text-xs text-center">Long press to select and copy</p>
           </div>
         </div>
       )}
@@ -1959,28 +2121,40 @@ export default function Terminal({ token }: Props) {
           />
         </Suspense>
       )}
+      {sessionActionError && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[600] max-w-[min(90vw,32rem)] bg-agentmobile-menu-bg border border-agentmobile-error rounded-lg shadow-lg px-4 py-3 flex items-start gap-3">
+          <div className="text-agentmobile-error text-sm leading-5 flex-1">{sessionActionError}</div>
+          <button
+            className="bg-transparent border-none text-agentmobile-error cursor-pointer p-0.5 flex items-center justify-center"
+            onClick={() => setSessionActionError(null)}
+            aria-label="Close error"
+          >
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+      )}
 
       {/* 首次使用引导 */}
       {showGuide && (
         <div className="fixed inset-0 z-[500] bg-black/70 flex items-center justify-center p-5">
-          <div className="bg-nexus-menu-bg rounded-xl p-6 max-w-[400px] border border-nexus-border">
-            <h3 className="text-nexus-text mt-0">欢迎使用 Nexus</h3>
-            <ul className="text-nexus-text-2 leading-relaxed text-sm pl-5 my-2">
+          <div className="bg-agentmobile-menu-bg rounded-xl p-6 max-w-[400px] border border-agentmobile-border">
+            <h3 className="text-agentmobile-text mt-0">欢迎使用 agentmobile</h3>
+            <ul className="text-agentmobile-text-2 leading-relaxed text-sm pl-5 my-2">
               <li>黑色区域是终端，点击聚焦后可键盘输入</li>
               <li>底部工具栏提供 Esc/Tab/^C 等快捷键</li>
                             <li className="flex items-center gap-1.5"><Icon name="paperclip" size={14} />上传图片/文件到当前 session 目录</li>
               <li>📁 新项目：在选定目录创建窗口</li>
               <li>➕ 新窗口：在当前项目目录创建窗口</li>
             </ul>
-            <p className="text-nexus-muted text-[11px] mt-2">
+            <p className="text-agentmobile-muted text-[11px] mt-2">
               Telegram Bot: /api/telegram/setup 一键配置
             </p>
             <button
               onClick={() => {
                 setShowGuide(false)
-                localStorage.setItem('nexus_guide_seen', 'true')
+                localStorage.setItem('agentmobile_guide_seen', 'true')
               }}
-              className="w-full bg-nexus-accent border-none rounded-md text-white cursor-pointer text-sm font-semibold py-2.5 px-5 mt-3"
+              className="w-full bg-agentmobile-accent border-none rounded-md text-white cursor-pointer text-sm font-semibold py-2.5 px-5 mt-3"
             >
               开始使用
             </button>
@@ -1990,7 +2164,7 @@ export default function Terminal({ token }: Props) {
 
       {/* 空状态提示：只在数据加载完成后才显示 */}
       {windows.length === 0 && windowsLoaded && !isConnecting && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center text-nexus-muted">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center text-agentmobile-muted">
           <div className="text-5xl mb-3">🖥️</div>
           <div className="text-base mb-2">没有活动会话</div>
           <div className="text-sm">点击「+ 新建」开始</div>
@@ -2000,22 +2174,22 @@ export default function Terminal({ token }: Props) {
       {/* 文件上传覆盖确认对话框 */}
       {uploadConflict.show && (
         <div className="fixed inset-0 z-[500] bg-black/70 flex items-center justify-center p-5">
-          <div className="bg-nexus-menu-bg rounded-xl p-6 max-w-[400px] border border-nexus-border">
-            <h3 className="text-nexus-text mt-0 mb-2">文件已存在</h3>
-            <p className="text-nexus-text-2 text-sm mb-4">
-              文件 "<span className="text-nexus-text font-mono">{uploadConflict.filename}</span>" 已存在。
+          <div className="bg-agentmobile-menu-bg rounded-xl p-6 max-w-[400px] border border-agentmobile-border">
+            <h3 className="text-agentmobile-text mt-0 mb-2">文件已存在</h3>
+            <p className="text-agentmobile-text-2 text-sm mb-4">
+              文件 "<span className="text-agentmobile-text font-mono">{uploadConflict.filename}</span>" 已存在。
               <br />是否覆盖？
             </p>
             <div className="flex gap-3">
               <button
                 onClick={handleOverwriteCancel}
-                className="flex-1 bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text cursor-pointer text-sm font-semibold py-2.5"
+                className="flex-1 bg-agentmobile-bg-2 border border-agentmobile-border rounded-md text-agentmobile-text cursor-pointer text-sm font-semibold py-2.5"
               >
                 取消
               </button>
               <button
                 onClick={handleOverwriteConfirm}
-                className="flex-1 bg-nexus-accent border-none rounded-md text-white cursor-pointer text-sm font-semibold py-2.5"
+                className="flex-1 bg-agentmobile-accent border-none rounded-md text-white cursor-pointer text-sm font-semibold py-2.5"
               >
                 覆盖
               </button>
@@ -2031,11 +2205,12 @@ export default function Terminal({ token }: Props) {
         const termFontFamily = termRef.current?.options.fontFamily ?? 'Menlo, Monaco, monospace'
         const termMuted = (termTheme as any).brightBlack ?? '#4a5568'
         return (
-          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : toolbarHeightRef.current }}>
+          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : toolbarHeightRef.current, overscrollBehaviorY: 'none' }}>
             <GhostShield />
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b flex-shrink-0" style={{ borderColor: `${termMuted}44` }}>
               <span className="font-semibold text-sm" style={{ color: termFg }}>历史记录</span>
-              <span className="text-xs flex-1 text-center" style={{ color: termMuted }}>滚到底部返回终端</span>
+              {scrollbackHintVisible && <span className="text-xs flex-1 text-center" style={{ color: termMuted }}>滚到底部返回终端</span>}
+              {!scrollbackHintVisible && <span className="text-xs flex-1 text-center" style={{ color: termMuted }}></span>}
               <button
                 className="bg-transparent border-none cursor-pointer p-1 flex items-center justify-center"
                 style={{ color: termMuted }}
@@ -2046,7 +2221,7 @@ export default function Terminal({ token }: Props) {
               ref={scrollbackOverlayRef}
               onScroll={handleOverlayScroll}
               className="flex-1 overflow-y-auto py-2"
-              style={{ WebkitOverflowScrolling: 'touch' }}
+              style={{ WebkitOverflowScrolling: 'touch', overscrollBehaviorY: 'contain' }}
             >
               {scrollbackLoading ? (
                 <div className="text-center p-8" style={{ color: termMuted, fontFamily: termFontFamily, fontSize: termFontSize }}>加载中...</div>
@@ -2073,21 +2248,21 @@ export default function Terminal({ token }: Props) {
               key={notification.id}
               className="flex items-center gap-2.5 p-2.5 px-3 rounded-lg shadow-[0_4px_20px_rgba(0,0,0,0.25)] animate-slide-up"
               style={{
-                background: 'color-mix(in srgb, var(--nexus-bg2) 85%, transparent)',
+                background: 'color-mix(in srgb, var(--agentmobile-bg2) 85%, transparent)',
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
-                border: '1px solid color-mix(in srgb, var(--nexus-border) 50%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--agentmobile-border) 50%, transparent)',
               }}
             >
               <span
-                className="flex-1 text-nexus-text text-sm overflow-hidden text-ellipsis whitespace-nowrap"
+                className="flex-1 text-agentmobile-text text-sm overflow-hidden text-ellipsis whitespace-nowrap"
                 title={notification.path}
               >
                 {notification.filename}
               </span>
               <button
                 onClick={() => handleCopyNotification(notification.id, notification.path)}
-                className={`rounded-md cursor-pointer py-1.5 px-2.5 flex items-center gap-1 text-xs whitespace-nowrap transition-all duration-100 active:scale-95 ${copiedId === notification.id ? 'bg-nexus-success border-none text-white' : 'bg-nexus-bg-2 border border-nexus-border text-nexus-text-2 active:bg-nexus-bg active:text-nexus-text'}`}
+                className={`rounded-md cursor-pointer py-1.5 px-2.5 flex items-center gap-1 text-xs whitespace-nowrap transition-all duration-100 active:scale-95 ${copiedId === notification.id ? 'bg-agentmobile-success border-none text-white' : 'bg-agentmobile-bg-2 border border-agentmobile-border text-agentmobile-text-2 active:bg-agentmobile-bg active:text-agentmobile-text'}`}
                 title="复制路径"
               >
                 <Icon name={copiedId === notification.id ? 'check' : 'copy'} size={14} />
@@ -2095,7 +2270,7 @@ export default function Terminal({ token }: Props) {
               </button>
               <button
                 onClick={() => removeUploadNotification(notification.id)}
-                className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center transition-all duration-100 active:scale-90 active:text-nexus-text"
+                className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center transition-all duration-100 active:scale-90 active:text-agentmobile-text"
                 title="关闭"
               >
                 <Icon name="x" size={16} />
