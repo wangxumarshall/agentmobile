@@ -8,17 +8,6 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
 [🇨🇳 中文](README_CN.md)
-
----
-
-### Showcase
-
-<p>
-  <video src="https://github.com/user-attachments/assets/083495f7-d840-4733-9307-eaa815c2756f" width="45%" controls muted align="center">
-    Your browser does not support the video tag.
-  </video>
-</p>
-
 ---
 
 ## Highlights
