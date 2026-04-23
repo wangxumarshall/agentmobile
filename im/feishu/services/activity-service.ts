@@ -174,6 +174,10 @@ export class ActivityService {
       artifact.lastEvent = event;
       artifact.updatedAt = Date.now();
 
+      // Clear recovery timer since we successfully updated
+      const routeKey = artifact.activityId;
+      this.clearRecoveryTimer(routeKey);
+
       debug('activity', `Activity card updated: ${artifact.activityId}`);
       return { ok: true, messageId: artifact.messageId };
     } catch (e) {
@@ -232,6 +236,7 @@ export class ActivityService {
    * Set up a recovery timer for transient failures.
    *
    * If the card send times out (504), the timer triggers a retry.
+   * The timer is cleared when the artifact is updated successfully.
    */
   private setupRecoveryTimer(
     routeKey: string,
@@ -257,6 +262,17 @@ export class ActivityService {
       activityId: routeKey,
       timeoutTimer: timer,
     });
+  }
+
+  /**
+   * Clear recovery timer for a route key (called on successful update).
+   */
+  private clearRecoveryTimer(routeKey: string): void {
+    const pending = this.pendingActivitySends.get(routeKey);
+    if (pending) {
+      clearTimeout(pending.timeoutTimer);
+      this.pendingActivitySends.delete(routeKey);
+    }
   }
 
   /**

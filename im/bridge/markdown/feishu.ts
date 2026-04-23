@@ -5,14 +5,6 @@
  * Feishu supports a subset of Markdown in card elements.
  */
 
-import MarkdownIt from 'markdown-it';
-
-const md = new MarkdownIt({
-  html: false,
-  linkify: true,
-  breaks: false,
-});
-
 /**
  * Build Feishu card markdown content.
  *

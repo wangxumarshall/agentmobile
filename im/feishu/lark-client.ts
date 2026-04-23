@@ -34,8 +34,9 @@ export class LarkClient {
   private appSecret: string;
   private domain?: 'lark';
 
-  // Per-chat serialization queues
-  private outboundMessageQueues: Map<string, Promise<void>> = new Map();
+  // Per-chat serialization queues (explicit queue, not promise chain)
+  private outboundQueues: Map<string, Array<() => Promise<void>>> = new Map();
+  private outboundProcessing: Map<string, boolean> = new Map();
   private lastOutboundMessageAt: Map<string, number> = new Map();
 
   constructor(options: LarkClientOptions) {
@@ -256,27 +257,58 @@ export class LarkClient {
   /**
    * Enqueue a task for a specific chat.
    *
-   * Ensures FIFO order and rate limiting per chat.
+   * Uses an explicit array-based queue instead of promise chains
+   * to avoid unbounded growth under heavy load.
    */
   private async enqueueMessage(
     chatId: string,
     task: () => Promise<any>,
   ): Promise<any> {
-    const enqueue = (prev: Promise<void>): Promise<void> => {
-      return prev
-        .then(() => this.applyRateLimit(chatId))
-        .then(async () => {
-          await task();
-        })
-        .catch((e) => {
-          error('lark-client', `Message task failed for chat ${chatId}: ${e}`);
-        });
-    };
+    let chatQueue = this.outboundQueues.get(chatId);
+    if (!chatQueue) {
+      chatQueue = [];
+      this.outboundQueues.set(chatId, chatQueue);
+    }
 
-    const prev = this.outboundMessageQueues.get(chatId) || Promise.resolve();
-    const next = enqueue(prev);
-    this.outboundMessageQueues.set(chatId, next);
-    return next;
+    return new Promise((resolve, reject) => {
+      chatQueue!.push(async () => {
+        await this.applyRateLimit(chatId);
+        try {
+          const result = await task();
+          resolve(result);
+        } catch (e) {
+          error('lark-client', `Message task failed for chat ${chatId}: ${e}`);
+          reject(e);
+        }
+      });
+
+      // Process queue if not already running
+      if (!this.outboundProcessing.get(chatId)) {
+        this.processQueue(chatId);
+      }
+    });
+  }
+
+  /**
+   * Process the queue for a specific chat.
+   */
+  private async processQueue(chatId: string): Promise<void> {
+    const chatQueue = this.outboundQueues.get(chatId);
+    if (!chatQueue || chatQueue.length === 0) {
+      this.outboundProcessing.delete(chatId);
+      return;
+    }
+
+    this.outboundProcessing.set(chatId, true);
+    const task = chatQueue.shift()!;
+
+    try {
+      await task();
+    } catch {
+      // Error already logged in the task wrapper
+    }
+
+    this.processQueue(chatId);
   }
 
   /**

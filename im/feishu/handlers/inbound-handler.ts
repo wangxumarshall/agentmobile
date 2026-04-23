@@ -18,6 +18,42 @@ import { info, error, debug } from '../../config/logger.js';
 // Message deduplication cache (in-memory, 5 minute TTL)
 const seenMessages: Map<string, number> = new Map();
 const DEDUP_TTL_MS = 5 * 60 * 1000;
+const MAX_DEDUP_MAP_SIZE = 10000;
+let dedupLastCleanup = 0;
+
+/**
+ * Check if a message ID has been seen recently (within TTL).
+ */
+function isDuplicate(messageId: string): boolean {
+  const seenAt = seenMessages.get(messageId);
+  if (!seenAt) return false;
+  return Date.now() - seenAt < DEDUP_TTL_MS;
+}
+
+/**
+ * Mark a message ID as seen.
+ *
+ * Cleanup runs lazily: only when the map exceeds MAX_DEDUP_MAP_SIZE
+ * and at least 60 seconds have passed since the last cleanup.
+ * This avoids O(n) scans on every message.
+ */
+function markSeen(messageId: string): void {
+  seenMessages.set(messageId, Date.now());
+
+  // Lazy cleanup: only run when map is large AND enough time has passed
+  const now = Date.now();
+  if (
+    seenMessages.size > MAX_DEDUP_MAP_SIZE &&
+    now - dedupLastCleanup > 60_000
+  ) {
+    for (const [id, ts] of seenMessages) {
+      if (now - ts > DEDUP_TTL_MS) {
+        seenMessages.delete(id);
+      }
+    }
+    dedupLastCleanup = now;
+  }
+}
 
 /**
  * Handle an incoming Feishu event.
@@ -321,26 +357,6 @@ async function sendHelpMessage(
 • Use \`/stop\` in the bridge context to cancel tasks`;
 
   await ctx.sendText(inbound.address, help);
-}
-
-// ── Deduplication ──────────────────────────────────────────────
-
-function isDuplicate(messageId: string): boolean {
-  const seenAt = seenMessages.get(messageId);
-  if (!seenAt) return false;
-  return Date.now() - seenAt < DEDUP_TTL_MS;
-}
-
-function markSeen(messageId: string): void {
-  seenMessages.set(messageId, Date.now());
-
-  // Clean old entries
-  const now = Date.now();
-  for (const [id, ts] of seenMessages) {
-    if (now - ts > DEDUP_TTL_MS) {
-      seenMessages.delete(id);
-    }
-  }
 }
 
 // ── Sender Extraction ──────────────────────────────────────────

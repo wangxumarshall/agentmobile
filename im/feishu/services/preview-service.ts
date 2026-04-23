@@ -270,6 +270,7 @@ export class PreviewService {
 
       artifact.lastSentText = text;
       artifact.lastSentAt = Date.now();
+      artifact.failureCount = 0; // Reset on successful patch
 
       return 'sent';
     } catch (e) {

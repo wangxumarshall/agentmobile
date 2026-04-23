@@ -167,14 +167,26 @@ export class ConversationEngine {
     }
   }
 
+  /**
+   * Get conversation history for a binding.
+   *
+   * NOTE: Stub — in-memory only, not persisted. The bridge processes messages
+   * statelessly by design; the LLM SDK manages its own session state
+   * (e.g. Claude SDK session_id for resume). Full local history
+   * persistence is out of scope for the initial implementation.
+   */
   private getHistory(binding: ChannelBinding): ConversationMessage[] {
-    // For now, return empty history
-    // Future: load from store
     return [];
   }
 
+  /**
+   * Save conversation history for a binding.
+   *
+   * NOTE: Stub — no-op. The LLM SDK handles session resume via its own
+   * session identifiers (sdkSessionId). Local history replay would
+   * duplicate state already managed by the provider.
+   */
   private saveHistory(binding: ChannelBinding, messages: ConversationMessage[]): void {
-    // For now, no-op
-    // Future: persist to store
+    // Intentional no-op — SDK manages session state externally
   }
 }
