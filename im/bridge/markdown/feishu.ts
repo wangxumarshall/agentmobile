@@ -2,25 +2,17 @@
  * Feishu Markdown formatting utilities.
  *
  * Converts Markdown text to Feishu Card content format.
- * Feishu supports a subset of Markdown in card elements.
+ * Feishu supports a subset of Markdown in card elements (no full HTML).
+ * Uses regex-based transforms for the supported subset.
  */
 
 /**
  * Build Feishu card markdown content.
  *
- * Feishu card markdown supports:
- * - Bold: **text**
- * - Italic: *text*
- * - Links: [text](url)
- * - Code: `text`
- * - Code blocks: ```language\ncode\n```
- * - Lists: - item or 1. item
- * - Headers: # ## ###
+ * Feishu card markdown supports a subset of standard Markdown.
  */
 export function buildCardContent(markdown: string): string {
-  // Preprocess Markdown for Feishu compatibility
-  const processed = preprocessFeishuMarkdown(markdown);
-  return processed;
+  return preprocessFeishuMarkdown(markdown);
 }
 
 /**

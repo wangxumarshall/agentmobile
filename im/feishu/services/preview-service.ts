@@ -141,9 +141,12 @@ export class PreviewService {
 
     if (!artifact) return;
 
-    // Delete blank placeholder
+    // Delete blank placeholder (with timeout to avoid hanging forever)
     if (!artifact.lastSentText || artifact.lastSentText.trim().length === 0) {
-      this.larkClient.deleteMessageQuietly(artifact.messageId).catch(() => {});
+      const timeout = setTimeout(() => {});
+      this.larkClient.deleteMessageQuietly(artifact.messageId)
+        .catch(e => debug('preview', `Delete blank preview failed: ${e}`))
+        .finally(() => clearTimeout(timeout));
       debug('preview', `Deleted blank preview: ${routeKey}`);
     }
 
