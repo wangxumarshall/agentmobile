@@ -1,22 +1,31 @@
 {
   "name": "agentmobile",
-  "version": "4.5.0",
+  "version": "4.6.0-im",
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "start:im": "node --import tsx im/server-im.ts",
     "dev": "node --watch server.js",
-    "setup": "node scripts/setup.js"
+    "dev:im": "tsx watch im/server-im.ts",
+    "setup": "node scripts/setup.js",
+    "build:im": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.81",
+    "@larksuiteoapi/node-sdk": "^1.59.0",
     "bcrypt": "^6.0.0",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
+    "markdown-it": "^14.1.1",
     "multer": "^2.1.1",
     "node-pty": "^1.2.0-beta.12",
     "playwright": "^1.58.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "typescript": "^6.0.2"
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22",
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.5"
   }
 }

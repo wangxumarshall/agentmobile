@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "outDir": "./dist-im",
+    "rootDir": "./im",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "paths": {
+      "@bridge/*": ["./im/bridge/*"],
+      "@adapters/*": ["./im/adapters/*"],
+      "@providers/*": ["./im/providers/*"],
+      "@infra/*": ["./im/infra/*"],
+      "@config/*": ["./im/config/*"],
+      "@feishu/*": ["./im/feishu/*"],
+      "@runtime/*": ["./im/runtime/*"]
+    }
+  },
+  "include": ["im/**/*"],
+  "exclude": ["node_modules", "dist-im", "frontend", "data", "public"]
+}
