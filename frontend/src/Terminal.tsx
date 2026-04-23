@@ -305,8 +305,10 @@ export default function Terminal({ token }: Props) {
 
   // F-18: 多 tmux session 支持
   const [tmuxSessions, setTmuxSessions] = useState<string[]>([])
-  const [activeTmuxSession, setActiveTmuxSession] = useState<string>(() => localStorage.getItem('agentmobile_session') || '~')
-  const [wsSessionKey, setWsSessionKey] = useState<string>(() => localStorage.getItem('agentmobile_session') || '~')
+  // When no session is persisted yet, let the backend fall back to TMUX_SESSION
+  // instead of sending the placeholder "~", which produces a transient 500 on first load.
+  const [activeTmuxSession, setActiveTmuxSession] = useState<string>(() => localStorage.getItem('agentmobile_session') || '')
+  const [wsSessionKey, setWsSessionKey] = useState<string>(() => localStorage.getItem('agentmobile_session') || '__default__')
   const activeTmuxSessionRef = useRef(activeTmuxSession)
   activeTmuxSessionRef.current = activeTmuxSession
   const sessionManagerRef = useRef<SessionManagerV2Handle>(null)
@@ -328,7 +330,6 @@ export default function Terminal({ token }: Props) {
       .then(d => {
         if (d.tmuxSession && !localStorage.getItem('agentmobile_session')) {
           setActiveTmuxSession(d.tmuxSession)
-          setWsSessionKey(d.tmuxSession)
         }
       })
       .catch(() => {})
