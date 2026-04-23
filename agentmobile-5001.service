@@ -1,0 +1,19 @@
+[Unit]
+Description=agentmobile WebSocket tmux bridge service (5001)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/code/idea0019-agent-mobile
+ExecStart=/usr/bin/node /home/ubuntu/code/idea0019-agent-mobile/server.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.opencode/bin:/home/ubuntu/bin:/home/ubuntu/.npm-global/bin:/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
