@@ -34,4 +34,5 @@ data/*
 !data/configs/
 data/configs/*
 !data/configs/anthropic.json
+im-data/
 logs/

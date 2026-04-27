@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import FeishuSettings from './FeishuSettings'
 
 interface Props {
   token: string
@@ -74,7 +75,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
   return (
     <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-5">
       <GhostShield />
-      <div className="bg-agentmobile-bg border border-agentmobile-border rounded-xl flex flex-col text-agentmobile-text w-full max-w-[400px] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
+      <div className="bg-agentmobile-bg border border-agentmobile-border rounded-xl flex flex-col text-agentmobile-text w-full max-w-[720px] max-h-[90vh] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border">
           <span className="text-base font-semibold">{t('settings.title')}</span>
@@ -86,7 +87,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
           </button>
         </div>
 
-        <div className="px-4 py-4 flex flex-col gap-5">
+        <div className="px-4 py-4 flex flex-col gap-5 overflow-y-auto">
           {/* Appearance section */}
           <div>
             <div className="text-[11px] text-agentmobile-text-2 tracking-wider uppercase mb-3">
@@ -143,6 +144,8 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
               <Icon name="arrowRight" size={14} />
             </button>
           </div>
+
+          <FeishuSettings token={token} />
 
           {/* About section */}
           <div className="border-t border-agentmobile-border pt-4">

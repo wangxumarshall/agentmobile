@@ -39,6 +39,9 @@ export interface AdapterContext {
       workingDirectory?: string;
     }
   ): Promise<ChannelBinding>;
+  getActiveBinding(address: ChannelAddress): ChannelBinding | undefined;
+  deactivateBinding(bindingId: string): void;
+  isAuthorized(sender: SenderIdentity): boolean;
 
   // Card operations
   sendCard(
@@ -125,7 +128,7 @@ export interface FeishuMessageEvent {
  * Raw Feishu card action trigger event payload.
  */
 export interface FeishuCardActionEvent {
-  open_chat_id: string;
+  open_chat_id?: string;
   open_message_id: string;
   open_id: string;
   user_id?: string;

@@ -10,16 +10,22 @@
  * - Idempotent request UUIDs for recovery
  */
 
-import { readFileSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import type { ChannelAddress, OutboundImage } from '../bridge/types.js';
-import { info, error, debug } from '../config/logger.js';
+import type { ChannelAddress } from '../bridge/types.js';
+import { error, debug } from '../config/logger.js';
 
 const MIN_INTERVAL_MS = 250;
 
 export interface PatchCardOptions {
   messageId?: string;
   openMessageId?: string;
+}
+
+export interface UpdateCardElementContentOptions {
+  openMessageId?: string;
+  sequence?: number;
+  uuid?: string;
 }
 
 export interface LarkClientOptions {
@@ -38,6 +44,7 @@ export class LarkClient {
   private outboundQueues: Map<string, Array<() => Promise<void>>> = new Map();
   private outboundProcessing: Map<string, boolean> = new Map();
   private lastOutboundMessageAt: Map<string, number> = new Map();
+  private cardIdCache: Map<string, string> = new Map();
 
   constructor(options: LarkClientOptions) {
     this.appId = options.appId;
@@ -83,11 +90,19 @@ export class LarkClient {
     this.client = client;
   }
 
+  getConnectionOptions(): LarkClientOptions {
+    return {
+      appId: this.appId,
+      appSecret: this.appSecret,
+      domain: this.domain,
+    };
+  }
+
   /**
    * Send a message to Feishu.
    *
    * Supports reply-to-message for threading.
-   * Uses request_uuid for idempotent retries.
+   * Uses SDK uuid for idempotent retries.
    */
   async sendMessage(
     address: ChannelAddress,
@@ -100,23 +115,29 @@ export class LarkClient {
     if (!client) throw new Error('Lark client not initialized');
 
     const uuid = requestUuid || randomUUID();
-    const payload: Record<string, unknown> = {
-      receive_id: address.chatId,
-      msg_type: msgType,
-      content: typeof content === 'string' ? content : JSON.stringify(content),
-      request_id: uuid,
-      ...(replyToMessageId ? { reply_in_message_id: replyToMessageId } : {}),
-    };
+    const messageApi = client.im?.v1?.message;
+    if (!messageApi) throw new Error('Lark SDK missing im.v1.message API');
+    const serializedContent = this.serializeMessageContent(msgType, content);
 
     return this.enqueueMessage(address.chatId, async () => {
-      const result = await client.request(
-        'POST',
-        '/open-apis/im/v1/messages',
-        {
-          params: { receive_id_type: 'chat_id' },
-          data: payload,
-        },
-      );
+      const result = replyToMessageId
+        ? await messageApi.reply({
+            path: { message_id: replyToMessageId },
+            data: {
+              msg_type: msgType,
+              content: serializedContent,
+              uuid,
+            },
+          })
+        : await messageApi.create({
+            params: { receive_id_type: 'chat_id' },
+            data: {
+              receive_id: address.chatId,
+              msg_type: msgType,
+              content: serializedContent,
+              uuid,
+            },
+          });
       debug('lark-client', `Message sent: ${msgType} -> ${address.chatId} (${uuid})`);
       return result;
     });
@@ -149,31 +170,32 @@ export class LarkClient {
     if (!client) throw new Error('Lark client not initialized');
 
     const finalMessageId = options.openMessageId || messageId;
+    const messageApi = client.im?.v1?.message;
+    if (!messageApi?.patch) throw new Error('Lark SDK missing im.v1.message.patch API');
 
     // Try with open_message_id first, fallback to message_id
     try {
-      const result = await client.request(
-        'PATCH',
-        `/open-apis/im/v1/messages/${finalMessageId}`,
-        {
-          data: { template: card },
-        },
-      );
+      const result = await messageApi.patch({
+        path: { message_id: finalMessageId },
+        data: { content: JSON.stringify(card) },
+      });
       debug('lark-client', `Card patched: ${finalMessageId}`);
       return result;
     } catch (e) {
       // If open_message_id failed and we have a message_id, try that
       if (options.messageId && options.messageId !== finalMessageId) {
-        const result = await client.request(
-          'PATCH',
-          `/open-apis/im/v1/messages/${options.messageId}`,
-          {
-            data: { template: card },
-          },
-        );
-        return result;
+        try {
+          return await messageApi.patch({
+            path: { message_id: options.messageId },
+            data: { content: JSON.stringify(card) },
+          });
+        } catch (fallbackError) {
+          throw new Error(
+            `Failed to patch Feishu card ${finalMessageId} and fallback ${options.messageId}: ${this.formatError(fallbackError)}`,
+          );
+        }
       }
-      throw e;
+      throw new Error(`Failed to patch Feishu card ${finalMessageId}: ${this.formatError(e)}`);
     }
   }
 
@@ -187,11 +209,11 @@ export class LarkClient {
     if (!client) return;
 
     try {
-      await client.request(
-        'DELETE',
-        `/open-apis/im/v1/messages/${messageId}`,
-        {},
-      );
+      const messageApi = client.im?.v1?.message;
+      if (!messageApi?.delete) return;
+      await messageApi.delete({
+        path: { message_id: messageId },
+      });
       debug('lark-client', `Message deleted: ${messageId}`);
     } catch (e) {
       debug('lark-client', `Delete message ignored: ${messageId}`);
@@ -206,22 +228,17 @@ export class LarkClient {
   async uploadImage(filePath: string): Promise<string> {
     const client = await this.getClient();
     if (!client) throw new Error('Lark client not initialized');
+    const imageApi = client.im?.v1?.image;
+    if (!imageApi?.create) throw new Error('Lark SDK missing im.v1.image.create API');
 
-    const content = readFileSync(filePath);
-    const result = await client.request(
-      'POST',
-      '/open-apis/im/v1/images',
-      {
-        data: {
-          image_type: 'message',
-          image: new File([content], 'image', {
-            type: 'application/octet-stream',
-          }),
-        },
+    const result = await imageApi.create({
+      data: {
+        image_type: 'message',
+        image: createReadStream(filePath),
       },
-    );
+    });
 
-    const data = result?.data;
+    const data = this.extractResponseData(result);
     const imageKey = data?.image_key;
     if (!imageKey) {
       throw new Error('Image upload failed: no image_key in response');
@@ -229,6 +246,60 @@ export class LarkClient {
 
     debug('lark-client', `Image uploaded: ${imageKey}`);
     return imageKey;
+  }
+
+  async downloadMessageResource(
+    messageId: string,
+    fileKey: string,
+    resourceType: 'image' | 'file' | 'audio' | 'media',
+    localPath: string,
+  ): Promise<{ filePath: string; headers?: Record<string, unknown> }> {
+    const client = await this.getClient();
+    if (!client) throw new Error('Lark client not initialized');
+    const resourceApi = client.im?.v1?.messageResource;
+    if (!resourceApi?.get) throw new Error('Lark SDK missing im.v1.messageResource.get API');
+
+    const resource = await resourceApi.get({
+      params: { type: resourceType },
+      path: {
+        message_id: messageId,
+        file_key: fileKey,
+      },
+    });
+    if (!resource?.writeFile) {
+      throw new Error('Message resource download failed: response has no writeFile method');
+    }
+
+    await resource.writeFile(localPath);
+    return {
+      filePath: localPath,
+      headers: resource.headers,
+    };
+  }
+
+  async updateCardElementContent(
+    messageId: string,
+    elementId: string,
+    content: string,
+    options: UpdateCardElementContentOptions = {},
+  ): Promise<Record<string, unknown>> {
+    const client = await this.getClient();
+    if (!client) throw new Error('Lark client not initialized');
+    const cardElementApi = client.cardkit?.v1?.cardElement;
+    if (!cardElementApi?.content) throw new Error('Lark SDK missing cardkit.v1.cardElement.content API');
+
+    const cardId = await this.resolveCardId(client, options.openMessageId || messageId);
+    return await cardElementApi.content({
+      path: {
+        card_id: cardId,
+        element_id: elementId,
+      },
+      data: {
+        content,
+        sequence: options.sequence ?? Date.now(),
+        uuid: options.uuid || randomUUID(),
+      },
+    });
   }
 
   /**
@@ -326,5 +397,46 @@ export class LarkClient {
     }
 
     this.lastOutboundMessageAt.set(chatId, Date.now());
+  }
+
+  private serializeMessageContent(
+    msgType: 'text' | 'post' | 'image' | 'interactive',
+    content: string | Record<string, unknown>,
+  ): string {
+    if (typeof content !== 'string') {
+      return JSON.stringify(content);
+    }
+    if (msgType === 'text') {
+      return JSON.stringify({ text: content });
+    }
+    return content;
+  }
+
+  private async resolveCardId(client: any, messageId: string): Promise<string> {
+    const cached = this.cardIdCache.get(messageId);
+    if (cached) return cached;
+
+    const cardApi = client.cardkit?.v1?.card;
+    if (!cardApi?.idConvert) throw new Error('Lark SDK missing cardkit.v1.card.idConvert API');
+
+    const result = await cardApi.idConvert({
+      data: { message_id: messageId },
+    });
+    const data = this.extractResponseData(result);
+    const cardId = data?.card_id;
+    if (!cardId) {
+      throw new Error(`CardKit id_convert returned no card_id for message ${messageId}`);
+    }
+
+    this.cardIdCache.set(messageId, cardId);
+    return cardId;
+  }
+
+  private extractResponseData(result: any): any {
+    return result?.data ?? result;
+  }
+
+  private formatError(errorValue: unknown): string {
+    return errorValue instanceof Error ? errorValue.message : String(errorValue);
   }
 }

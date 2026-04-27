@@ -23,6 +23,11 @@ interface BridgeManagerState {
   cleanupInterval: ReturnType<typeof setInterval> | null;
 }
 
+export interface BridgeManagerOptions {
+  router?: ChannelRouter;
+  permissionBroker?: PermissionBroker;
+}
+
 export class BridgeManager {
   private store: JsonFileStore;
   private llm: LLMProvider;
@@ -41,12 +46,16 @@ export class BridgeManager {
     cleanupInterval: null,
   };
 
-  constructor(store: JsonFileStore, llm: LLMProvider) {
+  constructor(
+    store: JsonFileStore,
+    llm: LLMProvider,
+    options: BridgeManagerOptions = {},
+  ) {
     this.store = store;
     this.llm = llm;
-    this.router = new ChannelRouter(store);
-    this.engine = new ConversationEngine(llm);
-    this.permissionBroker = new PermissionBroker();
+    this.router = options.router || new ChannelRouter(store);
+    this.engine = new ConversationEngine(llm, store);
+    this.permissionBroker = options.permissionBroker || new PermissionBroker();
   }
 
   registerAdapter(adapter: BaseChannelAdapter): void {
@@ -221,16 +230,103 @@ export class BridgeManager {
 
     // Process with session lock (serialize messages to same session)
     await this.processWithSessionLock(binding.id, async () => {
-      const result = await this.engine.processMessage(binding, adapter, message.text, {
-        permissionBroker: this.permissionBroker,
-        onPartialText: async (text) => {
-          // Could implement streaming preview here
-        },
-        abortSignal: this.state.activeTasks.get(binding.id)?.signal,
-      });
+      const abortController = new AbortController();
+      this.state.activeTasks.set(binding.id, abortController);
 
-      if (!result.ok) {
-        error('bridge-manager', `Conversation failed: ${result.error}`);
+      const previewCaps = adapter.getPreviewCapabilities?.(message.address) || null;
+      const canPreview = Boolean(
+        previewCaps?.supported &&
+        adapter.primePreview &&
+        adapter.sendPreview,
+      );
+      const draftId = canPreview ? Math.floor(Math.random() * 0x7fffffff) + 1 : null;
+      let previewUpdates = Promise.resolve();
+      let previewActive = false;
+
+      if (canPreview && draftId !== null) {
+        try {
+          const primed = await adapter.primePreview!(message.address, draftId);
+          previewActive = primed === 'sent' || primed === 'skip';
+        } catch (e) {
+          debug('bridge-manager', `Preview prime failed: ${e}`);
+        }
+      }
+
+      const onPartialText = canPreview && draftId !== null
+        ? (text: string) => {
+            previewUpdates = previewUpdates
+              .then(async () => {
+                const outcome = await adapter.sendPreview!(message.address, text, draftId);
+                if (outcome === 'sent') previewActive = true;
+              })
+              .catch(e => debug('bridge-manager', `Preview update failed: ${e}`));
+          }
+        : undefined;
+
+      const onActivityEvent = adapter.upsertActivityEvent && adapter.shouldProjectActivityEvent
+        ? (event: {
+            type: 'command' | 'file_change' | 'tool_use' | 'progress';
+            title: string;
+            description?: string;
+            metadata?: Record<string, unknown>;
+          }) => {
+            const activityEvent = {
+              ...event,
+              timestamp: Date.now(),
+            };
+            if (!adapter.shouldProjectActivityEvent?.(activityEvent)) return;
+            void adapter.upsertActivityEvent?.(message.address, activityEvent, message.messageId);
+          }
+        : undefined;
+
+      try {
+        const result = await this.engine.processMessage(binding, adapter, this.renderInboundPrompt(message), {
+          permissionBroker: this.permissionBroker,
+          onPartialText,
+          onActivityEvent,
+          abortSignal: abortController.signal,
+        });
+
+        await previewUpdates;
+
+        if (!result.ok) {
+          error('bridge-manager', `Conversation failed: ${result.error}`);
+          await adapter.send({
+            address: message.address,
+            text: `❌ ${result.error || 'Conversation failed'}`,
+            parseMode: 'Markdown',
+          });
+        } else if (result.sdkSessionId) {
+          binding.sdkSessionId = result.sdkSessionId;
+        }
+
+        binding.updatedAt = new Date().toISOString();
+        this.store.saveBinding(binding);
+
+        if (canPreview && draftId !== null) {
+          if (result.ok && result.text) {
+            if (previewActive) {
+              const finalized = await adapter.finalizePreview?.(message.address, result.text, draftId);
+              if (!finalized?.ok) {
+                await adapter.send({
+                  address: message.address,
+                  text: result.text,
+                  parseMode: 'Markdown',
+                });
+              }
+            } else {
+              await adapter.send({
+                address: message.address,
+                text: result.text,
+                parseMode: 'Markdown',
+              });
+            }
+          }
+          adapter.endPreview?.(message.address, draftId);
+        }
+      } finally {
+        this.state.activeTasks.delete(binding.id);
+        abortController.abort();
       }
     });
   }
@@ -324,14 +420,30 @@ export class BridgeManager {
     const trimmed = text.trim();
     if (!trimmed.startsWith('/')) return null;
 
-    const match = trimmed.match(/^\/(\w+)(\s+(.+))?$/);
-    if (!match) return null;
+    const withoutSlash = trimmed.slice(1);
+    const [commandToken, ...restTokens] = withoutSlash.split(/\s+/).filter(Boolean);
+    if (!commandToken) return null;
 
-    const name = match[1];
-    const argsStr = match[3] || '';
-    const args = argsStr.split(/\s+/).filter(Boolean);
+    const [name, ...inlineArgs] = commandToken.split(':').filter(Boolean);
+    if (!name) return null;
+
+    const args = [...inlineArgs, ...restTokens];
 
     return { name, args };
+  }
+
+  private renderInboundPrompt(message: InboundMessage): string {
+    const baseText = message.text.trim();
+    if (!message.attachments || message.attachments.length === 0) {
+      return baseText;
+    }
+
+    const attachmentLines = message.attachments.map(attachment =>
+      `- ${attachment.fileName}: ${attachment.filePath}`,
+    );
+
+    const prefix = baseText || 'Please use the attached files as context for this request.';
+    return `${prefix}\n\nAttached files:\n${attachmentLines.join('\n')}`;
   }
 
   private async processWithSessionLock(

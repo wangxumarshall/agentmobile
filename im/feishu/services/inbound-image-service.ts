@@ -5,7 +5,7 @@
  * Supports deduplication via message_id and image_key.
  */
 
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'node:crypto';
@@ -70,27 +70,27 @@ export class InboundImageService {
       }
     }
 
-    // Download from Feishu
+    // Download user-sent resources via the message resource API. The plain
+    // image API only supports images uploaded by the bot itself.
     try {
-      const client = await this.larkClient.getClient();
-      if (!client) throw new Error('Lark client not initialized');
-
-      const result = await client.request(
-        'GET',
-        `/open-apis/im/v1/images/${imageKey}`,
-        {},
-      );
-
-      // The response contains binary data
-      const content = result;
       const localPath = diskPath;
+      if (!messageId) {
+        throw new Error('messageId is required to download inbound image resources');
+      }
 
-      writeFileSync(localPath, content);
+      const downloaded = await this.larkClient.downloadMessageResource(
+        messageId,
+        imageKey,
+        'image',
+        localPath,
+      );
+      const content = readFileSync(downloaded.filePath);
+      const contentType = this.getHeader(downloaded.headers, 'content-type');
 
       const entry: ImageCacheEntry = {
         imageKey,
         localPath,
-        mimeType: 'image/png',
+        mimeType: contentType || 'image/png',
         fileSize: content.length || 0,
         downloadedAt: Date.now(),
       };
@@ -124,5 +124,18 @@ export class InboundImageService {
    */
   clearMemory(): void {
     this.memoryCache.clear();
+  }
+
+  private getHeader(headers: Record<string, unknown> | undefined, key: string): string | undefined {
+    if (!headers) return undefined;
+    const direct = headers[key];
+    if (typeof direct === 'string') return direct;
+    const lowerKey = key.toLowerCase();
+    for (const [name, value] of Object.entries(headers)) {
+      if (name.toLowerCase() === lowerKey && typeof value === 'string') {
+        return value;
+      }
+    }
+    return undefined;
   }
 }

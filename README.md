@@ -50,7 +50,7 @@
 - 🔀 **Multi-session** — switch tmux sessions instantly
 - 🎨 **PWA** — installable, dark / light themes
 - ⚡ **Zero overhead** — direct WebSocket pipe, no SSH
-- 🤖 **Telegram Bot** — send tasks from Telegram, get real-time progress
+- 💬 **IM Bridge** — use Telegram or Feishu / Lark as a second interaction channel beyond the web UI
 
 ---
 
@@ -65,6 +65,22 @@ npm start
 ```
 
 > Full setup guide including Claude profile config, service install, and mobile access: **[QUICKSTART.md →](docs/QUICKSTART.md)**
+
+## IM Channels
+
+agentmobile can run a separate IM bridge process so web is no longer the only control surface.
+
+```bash
+# enable IM_BRIDGE_ENABLED=true in .env first
+npm run start:im
+```
+
+- Telegram uses `TELEGRAM_BOT_TOKEN`
+- Feishu / Lark can be initialized from the web UI: open Settings → Feishu, generate a QR code, and scan it in Feishu / Lark. This writes `CTI_FEISHU_APP_ID`, `CTI_FEISHU_APP_SECRET`, and enables the IM bridge in `.env`.
+- Manual Feishu / Lark setup still uses `CTI_FEISHU_APP_ID` and `CTI_FEISHU_APP_SECRET`
+- Feishu message events use long connection mode; card buttons need an HTTP callback at `/api/webhooks/feishu/card-action` on `CTI_FEISHU_CALLBACK_PORT`
+- Runtime state is stored in `im-data/`
+- Optional systemd unit: `agentmobile-im.service`
 
 ---
 

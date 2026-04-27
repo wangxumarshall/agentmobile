@@ -5,6 +5,7 @@
 
 import type { ChannelAddress, ChannelBinding, ChannelType } from './types.js';
 import type { JsonFileStore } from '../infra/store.js';
+import { resolveChannelInstanceId } from './types.js';
 
 export class ChannelRouter {
   private store: JsonFileStore;
@@ -18,7 +19,11 @@ export class ChannelRouter {
    * Returns undefined if no binding exists.
    */
   resolve(address: ChannelAddress): ChannelBinding | undefined {
-    return this.store.getBindingByChat(address.channelType, address.chatId);
+    return this.store.getBindingByChat(
+      address.channelType,
+      address.chatId,
+      resolveChannelInstanceId(address),
+    );
   }
 
   /**
@@ -35,6 +40,19 @@ export class ChannelRouter {
     mode?: 'code' | 'plan' | 'ask';
   }): ChannelBinding {
     const now = new Date().toISOString();
+    for (const existing of this.store.listBindings()) {
+      if (
+        existing.active &&
+        existing.channelType === options.channelType &&
+        existing.channelInstanceId === options.channelInstanceId &&
+        existing.chatId === options.chatId
+      ) {
+        existing.active = false;
+        existing.updatedAt = now;
+        this.store.saveBinding(existing);
+      }
+    }
+
     const binding: ChannelBinding = {
       id: `binding_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       channelType: options.channelType,
@@ -46,7 +64,7 @@ export class ChannelRouter {
       model: options.model || 'default',
       mode: options.mode || 'code',
       runtime: options.runtime,
-      claudePermissionMode: 'default',
+      claudePermissionMode: options.runtime === 'claude' ? 'default' : undefined,
       active: true,
       createdAt: now,
       updatedAt: now,

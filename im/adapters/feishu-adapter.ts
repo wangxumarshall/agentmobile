@@ -36,6 +36,7 @@ import {
   handleResumeCardAction,
   handleModeCommand,
   handleResetCommand,
+  handleClaudeModeCardAction,
 } from '../feishu/handlers/session-handler.js';
 import { handlePlanCommand, handlePlanCardAction, handleClaudePlanExitCardAction } from '../feishu/handlers/plan-handler.js';
 import { handleStructuredInputCardAction } from '../feishu/handlers/structured-input-handler.js';
@@ -54,6 +55,25 @@ interface FeishuAdapterOptions {
   permissionBroker: PermissionBroker;
   defaultWorkDir?: string;
   showToolCallCards?: boolean;
+}
+
+interface FeishuEventDispatcherHandlers {
+  onMessageReceive(data: unknown): Promise<void>;
+  onMessageRead?(data: unknown): Promise<void>;
+  onChatUpdated?(data: unknown): Promise<void>;
+}
+
+export function createFeishuEventDispatcher(
+  lark: any,
+  handlers: FeishuEventDispatcherHandlers,
+): any {
+  return new lark.EventDispatcher({
+    loggerLevel: lark.LoggerLevel?.info ?? 'info',
+  }).register({
+    'im.message.receive_v1': handlers.onMessageReceive,
+    'im.message.message_read_v1': handlers.onMessageRead || (async () => {}),
+    'im.chat.updated_v1': handlers.onChatUpdated || (async () => {}),
+  });
 }
 
 export class FeishuAdapter extends BaseChannelAdapter {
@@ -115,60 +135,34 @@ export class FeishuAdapter extends BaseChannelAdapter {
       const larkModule = await import('@larksuiteoapi/node-sdk');
       const lark = larkModule.default || larkModule;
 
+      const connectionOptions = this.larkClient.getConnectionOptions();
       this.wsClient = new (lark.WSClient)({
-        appId: this.larkClient['appId'] || '',
-        appSecret: this.larkClient['appSecret'] || '',
-        loggerLevel: 'info' as any,
+        appId: connectionOptions.appId,
+        appSecret: connectionOptions.appSecret,
+        ...(connectionOptions.domain === 'lark' ? { domain: 'lark' } : {}),
+        loggerLevel: lark.LoggerLevel?.info ?? 'info',
       });
 
-      // Register event handlers
-      this.wsClient.registerCallback({
-        handler: async (data: any) => {
-          // Route based on event type
-          const eventType = data?.header?.event_type;
-
-          switch (eventType) {
-            case 'im.message.receive_v1':
-              await this.handleIncomingEvent(data);
-              break;
-            case 'im.message.message_read_v1':
-              // Handle read receipt (optional)
-              break;
-            case 'im.chat.updated_v1':
-              // Handle chat name changes
-              break;
-            case 'card.action.trigger':
-              await this.handleCardAction(data);
-              break;
-            default:
-              debug('feishu-adapter', `Unhandled event type: ${eventType}`);
-          }
+      const eventDispatcher = createFeishuEventDispatcher(lark, {
+        onMessageReceive: async (data) => {
+          await this.handleIncomingEvent(data);
         },
       });
 
       // Start the WebSocket connection
-      await this.wsClient.start();
+      await this.wsClient.start({ eventDispatcher });
 
       this.running = true;
       info('feishu-adapter', 'Feishu adapter started successfully');
     } catch (e) {
       error('feishu-adapter', `Failed to start WebSocket client: ${e}`);
-      // Fall back to polling mode
-      await this.startPollingMode();
+      this.running = false;
+      throw e;
     }
   }
 
-  /**
-   * Fallback polling mode if WebSocket fails.
-   */
-  private async startPollingMode(): Promise<void> {
-    info('feishu-adapter', 'Starting Feishu adapter in polling mode (fallback)');
-    this.running = true;
-    // Future: Implement polling via getUpdates equivalent
-  }
-
   async stop(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running && !this.wsClient) return;
 
     this.running = false;
 
@@ -310,6 +304,10 @@ export class FeishuAdapter extends BaseChannelAdapter {
     this.previewService.endPreview(address, draftId);
   }
 
+  async finalizePreview(address: ChannelAddress, text: string, _draftId: number): Promise<SendResult> {
+    return this.previewService.finalizePreview(address, text);
+  }
+
   // ── Activity Card Methods ──────────────────────────────────
 
   async upsertActivityEvent(
@@ -334,7 +332,10 @@ export class FeishuAdapter extends BaseChannelAdapter {
       // Build HandlerContext for the handlers
       const ctx = this.getHandlerContext();
 
-      await handleIncomingEvent(ctx, data as FeishuMessageEvent);
+      const message = await handleIncomingEvent(ctx, data as FeishuMessageEvent);
+      if (message) {
+        this.enqueue(message);
+      }
 
       // The handlers will process and either respond directly or enqueue
       // for the bridge manager via our queue
@@ -346,17 +347,24 @@ export class FeishuAdapter extends BaseChannelAdapter {
   /**
    * Handle Feishu card action/callback event.
    */
-  private async handleCardAction(data: any): Promise<void> {
+  async handleCardActionPayload(data: unknown): Promise<boolean> {
+    return this.handleCardAction(data);
+  }
+
+  private async handleCardAction(data: unknown): Promise<boolean> {
     try {
       const ctx = this.getHandlerContext();
 
       const resolved = await handleCardAction(ctx, data as FeishuCardActionEvent);
 
       if (resolved) {
-        debug('feishu-adapter', `Card action resolved: ${data?.action?.value?.callback}`);
+        const callback = (data as FeishuCardActionEvent)?.action?.value?.callback;
+        debug('feishu-adapter', `Card action resolved: ${callback}`);
       }
+      return resolved;
     } catch (e) {
       error('feishu-adapter', `Handle card action failed: ${e}`);
+      return false;
     }
   }
 
@@ -385,6 +393,9 @@ export class FeishuAdapter extends BaseChannelAdapter {
           type: i === 0 ? 'primary' : 'default',
           value: {
             callback: btn.callbackData,
+            chat_id: message.address.chatId,
+            user_id: message.address.userId,
+            channel_instance_id: message.address.channelInstanceId || this.profileId,
           },
         })),
         layout: 'horizontal',
@@ -404,6 +415,14 @@ export class FeishuAdapter extends BaseChannelAdapter {
       },
       elements,
     };
+  }
+
+  private enqueue(message: InboundMessage): void {
+    this.queue.push(message);
+    if (this.waiters.length > 0) {
+      const waiter = this.waiters.shift()!;
+      waiter(message);
+    }
   }
 
   /**
@@ -435,10 +454,23 @@ export class FeishuAdapter extends BaseChannelAdapter {
           mode: options.mode || 'code',
         });
       },
+      getActiveBinding(address) {
+        return self.channelRouter.resolve(address);
+      },
+      deactivateBinding(bindingId) {
+        self.channelRouter.deactivateBinding(bindingId);
+      },
+      isAuthorized(sender) {
+        return self.isAuthorized(sender.userId, sender.chatId);
+      },
 
       // Card operations
       async sendCard(address, card, replyToMessageId) {
-        const result = await self.larkClient.sendCard(address, card, replyToMessageId);
+        const result = await self.larkClient.sendCard(
+          address,
+          self.withActionRoute(card, address),
+          replyToMessageId,
+        );
         const data = result?.data as Record<string, unknown> | undefined;
         return {
           ok: true,
@@ -468,8 +500,7 @@ export class FeishuAdapter extends BaseChannelAdapter {
         await handleResumeCardAction(self.getHandlerContext(), event as any, callbackData);
       },
       async handleClaudeModeCardAction(event, callbackData) {
-        // Stub for now
-        debug('feishu-adapter', `Claude mode action: ${callbackData}`);
+        await handleClaudeModeCardAction(self.getHandlerContext(), event as any, callbackData);
       },
       async handleStructuredInputCardAction(event, callbackData) {
         await handleStructuredInputCardAction(self.getHandlerContext(), event as any, callbackData);
@@ -481,5 +512,51 @@ export class FeishuAdapter extends BaseChannelAdapter {
         await handleClaudePlanExitCardAction(self.getHandlerContext(), event as any, callbackData);
       },
     };
+  }
+
+  private withActionRoute(
+    card: Record<string, unknown>,
+    address: ChannelAddress,
+  ): Record<string, unknown> {
+    const routedCard = JSON.parse(JSON.stringify(card)) as Record<string, unknown>;
+    for (const elementList of this.getCardElementLists(routedCard)) {
+      for (const element of elementList) {
+        if (!this.isRecord(element) || element.tag !== 'action' || !Array.isArray(element.actions)) {
+          continue;
+        }
+        for (const action of element.actions) {
+          if (!this.isRecord(action)) continue;
+          const value = this.isRecord(action.value) ? action.value : {};
+          action.value = {
+            ...value,
+            chat_id: value.chat_id || address.chatId,
+            user_id: value.user_id || address.userId,
+            channel_instance_id: value.channel_instance_id || address.channelInstanceId || this.profileId,
+          };
+        }
+      }
+    }
+    return routedCard;
+  }
+
+  private getCardElementLists(card: Record<string, unknown>): unknown[][] {
+    const lists: unknown[][] = [];
+    if (Array.isArray(card.elements)) {
+      lists.push(card.elements);
+    }
+
+    const i18nElements = card.i18n_elements;
+    if (this.isRecord(i18nElements)) {
+      for (const value of Object.values(i18nElements)) {
+        if (Array.isArray(value)) {
+          lists.push(value);
+        }
+      }
+    }
+    return lists;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 }

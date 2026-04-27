@@ -62,7 +62,7 @@
 - 🔀 **多会话管理** — 秒切 tmux session
 - 🎨 **PWA** — 可安装、深色/浅色主题
 - ⚡ **零延迟体感** — WebSocket 直连，无 SSH 开销
-- ✈️ **Telegram Bot** — 从 Telegram 发送任务，实时获取进度
+- 💬 **IM Bridge** — Telegram 与飞书 / Lark 作为 web 之外的第二种交互方式
 
 ---
 
@@ -77,6 +77,22 @@ npm start
 ```
 
 > 完整配置指南（AI Profile、PM2、移动端访问、故障排查）：**[QUICKSTART.md →](docs/QUICKSTART.md)**
+
+## IM 渠道
+
+agentmobile 可以额外运行一个独立的 IM bridge 进程，让 web 不再是唯一入口。
+
+```bash
+# 先在 .env 中开启 IM_BRIDGE_ENABLED=true
+npm run start:im
+```
+
+- Telegram 使用 `TELEGRAM_BOT_TOKEN`
+- 飞书 / Lark 可在 Web 设置中初始化：打开 Settings → Feishu，生成二维码后用飞书 / Lark 扫码认证，系统会把 `CTI_FEISHU_APP_ID`、`CTI_FEISHU_APP_SECRET` 写入 `.env` 并开启 IM bridge
+- 手动配置飞书 / Lark 时仍使用 `CTI_FEISHU_APP_ID` 和 `CTI_FEISHU_APP_SECRET`
+- 飞书消息事件走长连接；卡片按钮需要把 `/api/webhooks/feishu/card-action` 配到 `CTI_FEISHU_CALLBACK_PORT` 对外入口
+- 运行时状态保存在 `im-data/`
+- 可选 systemd unit: `agentmobile-im.service`
 
 ---
 

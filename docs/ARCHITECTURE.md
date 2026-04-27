@@ -1,8 +1,8 @@
 # ARCHITECTURE — agentmobile 架构现状
 
-**Last Updated**: 2026-04-15  **版本**: v4.5.0  **锚点**: `docs/NORTH-STAR.md`
+**Last Updated**: 2026-04-24  **版本**: v4.6.0-im  **锚点**: `docs/NORTH-STAR.md`
 
-> **v4.5.0**: 新增 Dual AI Backend — Claude Code ⚡ 和 OpenAI Codex CLI 🔷 并行支持。
+> **v4.6.0-im**: 新增 IM Bridge 正式入口，Telegram + Feishu / Lark 成为 web 之外的第二交互渠道。
 
 ---
 
@@ -18,9 +18,10 @@ tmux attach-session -t <session>:<window>
     ├── window 0: vault (⚡ Claude)
     ├── window 1: projects-blog (🔷 Codex)
     └── window N: ... (⚡/🔷/bash)
-Telegram Bot（可选）
-    ↕  webhook POST /api/webhooks/telegram
-    ↕  runTask() → claude -p | codex exec
+agentmobile IM Bridge（Node.js，im/server-im.ts，可选独立进程）
+    ├── Telegram Adapter（polling）
+    └── Feishu / Lark Adapter（WebSocket）
+         ↕  BridgeManager → ConversationEngine → Claude / Codex provider
 ```
 
 ---
@@ -164,6 +165,20 @@ function runTask(prompt, cwd, opts) {
 - 接收文件/图片 → 下载到 WORKSPACE_ROOT → `runTask()` 附路径执行
 - 目标窗口状态：持久化在内存 `telegramAgentType`（默认 'claude'）和服务重启后重置）
 
+### IM Bridge（im/server-im.ts）
+
+- 独立进程入口：`npm run start:im`
+- 统一桥接层：`BridgeManager` + `ChannelRouter` + `ConversationEngine`
+- 支持渠道：Telegram、Feishu / Lark
+- Feishu 初始化：Web 设置页调用 `/api/feishu/setup`，通过 SDK `registerApp` 生成扫码二维码，扫码成功后写入 `.env` 中的 app id / secret 并提示重启 IM bridge
+- Feishu 消息事件：SDK long connection 订阅 `im.message.receive_v1`
+- Feishu 卡片交互：HTTP callback `/api/webhooks/feishu/card-action`，用于权限按钮和 session/mode 卡片操作
+- Claude runtime 使用 `@anthropic-ai/claude-agent-sdk`
+- Codex runtime 使用 `codex exec` 非交互 provider
+- 运行时状态持久化到 `im-data/`（bindings / sessions / cache）
+- v1 边界：普通对话、`/new`、`/reset`、`/mode`、streaming preview fallback、权限卡片、图片附件上下文可用；Plan confirmation workflow 与 structured input cards 保持文本降级，后续补全。
+- 可选 systemd unit：`agentmobile-im.service`
+
 ---
 
 ## 前端（frontend/src/）
@@ -192,6 +207,7 @@ App.tsx（路由）
      ├── WorkspaceBrowser.tsx    ← 文件浏览器（排序、右键菜单、lazy）
      │    └── FilePanel.tsx      ← 文件查看/编辑/Markdown 预览（lazy）
      ├── GeneralSettings.tsx     ← 通用设置面板（lazy）
+     │    └── FeishuSettings.tsx ← 飞书扫码初始化与连接状态
      └── TaskPanel.tsx           ← claude -p 异步任务 + SSE 流（lazy）
 ```
 
@@ -292,6 +308,18 @@ agentmobile/
 | `OPENAI_BASE_URL` | | — | OpenAI API Base URL（自定义 endpoint） |
 | `TELEGRAM_BOT_TOKEN` | | — | Telegram Bot token（可选） |
 | `TELEGRAM_CHAT_ID` | | — | 允许的 Telegram chat ID（可选） |
+| `IM_BRIDGE_ENABLED` | | `false` | 是否启用 IM bridge 进程 |
+| `FEISHU_ENABLED` | | `false` | 是否启用 Feishu / Lark adapter |
+| `CTI_HOME` | | `./im-data` | IM bridge 持久化目录 |
+| `CTI_DEFAULT_WORKDIR` | | `WORKSPACE_ROOT` | IM 默认工作目录 |
+| `CTI_FEISHU_APP_ID` | | — | Feishu / Lark app id |
+| `CTI_FEISHU_APP_SECRET` | | — | Feishu / Lark app secret |
+| `CTI_FEISHU_DOMAIN` | | — | 海外 Lark 场景填 `lark`，国内飞书留空；扫码初始化会自动写入 |
+| `CTI_FEISHU_CALLBACK_PORT` | | `0` | 飞书卡片按钮 callback HTTP 端口；0 表示不启用 |
+| `CTI_FEISHU_VERIFICATION_TOKEN` | | — | 飞书卡片 callback verification token |
+| `CTI_FEISHU_ENCRYPT_KEY` | | — | 飞书卡片 callback encrypt key |
+| `CTI_FEISHU_ALLOWED_USERS` | | — | 允许使用 IM bridge 的 Feishu open_id 列表 |
+| `CTI_FEISHU_SHOW_TOOL_CALL_CARDS` | | `false` | 是否显示 tool / activity cards |
 
 ---
 

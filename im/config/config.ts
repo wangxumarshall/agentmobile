@@ -17,6 +17,9 @@ export interface FeishuProfileConfig {
   domain?: 'lark';
   allowedUsers?: string[];
   showToolCallCards?: boolean;
+  callbackPort?: number;
+  verificationToken?: string;
+  encryptKey?: string;
 }
 
 export interface TelegramConfig {
@@ -36,7 +39,7 @@ export interface ImConfig {
 export interface WebConfig {
   port: number;
   jwtSecret: string;
-  bcryptPassword: string;
+  passwordHash: string;
   tmuxSession: string;
   workspaceRoot: string;
 }
@@ -82,6 +85,13 @@ function getEnvBool(key: string, fallback: boolean): boolean {
   return val === 'true' || val === '1' || val === 'yes';
 }
 
+function getEnvInt(key: string, fallback: number): number {
+  const val = getEnv(key, String(fallback)).trim();
+  if (!val) return fallback;
+  const parsed = parseInt(val, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export function loadConfig(): AgentMobileConfig {
   const imEnabled = getEnvBool('IM_BRIDGE_ENABLED', false);
   const telegramEnabled = getEnvBool('TELEGRAM_ENABLED', true);
@@ -94,22 +104,22 @@ export function loadConfig(): AgentMobileConfig {
     .map(u => u.trim())
     .filter(Boolean);
   
-const jwtSecret = getEnv('JWT_SECRET', '');
-  const bcryptPassword = getEnv('BCRYPT_PASSWORD', '');
+  const jwtSecret = getEnv('JWT_SECRET', '');
+  const passwordHash = getEnv('ACC_PASSWORD_HASH', getEnv('BCRYPT_PASSWORD', ''));
 
   // Validate secrets are set (prevent production using defaults)
   if (!jwtSecret || jwtSecret === 'change-me') {
     throw new Error('JWT_SECRET must be set in .env — do not use the default value');
   }
-  if (!bcryptPassword || bcryptPassword === 'change-me') {
-    throw new Error('BCRYPT_PASSWORD must be set in .env — do not use the default value');
+  if (!passwordHash || passwordHash === 'change-me') {
+    throw new Error('ACC_PASSWORD_HASH or BCRYPT_PASSWORD must be set in .env — do not use the default value');
   }
 
   return {
     web: {
       port: parseInt(getEnv('PORT', '5000'), 10),
       jwtSecret,
-      bcryptPassword,
+      passwordHash,
       tmuxSession: getEnv('TMUX_SESSION', 'agentmobile'),
       workspaceRoot: getEnv('WORKSPACE_ROOT', '/home/ubuntu/workspace'),
     },
@@ -129,6 +139,9 @@ const jwtSecret = getEnv('JWT_SECRET', '');
         domain: getEnv('CTI_FEISHU_DOMAIN', '') as 'lark' | undefined || undefined,
         allowedUsers: feishuAllowedUsers.length > 0 ? feishuAllowedUsers : undefined,
         showToolCallCards: getEnvBool('CTI_FEISHU_SHOW_TOOL_CALL_CARDS', false),
+        callbackPort: getEnvInt('CTI_FEISHU_CALLBACK_PORT', 0) || undefined,
+        verificationToken: getEnv('CTI_FEISHU_VERIFICATION_TOKEN', '') || undefined,
+        encryptKey: getEnv('CTI_FEISHU_ENCRYPT_KEY', '') || undefined,
       },
     },
   };

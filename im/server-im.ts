@@ -3,6 +3,7 @@
  * Starts the bridge manager, registers channel adapters.
  */
 
+import type { Server } from 'node:http';
 import { loadConfig } from './config/config.js';
 import { setupLogger, info, error } from './config/logger.js';
 import { JsonFileStore } from './infra/store.js';
@@ -11,6 +12,7 @@ import { MultiplexLLMProvider } from './providers/multiplex.js';
 import { initBridgeContext, getBridgeContext } from './bridge/context.js';
 import { PermissionBroker } from './bridge/permission-broker.js';
 import { ChannelRouter } from './bridge/channel-router.js';
+import { startFeishuCardActionServer, FEISHU_CARD_ACTION_PATH } from './feishu/card-action-server.js';
 
 async function main(): Promise<void> {
   setupLogger();
@@ -29,6 +31,7 @@ async function main(): Promise<void> {
   const llm = new MultiplexLLMProvider(config.im.claudeExecutable);
   const permissionBroker = new PermissionBroker();
   const channelRouter = new ChannelRouter(store);
+  let feishuCallbackServer: Server | null = null;
 
   // Initialize bridge context (DI container)
   initBridgeContext({
@@ -44,7 +47,10 @@ async function main(): Promise<void> {
   });
 
   // Create bridge manager
-  const bridgeManager = new BridgeManager(store, llm);
+  const bridgeManager = new BridgeManager(store, llm, {
+    router: channelRouter,
+    permissionBroker,
+  });
 
   // Register Telegram adapter
   if (config.im.telegram.botToken) {
@@ -76,6 +82,20 @@ async function main(): Promise<void> {
         showToolCallCards: config.im.feishu.showToolCallCards,
       });
       bridgeManager.registerAdapter(feishuAdapter);
+
+      if (config.im.feishu.callbackPort) {
+        feishuCallbackServer = await startFeishuCardActionServer({
+          port: config.im.feishu.callbackPort,
+          adapter: feishuAdapter,
+          verificationToken: config.im.feishu.verificationToken,
+          encryptKey: config.im.feishu.encryptKey,
+        });
+      } else {
+        info(
+          'im-server',
+          `Feishu card actions disabled. Set CTI_FEISHU_CALLBACK_PORT and configure ${FEISHU_CARD_ACTION_PATH} as the Feishu card callback URL to enable buttons.`,
+        );
+      }
     } catch (e) {
       error('im-server', `Failed to load Feishu adapter: ${e}`);
     }
@@ -84,7 +104,13 @@ async function main(): Promise<void> {
   // Start graceful shutdown handling
   const shutdown = (signal: string) => {
     info('im-server', `Received ${signal}, shutting down...`);
-    bridgeManager.stop().then(() => {
+    bridgeManager.stop().then(async () => {
+      if (feishuCallbackServer) {
+        await new Promise<void>((resolve) => {
+          feishuCallbackServer?.close(() => resolve());
+        });
+        feishuCallbackServer = null;
+      }
       info('im-server', 'Shutdown complete');
       process.exit(0);
     }).catch(e => {

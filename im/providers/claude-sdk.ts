@@ -6,7 +6,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { ChannelBinding } from '../bridge/types.js';
 import type { LLMProvider, PermissionResolution, SSEEvent } from '../bridge/context.js';
-import { info, error, debug } from '../config/logger.js';
+import { toSdkPermissionMode } from '../runtime/claude-mode.js';
+import { error, debug } from '../config/logger.js';
 
 interface StreamChatOptions {
   onPermissionRequest?: (req: {
@@ -37,7 +38,7 @@ export class ClaudeSDKProvider implements LLMProvider {
     messages: Array<{ role: string; content: string }>,
     options: StreamChatOptions = {},
   ): AsyncIterable<SSEEvent> {
-    const { onPermissionRequest, onPartialText, abortSignal } = options;
+    const { onPermissionRequest, onActivityEvent, abortSignal } = options;
 
     // Get last user message as prompt
     const prompt = messages.filter(m => m.role === 'user').pop()?.content || '';
@@ -47,7 +48,9 @@ export class ClaudeSDKProvider implements LLMProvider {
     try {
       const queryOptions: Record<string, unknown> = {
         cwd: binding.workingDirectory,
-        permissionMode: binding.claudePermissionMode || 'default',
+        permissionMode: binding.mode === 'plan'
+          ? 'plan'
+          : toSdkPermissionMode(binding.claudePermissionMode || 'default'),
         allowDangerouslySkipPermissions: false,
         includePartialMessages: true,
       };
@@ -58,6 +61,10 @@ export class ClaudeSDKProvider implements LLMProvider {
 
       if (binding.model && binding.model !== 'default') {
         queryOptions.model = binding.model;
+      }
+
+      if (binding.sdkSessionId) {
+        queryOptions.resume = binding.sdkSessionId;
       }
 
       const q = query({
@@ -73,7 +80,6 @@ export class ClaudeSDKProvider implements LLMProvider {
           case 'stream_event': {
             const event = msg.event;
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-              onPartialText?.(event.delta.text);
               yield { type: 'text', text: event.delta.text };
             }
             break;
@@ -83,6 +89,12 @@ export class ClaudeSDKProvider implements LLMProvider {
             if (msg.message?.content) {
               for (const block of msg.message.content) {
                 if (block.type === 'tool_use') {
+                  onActivityEvent?.({
+                    type: 'tool_use',
+                    title: block.name,
+                    description: JSON.stringify(block.input).slice(0, 500),
+                    metadata: { toolId: block.id },
+                  });
                   yield {
                     type: 'permission_request',
                     data: {

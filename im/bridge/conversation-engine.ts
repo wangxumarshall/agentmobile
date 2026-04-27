@@ -9,7 +9,8 @@ import type { PermissionBroker } from './permission-broker.js';
 import type { OutboundMessage } from './types.js';
 import type { BaseChannelAdapter } from './channel-adapter.js';
 import { deliver } from './delivery-layer.js';
-import { info, error, debug } from '../config/logger.js';
+import type { JsonFileStore } from '../infra/store.js';
+import { error, debug } from '../config/logger.js';
 
 export type OnPermissionRequest = (req: {
   id: string;
@@ -40,9 +41,11 @@ export interface ConversationResult {
 
 export class ConversationEngine {
   private llm: LLMProvider;
+  private store: JsonFileStore;
 
-  constructor(llm: LLMProvider) {
+  constructor(llm: LLMProvider, store: JsonFileStore) {
     this.llm = llm;
+    this.store = store;
   }
 
   /**
@@ -68,6 +71,7 @@ export class ConversationEngine {
     // Build conversation history
     const history = this.getHistory(binding);
     history.push({ role: 'user', content: text, timestamp: Date.now() });
+    this.saveHistory(binding, history);
 
     let accumulatedText = '';
     let sdkSessionId: string | undefined;
@@ -80,6 +84,7 @@ export class ConversationEngine {
             adapter,
             {
               channelType: binding.channelType,
+              channelInstanceId: binding.channelInstanceId,
               chatId: binding.chatId,
             },
             {
@@ -100,10 +105,6 @@ export class ConversationEngine {
       // Stream from LLM
       const stream = this.llm.streamChat(binding, history, {
         onPermissionRequest: permissionHandler,
-        onPartialText: (text) => {
-          accumulatedText = text;
-          onPartialText?.(text);
-        },
         onActivityEvent,
         abortSignal,
       });
@@ -143,6 +144,7 @@ export class ConversationEngine {
         const message: OutboundMessage = {
           address: {
             channelType: binding.channelType,
+            channelInstanceId: binding.channelInstanceId,
             chatId: binding.chatId,
           },
           text: accumulatedText,
@@ -176,7 +178,7 @@ export class ConversationEngine {
    * persistence is out of scope for the initial implementation.
    */
   private getHistory(binding: ChannelBinding): ConversationMessage[] {
-    return [];
+    return this.store.getSession(binding.id)?.messages || [];
   }
 
   /**
@@ -187,6 +189,14 @@ export class ConversationEngine {
    * duplicate state already managed by the provider.
    */
   private saveHistory(binding: ChannelBinding, messages: ConversationMessage[]): void {
-    // Intentional no-op — SDK manages session state externally
+    const existing = this.store.getSession(binding.id);
+    const session: ConversationSession = {
+      id: binding.id,
+      bindingId: binding.id,
+      messages,
+      createdAt: existing?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.store.saveSession(session);
   }
 }

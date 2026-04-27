@@ -17,8 +17,10 @@
  */
 
 import { tmpdir } from 'os';
-import { mkdirSync, rmSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, rmSync, existsSync, readdirSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 // ── Mocks ───────────────────────────────────────────────────
 import { MockLarkClient } from './mocks/mock-lark-client.js';
@@ -39,6 +41,7 @@ import { ChannelRouter } from '../im/bridge/channel-router.js';
 import { PermissionBroker } from '../im/bridge/permission-broker.js';
 import { ConversationEngine } from '../im/bridge/conversation-engine.js';
 import { BridgeManager } from '../im/bridge/bridge-manager.js';
+import type { InboundMessage, OutboundMessage, SendResult } from '../im/bridge/types.js';
 import { buildRouteKey, stableMessageUuid, truncateText, normalizeLine } from '../im/feishu/utils.js';
 import { buildPermissionCard, buildSimpleCard, buildStatusCard, buildActionCard, buildHandledPermissionCard } from '../im/feishu/cards/permission-cards.js';
 import { buildToolActivityCard, buildCommandExecutionCard, buildFileChangeCard, buildLightweightActivityCard } from '../im/feishu/cards/activity-cards.js';
@@ -49,6 +52,11 @@ import { ActivityService } from '../im/feishu/services/activity-service.js';
 import { loadConfig } from '../im/config/config.js';
 import { JsonFileStore } from '../im/infra/store.js';
 import { ClaudeSDKProvider, classifyAuthError, isAuthError } from '../im/providers/claude-sdk.js';
+import { LarkClient } from '../im/feishu/lark-client.js';
+import { createFeishuEventDispatcher } from '../im/adapters/feishu-adapter.js';
+import { handleIncomingEvent } from '../im/feishu/handlers/inbound-handler.js';
+import { handleCardAction } from '../im/feishu/handlers/card-action-handler.js';
+import { startFeishuCardActionServer, FEISHU_CARD_ACTION_PATH } from '../im/feishu/card-action-server.js';
 
 // ── Test runner ─────────────────────────────────────────────
 let testsRun = 0;
@@ -91,6 +99,86 @@ function summary() {
   }
   console.log('═'.repeat(60));
   process.exit(errors.length > 0 ? 1 : 0);
+}
+
+class QueueAdapter {
+  readonly channelType = 'feishu';
+  readonly adapterId = 'feishu';
+  readonly profileId = 'default';
+  readonly label = 'Feishu';
+  sentMessages: OutboundMessage[] = [];
+  private running = false;
+  private queue: InboundMessage[] = [];
+  private waiters: Array<(message: InboundMessage | null) => void> = [];
+
+  async start() {
+    this.running = true;
+  }
+
+  async stop() {
+    this.running = false;
+    for (const waiter of this.waiters) waiter(null);
+    this.waiters = [];
+  }
+
+  isRunning() {
+    return this.running;
+  }
+
+  async consumeOne(): Promise<InboundMessage | null> {
+    const queued = this.queue.shift();
+    if (queued) return queued;
+    return new Promise(resolve => this.waiters.push(resolve));
+  }
+
+  push(message: InboundMessage) {
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter(message);
+      return;
+    }
+    this.queue.push(message);
+  }
+
+  async send(message: OutboundMessage): Promise<SendResult> {
+    this.sentMessages.push(message);
+    return {
+      ok: true,
+      messageId: `sent_${this.sentMessages.length}`,
+      openMessageId: `open_sent_${this.sentMessages.length}`,
+    };
+  }
+}
+
+async function postJson(port: number, path: string, payload: Record<string, unknown>) {
+  const body = JSON.stringify(payload);
+  return await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('end', () => resolve({
+        statusCode: res.statusCode || 0,
+        body: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+async function closeServer(server: { close(cb?: (err?: Error) => void): void }): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((err?: Error) => err ? reject(err) : resolve());
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -438,7 +526,7 @@ async function main() {
     });
 
     await test('getBindingByChat finds active bindings', () => {
-      const binding = makeTestBinding() as any;
+      const binding = makeTestBinding({ chatId: 'chat_lookup' }) as any;
       store.saveBinding(binding);
       const found = store.getBindingByChat(binding.channelType, binding.chatId);
       assertEquals(found?.id, binding.id, 'Should find by chat');
@@ -645,8 +733,423 @@ async function main() {
     });
   });
 
-  // ── 14. Config Loading ──────────────────────────────────
-  await suite('14. Config Loading', async () => {
+  // ── 14. Feishu Event and Callback Linkage ───────────────
+  await suite('14. Feishu Event and Callback Linkage', async () => {
+    await test('EventDispatcher registers Feishu message event handler', async () => {
+      const registered: Record<string, (data: unknown) => Promise<void>> = {};
+      class FakeEventDispatcher {
+        constructor(_options: unknown) {}
+        register(handles: Record<string, (data: unknown) => Promise<void>>) {
+          Object.assign(registered, handles);
+          return this;
+        }
+      }
+
+      let received: unknown = null;
+      createFeishuEventDispatcher(
+        { EventDispatcher: FakeEventDispatcher, LoggerLevel: { info: 'info' } },
+        {
+          onMessageReceive: async (data) => {
+            received = data;
+          },
+        },
+      );
+
+      assert(typeof registered['im.message.receive_v1'] === 'function', 'Should register receive_v1');
+      assert(!('card.action.trigger' in registered), 'Long connection should not register card callbacks');
+      await registered['im.message.receive_v1']({ message: { message_id: 'm1' } });
+      assertEquals((received as any).message.message_id, 'm1', 'Should dispatch message payload');
+    });
+
+    await test('/new creates a Feishu binding and next message is enqueued', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const sentTexts: string[] = [];
+      const ctx: any = {
+        larkClient: new MockLarkClient(),
+        store,
+        router,
+        permissionBroker: new PermissionBroker(),
+        previewService: {},
+        activityService: {},
+        inboundImageService: {},
+        profileId: 'default',
+        createBoundSession: async (runtime: 'claude' | 'codex', sender: any) => router.createBinding({
+          channelType: 'feishu',
+          channelInstanceId: 'default',
+          chatId: sender.chatId,
+          agentSessionId: `session_${runtime}`,
+          workingDirectory: '/tmp',
+          runtime,
+        }),
+        getActiveBinding: (address: any) => router.resolve(address),
+        deactivateBinding: (bindingId: string) => router.deactivateBinding(bindingId),
+        isAuthorized: () => true,
+        sendCard: async () => ({ ok: true }),
+        patchCard: async () => ({ ok: true }),
+        sendText: async (_address: any, text: string) => {
+          sentTexts.push(text);
+          return { ok: true };
+        },
+        handleNewSessionCardAction: async () => {},
+        handleResumeCardAction: async () => {},
+        handleClaudeModeCardAction: async () => {},
+        handleStructuredInputCardAction: async () => {},
+        handlePlanCardAction: async () => {},
+        handleClaudePlanExitCardAction: async () => {},
+      };
+
+      const baseEvent = {
+        message: {
+          chat_id: 'chat_new',
+          chat_type: 'p2p',
+          message_type: 'text',
+          create_time: String(Date.now()),
+        },
+        sender: {
+          sender_type: 'user',
+          sender_id: { open_id: 'user_new' },
+        },
+      };
+
+      const created = await handleIncomingEvent(ctx, {
+        ...baseEvent,
+        message: {
+          ...baseEvent.message,
+          message_id: 'msg_new_command',
+          content: JSON.stringify({ text: '/new:claude' }),
+        },
+      } as any);
+      assertEquals(created, null, '/new should be handled by the adapter layer');
+      assert(router.resolve({ channelType: 'feishu', channelInstanceId: 'default', chatId: 'chat_new' }), 'Binding should exist');
+      assert(sentTexts.some(text => text.includes('Created new claude session')), 'Should send creation confirmation');
+
+      const next = await handleIncomingEvent(ctx, {
+        ...baseEvent,
+        message: {
+          ...baseEvent.message,
+          message_id: 'msg_new_followup',
+          content: JSON.stringify({ text: 'hello after binding' }),
+        },
+      } as any);
+      assert(next !== null, 'Follow-up message should be enqueued');
+      assertEquals(next?.text, 'hello after binding', 'Should preserve message text');
+    });
+
+    await test('session card callbacks can route using button metadata', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const ctx: any = {
+        larkClient: new MockLarkClient(),
+        store,
+        router,
+        permissionBroker: new PermissionBroker(),
+        previewService: {},
+        activityService: {},
+        inboundImageService: {},
+        profileId: 'default',
+        createBoundSession: async (runtime: 'claude' | 'codex', sender: any, options: any) => router.createBinding({
+          channelType: 'feishu',
+          channelInstanceId: 'default',
+          chatId: sender.chatId,
+          agentSessionId: `session_${runtime}`,
+          workingDirectory: '/tmp',
+          runtime,
+          mode: options.mode,
+        }),
+        getActiveBinding: (address: any) => router.resolve(address),
+        deactivateBinding: (bindingId: string) => router.deactivateBinding(bindingId),
+        isAuthorized: () => true,
+        sendCard: async () => ({ ok: true }),
+        patchCard: async () => ({ ok: true }),
+        sendText: async () => ({ ok: true }),
+        handleNewSessionCardAction: async (event: unknown, callbackData: string) => {
+          const { handleNewSessionCardAction } = await import('../im/feishu/handlers/session-handler.js');
+          await handleNewSessionCardAction(ctx, event as any, callbackData);
+        },
+        handleResumeCardAction: async () => {},
+        handleClaudeModeCardAction: async () => {},
+        handleStructuredInputCardAction: async () => {},
+        handlePlanCardAction: async () => {},
+        handleClaudePlanExitCardAction: async () => {},
+      };
+
+      await handleCardAction(ctx, {
+        open_message_id: 'open_card',
+        open_id: 'user_meta',
+        action: {
+          tag: 'button',
+          value: {
+            callback: 'new-session:codex:code',
+            chat_id: 'chat_meta',
+            user_id: 'user_meta',
+          },
+        },
+      } as any);
+
+      const binding = router.resolve({
+        channelType: 'feishu',
+        channelInstanceId: 'default',
+        chatId: 'chat_meta',
+      });
+      assert(binding !== undefined, 'Card callback metadata should create a routed binding');
+      assertEquals(binding?.runtime, 'codex', 'Should create requested runtime');
+    });
+
+    await test('card action HTTP resolves BridgeManager permission broker', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const permissionBroker = new PermissionBroker();
+      const llm = new MockLLMProvider();
+      llm.responseConfig = {
+        toolUses: [{ id: 'tool_1', name: 'Bash', input: { command: 'pwd' } }],
+        text: 'Permission granted',
+      };
+      llm.shouldRequirePermission = true;
+
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker,
+      });
+      const adapter = new QueueAdapter();
+      router.createBinding({
+        channelType: 'feishu',
+        channelInstanceId: 'default',
+        chatId: 'chat_perm',
+        agentSessionId: 'session_perm',
+        workingDirectory: '/tmp',
+        runtime: 'claude',
+      });
+
+      const cardCtx: any = {
+        larkClient: new MockLarkClient(),
+        store,
+        router,
+        permissionBroker,
+        previewService: {},
+        activityService: {},
+        inboundImageService: {},
+        profileId: 'default',
+        createBoundSession: async () => {
+          throw new Error('not used');
+        },
+        getActiveBinding: (address: any) => router.resolve(address),
+        deactivateBinding: (bindingId: string) => router.deactivateBinding(bindingId),
+        isAuthorized: () => true,
+        sendCard: async () => ({ ok: true }),
+        patchCard: async () => ({ ok: true }),
+        sendText: async () => ({ ok: true }),
+        handleNewSessionCardAction: async () => {},
+        handleResumeCardAction: async () => {},
+        handleClaudeModeCardAction: async () => {},
+        handleStructuredInputCardAction: async () => {},
+        handlePlanCardAction: async () => {},
+        handleClaudePlanExitCardAction: async () => {},
+      };
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+
+      const callbackServer = await startFeishuCardActionServer({
+        port: 0,
+        adapter: {
+          handleCardActionPayload: async (data: unknown) => handleCardAction(cardCtx, data as any),
+        },
+      });
+      const port = (callbackServer.address() as AddressInfo).port;
+
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'msg_perm_user',
+          address: {
+            channelType: 'feishu',
+            channelInstanceId: 'default',
+            chatId: 'chat_perm',
+            userId: 'user_perm',
+          },
+          text: 'please run pwd',
+        }));
+
+        await waitFor(() => adapter.sentMessages.some(message => Boolean(message.inlineButtons)));
+        const permissionMessage = adapter.sentMessages.find(message => Boolean(message.inlineButtons));
+        const callbackData = permissionMessage?.inlineButtons?.[0]?.[0]?.callbackData;
+        assertEquals(callbackData, 'perm:tool_1:allow', 'Should send permission callback data');
+
+        const response = await postJson(port, FEISHU_CARD_ACTION_PATH, {
+          open_chat_id: 'chat_perm',
+          open_message_id: 'open_perm_card',
+          open_id: 'user_perm',
+          operator: { open_id: 'user_perm' },
+          action: {
+            tag: 'button',
+            value: { callback: callbackData },
+          },
+        });
+        assertEquals(response.statusCode, 200, 'Callback endpoint should return 200');
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Permission granted')));
+      } finally {
+        await closeServer(callbackServer);
+        await manager.stop();
+      }
+    });
+  });
+
+  // ── 15. Lark Client SDK API Shape ───────────────────────
+  await suite('15. Lark Client SDK API Shape', async () => {
+    function makeFakeSdkClient() {
+      const calls: Array<{ name: string; payload: any }> = [];
+      const client = {
+        im: {
+          v1: {
+            message: {
+              create: async (payload: any) => {
+                calls.push({ name: 'message.create', payload });
+                return { code: 0, data: { message_id: 'msg_create' } };
+              },
+              reply: async (payload: any) => {
+                calls.push({ name: 'message.reply', payload });
+                return { code: 0, data: { message_id: 'msg_reply' } };
+              },
+              patch: async (payload: any) => {
+                calls.push({ name: 'message.patch', payload });
+                return { code: 0, data: {} };
+              },
+              delete: async (payload: any) => {
+                calls.push({ name: 'message.delete', payload });
+                return { code: 0, data: {} };
+              },
+            },
+            image: {
+              create: async (payload: any) => {
+                calls.push({ name: 'image.create', payload });
+                return { image_key: 'img_uploaded' };
+              },
+            },
+            messageResource: {
+              get: async (payload: any) => {
+                calls.push({ name: 'messageResource.get', payload });
+                return {
+                  headers: { 'content-type': 'image/png' },
+                  writeFile: async (filePath: string) => {
+                    writeFileSync(filePath, 'image-bytes');
+                    return filePath;
+                  },
+                };
+              },
+            },
+          },
+        },
+        cardkit: {
+          v1: {
+            card: {
+              idConvert: async (payload: any) => {
+                calls.push({ name: 'card.idConvert', payload });
+                return { code: 0, data: { card_id: 'card_123' } };
+              },
+            },
+            cardElement: {
+              content: async (payload: any) => {
+                calls.push({ name: 'cardElement.content', payload });
+                return { code: 0, data: {} };
+              },
+            },
+          },
+        },
+      };
+      return { client, calls };
+    }
+
+    await test('sendMessage uses create and reply endpoints correctly', async () => {
+      const { client, calls } = makeFakeSdkClient();
+      const larkClient = new LarkClient({ appId: 'app', appSecret: 'secret' });
+      larkClient.setClient(client);
+
+      await larkClient.sendMessage(
+        makeChannelAddress({ channelType: 'feishu', chatId: 'chat_create' }),
+        'text',
+        { text: 'hello' },
+      );
+      await larkClient.sendMessage(
+        makeChannelAddress({ channelType: 'feishu', chatId: 'chat_reply' }),
+        'text',
+        { text: 'reply' },
+        'msg_original',
+      );
+
+      assertEquals(calls[0].name, 'message.create', 'First call should create a message');
+      assertEquals(calls[0].payload.params.receive_id_type, 'chat_id', 'Create should target chat_id');
+      assertEquals(calls[0].payload.data.receive_id, 'chat_create', 'Create should include receive_id');
+      assertEquals(calls[1].name, 'message.reply', 'Reply should use reply endpoint');
+      assertEquals(calls[1].payload.path.message_id, 'msg_original', 'Reply should use path message_id');
+      assert(!('reply_in_message_id' in calls[1].payload.data), 'Reply payload must not use create-only reply field');
+    });
+
+    await test('patchCard uses message.patch content payload and propagates failures', async () => {
+      const { client, calls } = makeFakeSdkClient();
+      const larkClient = new LarkClient({ appId: 'app', appSecret: 'secret' });
+      larkClient.setClient(client);
+
+      await larkClient.patchCard('msg_card', { header: { title: 'Updated' } });
+      assertEquals(calls[0].name, 'message.patch', 'Should use typed patch API');
+      assertEquals(calls[0].payload.path.message_id, 'msg_card', 'Should patch by message id');
+      assert(typeof calls[0].payload.data.content === 'string', 'Patch content should be serialized JSON');
+
+      client.im.v1.message.patch = async () => {
+        throw new Error('api down');
+      };
+      try {
+        await larkClient.patchCard('msg_card_2', { header: {} });
+        assert(false, 'Patch should throw');
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        assert(message.includes('Failed to patch Feishu card msg_card_2'), 'Should include clear patch context');
+      }
+    });
+
+    await test('image upload and download use Node SDK resource APIs', async () => {
+      const { client, calls } = makeFakeSdkClient();
+      const larkClient = new LarkClient({ appId: 'app', appSecret: 'secret' });
+      larkClient.setClient(client);
+      const tempDir = join(tmpdir(), `am-lark-client-${Date.now()}`);
+      mkdirSync(tempDir, { recursive: true });
+      const inputPath = join(tempDir, 'input.png');
+      const outputPath = join(tempDir, 'output.png');
+      writeFileSync(inputPath, 'fake-image');
+
+      try {
+        const imageKey = await larkClient.uploadImage(inputPath);
+        assertEquals(imageKey, 'img_uploaded', 'Should return image key');
+        assertEquals(calls[0].name, 'image.create', 'Should use image.create');
+        assertEquals(calls[0].payload.data.image_type, 'message', 'Should upload message image');
+        assert(calls[0].payload.data.image, 'Should pass a Node stream/buffer as image');
+
+        await larkClient.downloadMessageResource('msg_inbound', 'img_key', 'image', outputPath);
+        assertEquals(calls[1].name, 'messageResource.get', 'Should use messageResource.get');
+        assertEquals(calls[1].payload.path.message_id, 'msg_inbound', 'Should pass source message id');
+        assertEquals(calls[1].payload.path.file_key, 'img_key', 'Should pass resource key');
+        assertEquals(readFileSync(outputPath, 'utf8'), 'image-bytes', 'Should write downloaded resource');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('CardKit streaming update converts message id to card id', async () => {
+      const { client, calls } = makeFakeSdkClient();
+      const larkClient = new LarkClient({ appId: 'app', appSecret: 'secret' });
+      larkClient.setClient(client);
+
+      await larkClient.updateCardElementContent('msg_stream', 'stream_content', 'partial', { sequence: 7 });
+      assertEquals(calls[0].name, 'card.idConvert', 'Should convert message id first');
+      assertEquals(calls[0].payload.data.message_id, 'msg_stream', 'Should convert the message id');
+      assertEquals(calls[1].name, 'cardElement.content', 'Should use card element content API');
+      assertEquals(calls[1].payload.path.card_id, 'card_123', 'Should use converted card id');
+      assertEquals(calls[1].payload.path.element_id, 'stream_content', 'Should target content element');
+      assertEquals(calls[1].payload.data.content, 'partial', 'Should send partial text');
+    });
+  });
+
+  // ── 16. Config Loading ──────────────────────────────────
+  await suite('16. Config Loading', async () => {
     await test('loadConfig validates secrets (throws when missing)', () => {
       try {
         loadConfig();

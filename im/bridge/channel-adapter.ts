@@ -137,6 +137,15 @@ export abstract class BaseChannelAdapter {
    */
   endPreview?(_address: ChannelAddress, _draftId: number): void;
 
+  /**
+   * Finalize an existing preview in-place with the final response text.
+   */
+  finalizePreview?(
+    _address: ChannelAddress,
+    _text: string,
+    _draftId: number,
+  ): Promise<SendResult>;
+
   // ── Activity Events ────────────────────────────────────────
 
   /**

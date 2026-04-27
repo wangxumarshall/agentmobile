@@ -14,7 +14,7 @@
 
 **用户即开发者本人**（单用户/个人服务器）
 - 同时跑多个 Claude Code Agent，需要随时从任意设备查看进度、发送指令
-- 外出时通过手机/Telegram 给 AI 下任务，回家后在 PC 上接续
+- 外出时通过手机/Telegram/飞书 给 AI 下任务，回家后在 PC 上接续
 - 不想保持 SSH 连接，关掉浏览器后 Agent 继续运行
 
 ---
@@ -54,8 +54,12 @@
 |---|---|---|
 | F-13 | `claude -p` 非交互派发 | 发一条 prompt，AI 在后台处理，前端显示结果卡片；不占用交互 PTY |
 | F-14 | 上下文附件同步 | 在移动端将图片/文件/文本片段发送给指定 Agent session |
-| F-16 | Telegram Bot 频道 | 外出时在 Telegram 给 AI 下任务，结果回传聊天；调用 `/api/tasks` |
+| F-16 | IM 频道（Telegram / Feishu） | 外出时在 Telegram 或飞书给 AI 下任务或继续对话，结果回传聊天 |
 | F-17 | 多输入渠道统一路由 | 任意渠道（Web/IM/CLI）的 prompt 统一进入 task 队列，结果同步回发起方 |
+
+F-16 v1 边界：飞书支持私聊/群聊收消息、`/new:claude`、`/new:codex`、普通对话、streaming preview fallback、权限卡片、`/reset`、`/mode`、图片作为附件上下文。Plan confirmation workflow 与 structured input cards 暂保留文本降级提示。
+
+F-16 配置体验：飞书 / Lark 支持在 Web Settings 中生成二维码，用户用飞书扫码后自动写入 app id / secret 并开启 IM bridge；卡片按钮 callback URL 仍需按部署域名在飞书后台配置。
 
 ### Nice（v4：直觉化项目管理）
 
@@ -331,7 +335,7 @@ interface Channel {
 | 移动端 Esc/Ctrl+C 发送成功率 | 100% |
 | 浏览器重连后终端恢复时间 | < 2s |
 | 工具栏配置跨设备同步 | 重连后自动加载 |
-| 从 Telegram 发出 prompt 到收到首个 token | < 5s |
+| 从 IM 渠道发出 prompt 到收到首个 token | < 5s |
 | PWA 添加主屏并可用 | iOS Safari / Android Chrome |
 
 ---

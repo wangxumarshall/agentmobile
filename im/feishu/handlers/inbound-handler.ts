@@ -10,10 +10,15 @@
  * 6. Dispatch to direct/group handler
  */
 
-import { randomUUID } from 'node:crypto';
 import type { AdapterContext, FeishuMessageEvent, SenderIdentity } from '../types.js';
 import type { InboundMessage } from '../../bridge/types.js';
-import { info, error, debug } from '../../config/logger.js';
+import {
+  handleCreateSessionCommand,
+  handleResumeSessionCommand,
+  handleResetCommand,
+  handleModeCommand,
+} from './session-handler.js';
+import { debug } from '../../config/logger.js';
 
 // Message deduplication cache (in-memory, 5 minute TTL)
 const seenMessages: Map<string, number> = new Map();
@@ -63,14 +68,14 @@ function markSeen(messageId: string): void {
 export async function handleIncomingEvent(
   ctx: AdapterContext,
   data: FeishuMessageEvent,
-): Promise<void> {
+): Promise<InboundMessage | null> {
   const messageId = data.message?.message_id;
-  if (!messageId) return;
+  if (!messageId) return null;
 
   // Deduplication
   if (isDuplicate(messageId)) {
     debug('inbound', `Duplicate message: ${messageId}`);
-    return;
+    return null;
   }
   markSeen(messageId);
 
@@ -78,13 +83,13 @@ export async function handleIncomingEvent(
   const sender = extractSender(data);
   if (!sender) {
     debug('inbound', 'No sender identity in event');
-    return;
+    return null;
   }
 
   // Authorization check
-  if (!isAuthorized(ctx, sender)) {
+  if (!ctx.isAuthorized(sender)) {
     debug('inbound', `Unauthorized user: ${sender.userId}`);
-    return;
+    return null;
   }
 
   // Extract thread ID
@@ -110,32 +115,17 @@ export async function handleIncomingEvent(
   const msgType = data.message?.message_type;
   switch (msgType) {
     case 'text':
-      await handleTextMessage(ctx, sender, inbound, data);
-      break;
+      return await handleTextMessage(ctx, inbound, data);
     case 'image':
-      await handleImageMessage(ctx, sender, inbound, data);
-      break;
+      return await handleImageMessage(ctx, inbound, data);
     case 'interactive':
       // Card messages are handled by card-action-handler
       debug('inbound', `Interactive message ignored: ${messageId}`);
-      break;
+      return null;
     default:
       debug('inbound', `Unsupported message type: ${msgType}`);
-      break;
+      return null;
   }
-}
-
-/**
- * Check if a user is authorized to interact with the bridge.
- *
- * TODO: Wire allowedUsers from FeishuAdapter profile config.
- * For now, checks AdapterContext for any authorization settings.
- */
-function isAuthorized(ctx: AdapterContext, sender: SenderIdentity): boolean {
-  // TODO: Implement proper authorization by reading allowedUsers from store/config
-  // Currently the bridge allows all users by default — this should be locked down
-  // in production by setting CTI_FEISHU_ALLOWED_USERS in .env
-  return true;
 }
 
 /**
@@ -143,10 +133,9 @@ function isAuthorized(ctx: AdapterContext, sender: SenderIdentity): boolean {
  */
 async function handleTextMessage(
   ctx: AdapterContext,
-  sender: SenderIdentity,
   inbound: InboundMessage,
   data: FeishuMessageEvent,
-): Promise<void> {
+): Promise<InboundMessage | null> {
   // Parse text content
   let content = data.message?.content || '';
 
@@ -159,7 +148,7 @@ async function handleTextMessage(
   }
 
   inbound.text = content.trim();
-  if (!inbound.text) return;
+  if (!inbound.text) return null;
 
   // Resolve referenced images in text mentions
   if (data.message?.mentions && data.message.mentions.length > 0) {
@@ -170,10 +159,9 @@ async function handleTextMessage(
   // Dispatch to direct/group handler
   const chatType = data.message?.chat_type;
   if (chatType === 'p2p') {
-    await handleDirectMessage(ctx, sender, inbound);
-  } else {
-    await handleGroupMessage(ctx, sender, inbound);
+    return handleDirectMessage(ctx, inbound);
   }
+  return handleGroupMessage(ctx, inbound);
 }
 
 /**
@@ -181,10 +169,9 @@ async function handleTextMessage(
  */
 async function handleImageMessage(
   ctx: AdapterContext,
-  sender: SenderIdentity,
   inbound: InboundMessage,
   data: FeishuMessageEvent,
-): Promise<void> {
+): Promise<InboundMessage | null> {
   let content = data.message?.content || '';
 
   try {
@@ -192,7 +179,17 @@ async function handleImageMessage(
     const imageKey = parsed.image_key;
     if (imageKey) {
       const image = await ctx.inboundImageService.downloadImage(imageKey, inbound.messageId);
-      inbound.text = image ? `📷 Image received: ${image.localPath}` : '📷 Image received (download failed)';
+      if (image) {
+        inbound.attachments = [{
+          fileName: image.localPath.split('/').pop() || 'image',
+          filePath: image.localPath,
+          mimeType: image.mimeType,
+          fileSize: image.fileSize,
+        }];
+        inbound.text = 'Please inspect the attached image.';
+      } else {
+        inbound.text = '📷 Image received (download failed)';
+      }
     }
   } catch {
     inbound.text = '📷 Image received';
@@ -200,10 +197,9 @@ async function handleImageMessage(
 
   const chatType = data.message?.chat_type;
   if (chatType === 'p2p') {
-    await handleDirectMessage(ctx, sender, inbound);
-  } else {
-    await handleGroupMessage(ctx, sender, inbound);
+    return handleDirectMessage(ctx, inbound);
   }
+  return handleGroupMessage(ctx, inbound);
 }
 
 /**
@@ -213,34 +209,45 @@ async function handleImageMessage(
  */
 export async function handleDirectMessage(
   ctx: AdapterContext,
-  sender: SenderIdentity,
   inbound: InboundMessage,
-): Promise<void> {
-  const text = inbound.text;
+): Promise<InboundMessage | null> {
+  const text = inbound.text.trim();
 
-  // Accept /new commands in DMs
   if (text.startsWith('/new')) {
-    // Create a new session
-    const isClaude = text.includes('claude') || !text.includes('codex');
-    const runtime = isClaude ? 'claude' as const : 'codex' as const;
-
-    try {
-      const binding = await ctx.createBoundSession(runtime, inbound.address, {});
-      await ctx.sendText(inbound.address, `✅ Created new ${runtime} session: \`${binding.id}\``);
-    } catch (e) {
-      await ctx.sendText(inbound.address, `❌ Failed to create session: ${e}`);
+    return handleNewCommand(ctx, inbound, text);
+  }
+  if (text.startsWith('/resume')) {
+    await handleResumeSessionCommand(ctx, inbound.address);
+    return null;
+  }
+  if (text.startsWith('/reset')) {
+    await handleResetCommand(ctx, inbound.address);
+    return null;
+  }
+  if (text.startsWith('/mode')) {
+    const binding = ctx.getActiveBinding(inbound.address);
+    if (!binding) {
+      await ctx.sendText(inbound.address, '❌ No active session found. Send `/new` first.');
+      return null;
     }
-  } else if (text.startsWith('/resume')) {
-    // Show resume card
-    await ctx.sendText(inbound.address, `🔄 Sending session options...`);
-    // Implementation would show session selection card
-  } else {
-    // Reject other commands in DM
+    await handleModeCommand(ctx, binding.id, text, inbound.address);
+    return null;
+  }
+  if (text.startsWith('/help')) {
+    await sendHelpMessage(ctx, inbound);
+    return null;
+  }
+
+  if (!ctx.getActiveBinding(inbound.address)) {
+    await handleCreateSessionCommand(ctx, inbound.address);
     await ctx.sendText(
       inbound.address,
-      '👋 In direct messages, please use `/new:claude` or `/new:codex` to start a session.\n\nFor general chat, add me to a group.',
+      '👋 No active session in this DM yet. Tap a card button or send `/new:claude` / `/new:codex` first.',
     );
+    return null;
   }
+
+  return inbound;
 }
 
 /**
@@ -250,84 +257,70 @@ export async function handleDirectMessage(
  */
 export async function handleGroupMessage(
   ctx: AdapterContext,
-  sender: SenderIdentity,
   inbound: InboundMessage,
-): Promise<void> {
+): Promise<InboundMessage | null> {
   const text = inbound.text.trim();
 
   // Parse commands
   if (text.startsWith('/new')) {
-    await handleGroupNewCommand(ctx, inbound, text);
-    return;
+    return handleNewCommand(ctx, inbound, text);
   }
   if (text.startsWith('/reset')) {
-    await handleGroupResetCommand(ctx, inbound);
-    return;
+    await handleResetCommand(ctx, inbound.address);
+    return null;
   }
   if (text.startsWith('/stop')) {
     await ctx.sendText(inbound.address, '⛹️ Use `/stop` in the bridge context to stop the active task.');
-    return;
+    return null;
   }
   if (text.startsWith('/mode')) {
-    await handleGroupModeCommand(ctx, inbound, text);
-    return;
+    const binding = ctx.getActiveBinding(inbound.address);
+    if (!binding) {
+      await ctx.sendText(inbound.address, '❌ No active session found. Send `/new` first.');
+      return null;
+    }
+    await handleModeCommand(ctx, binding.id, text, inbound.address);
+    return null;
   }
   if (text.startsWith('/help')) {
     await sendHelpMessage(ctx, inbound);
-    return;
+    return null;
   }
 
-  // Regular text — enqueue for processing by bridge manager
-  // The adapter will push this to the queue for consumeOne()
+  if (!ctx.getActiveBinding(inbound.address)) {
+    await handleCreateSessionCommand(ctx, inbound.address);
+    await ctx.sendText(
+      inbound.address,
+      '👋 This group does not have an active session yet. Use `/new:claude` or `/new:codex`, or tap a card button to create one.',
+    );
+    return null;
+  }
+
   debug('inbound', `Group message enqueued: ${text.slice(0, 50)}...`);
-  // Note: The actual enqueue happens in the adapter's handleIncomingEvent handler
+  return inbound;
 }
 
 /**
  * Handle /new command in group.
  */
-async function handleGroupNewCommand(
+async function handleNewCommand(
   ctx: AdapterContext,
   inbound: InboundMessage,
   text: string,
-): Promise<void> {
-  const isClaude = text.includes('claude') || !text.includes('codex');
-  const runtime = isClaude ? 'claude' as const : 'codex' as const;
+): Promise<null> {
+  const runtime = parseRuntime(text);
+  if (!runtime) {
+    await handleCreateSessionCommand(ctx, inbound.address);
+    return null;
+  }
 
   try {
     const binding = await ctx.createBoundSession(runtime, inbound.address, {});
-    await ctx.sendText(inbound.address, `✅ Created new ${runtime} session in this group: \`${binding.id}\``);
+    await ctx.sendText(inbound.address, `✅ Created new ${runtime} session: \`${binding.id}\``);
   } catch (e) {
     await ctx.sendText(inbound.address, `❌ Failed to create session: ${e}`);
   }
-}
-
-/**
- * Handle /reset command in group.
- */
-async function handleGroupResetCommand(
-  ctx: AdapterContext,
-  inbound: InboundMessage,
-): Promise<void> {
-  await ctx.sendText(inbound.address, '🔄 Session reset. Send `/new` to start fresh.');
-}
-
-/**
- * Handle /mode command in group.
- */
-async function handleGroupModeCommand(
-  ctx: AdapterContext,
-  inbound: InboundMessage,
-  text: string,
-): Promise<void> {
-  const parts = text.split(' ');
-  const mode = parts[1];
-
-  if (mode === 'plan' || mode === 'code' || mode === 'ask') {
-    await ctx.sendText(inbound.address, `✅ Mode changed to: \`${mode}\``);
-  } else {
-    await ctx.sendText(inbound.address, 'Usage: `/mode plan|code|ask`');
-  }
+  return null;
 }
 
 /**
@@ -353,6 +346,7 @@ async function sendHelpMessage(
 
 **Tips:**
 • Send any text to continue the conversation
+• Send an image to upload it into the active session context
 • The bot will ask for permission before using tools
 • Use \`/stop\` in the bridge context to cancel tasks`;
 
@@ -374,4 +368,11 @@ function extractSender(data: FeishuMessageEvent): SenderIdentity | null {
     unionId: senderId?.union_id,
     openId: senderId?.open_id,
   };
+}
+
+function parseRuntime(text: string): 'claude' | 'codex' | null {
+  const normalized = text.trim().toLowerCase();
+  if (normalized.startsWith('/new:claude') || /\bclaude\b/.test(normalized)) return 'claude';
+  if (normalized.startsWith('/new:codex') || /\bcodex\b/.test(normalized)) return 'codex';
+  return null;
 }

@@ -10,8 +10,10 @@ import { fileURLToPath } from 'url';
 import { dirname, join, normalize, isAbsolute, basename } from 'path';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, statSync, rmdirSync, renameSync, cpSync, rmSync } from 'fs';
 import { readdir, stat as statAsync } from 'fs/promises';
+import { randomUUID } from 'node:crypto';
 import https from 'node:https';
 import multer from 'multer';
+import QRCode from 'qrcode';
 
 // 加载 .env 文件（如果存在）
 try {
@@ -53,6 +55,7 @@ function buildRuntimePath() {
 process.env.PATH = buildRuntimePath();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ENV_FILE = join(__dirname, '.env');
 
 // 持久化数据目录（通过 Docker volume 挂载，重建容器不丢失）
 const DATA_DIR = join(__dirname, 'data');
@@ -656,6 +659,286 @@ app.get('/api/version/latest', authMiddleware, (req, res) => {
   }).on('error', () => {
     res.status(502).json({ error: 'cannot reach GitHub' });
   });
+});
+
+// ---- Feishu setup wizard ----
+const FEISHU_SETUP_TTL_MS = 15 * 60 * 1000;
+const FEISHU_SETUP_SESSIONS = new Map();
+
+function maskValue(value, keepStart = 6, keepEnd = 4) {
+  if (!value) return '';
+  if (value.length <= keepStart + keepEnd) return '*'.repeat(value.length);
+  return `${value.slice(0, keepStart)}${'*'.repeat(6)}${value.slice(-keepEnd)}`;
+}
+
+function parseEnvList(value) {
+  return String(value || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function getFeishuSettingsSnapshot() {
+  const appId = process.env.CTI_FEISHU_APP_ID || '';
+  const appSecret = process.env.CTI_FEISHU_APP_SECRET || '';
+  return {
+    imBridgeEnabled: process.env.IM_BRIDGE_ENABLED === 'true' || process.env.IM_BRIDGE_ENABLED === '1',
+    feishuEnabled: process.env.FEISHU_ENABLED === 'true' || process.env.FEISHU_ENABLED === '1',
+    configured: Boolean(appId && appSecret),
+    appIdMasked: maskValue(appId),
+    appSecretConfigured: Boolean(appSecret),
+    domain: process.env.CTI_FEISHU_DOMAIN || '',
+    callbackPort: process.env.CTI_FEISHU_CALLBACK_PORT || '',
+    verificationTokenConfigured: Boolean(process.env.CTI_FEISHU_VERIFICATION_TOKEN),
+    encryptKeyConfigured: Boolean(process.env.CTI_FEISHU_ENCRYPT_KEY),
+    allowedUsers: parseEnvList(process.env.CTI_FEISHU_ALLOWED_USERS),
+  };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeEnvValue(value) {
+  return String(value ?? '').replace(/\r?\n/g, '').trim();
+}
+
+function updateEnvFile(updates) {
+  const normalizedUpdates = Object.fromEntries(
+    Object.entries(updates).map(([key, value]) => [key, normalizeEnvValue(value)]),
+  );
+  let lines = [];
+  if (existsSync(ENV_FILE)) {
+    lines = readFileSync(ENV_FILE, 'utf8').split(/\r?\n/);
+  }
+
+  const seen = new Set();
+  lines = lines.map(line => {
+    for (const [key, value] of Object.entries(normalizedUpdates)) {
+      const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`);
+      if (pattern.test(line)) {
+        seen.add(key);
+        return `${key}=${value}`;
+      }
+    }
+    return line;
+  });
+
+  const missing = Object.entries(normalizedUpdates).filter(([key]) => !seen.has(key));
+  if (missing.length > 0) {
+    if (lines.length > 0 && lines[lines.length - 1] !== '') lines.push('');
+    lines.push('# Feishu / Lark IM bridge setup');
+    for (const [key, value] of missing) {
+      lines.push(`${key}=${value}`);
+    }
+  }
+
+  writeFileSync(ENV_FILE, lines.join('\n').replace(/\n+$/, '\n'), 'utf8');
+  Object.assign(process.env, normalizedUpdates);
+}
+
+function getFeishuAccountDomain(domain) {
+  return domain === 'lark' ? 'accounts.larksuite.com' : 'accounts.feishu.cn';
+}
+
+function getFeishuSdkDomain(requestedDomain, result) {
+  if (result?.user_info?.tenant_brand === 'lark') return 'lark';
+  return requestedDomain === 'lark' ? 'lark' : '';
+}
+
+async function renderFeishuQrSvg(url) {
+  return QRCode.toString(url, {
+    type: 'svg',
+    margin: 1,
+    width: 220,
+    color: {
+      dark: '#111827',
+      light: '#ffffff',
+    },
+  });
+}
+
+function touchFeishuSetupSession(session, patch = {}) {
+  Object.assign(session, patch, { updatedAt: new Date().toISOString() });
+}
+
+function cleanupFeishuSetupSessions() {
+  const now = Date.now();
+  for (const [id, session] of FEISHU_SETUP_SESSIONS) {
+    const age = now - session.startedAtMs;
+    if (age > FEISHU_SETUP_TTL_MS && (session.status === 'starting' || session.status === 'waiting' || session.status === 'slow_down')) {
+      session.controller.abort();
+      touchFeishuSetupSession(session, {
+        status: 'expired',
+        error: 'QR code expired',
+      });
+    }
+    if (age > FEISHU_SETUP_TTL_MS * 2 && ['authorized', 'saved', 'expired', 'aborted', 'error'].includes(session.status)) {
+      FEISHU_SETUP_SESSIONS.delete(id);
+    }
+  }
+}
+
+function saveFeishuRegistration(session, result) {
+  const openId = result?.user_info?.open_id || '';
+  const existingAllowedUsers = parseEnvList(process.env.CTI_FEISHU_ALLOWED_USERS);
+  const allowedUsers = existingAllowedUsers.length > 0
+    ? existingAllowedUsers
+    : openId
+      ? [openId]
+      : [];
+
+  updateEnvFile({
+    IM_BRIDGE_ENABLED: 'true',
+    FEISHU_ENABLED: 'true',
+    CTI_FEISHU_APP_ID: result.client_id,
+    CTI_FEISHU_APP_SECRET: result.client_secret,
+    CTI_FEISHU_DOMAIN: getFeishuSdkDomain(session.domain, result),
+    ...(allowedUsers.length > 0 ? { CTI_FEISHU_ALLOWED_USERS: allowedUsers.join(',') } : {}),
+  });
+}
+
+async function serializeFeishuSetupSession(session) {
+  if (session.qrUrl && !session.qrSvg) {
+    session.qrSvg = await renderFeishuQrSvg(session.qrUrl);
+  }
+  return {
+    id: session.id,
+    status: session.status,
+    statusDetail: session.statusDetail,
+    error: session.error,
+    domain: session.domain,
+    qrUrl: session.qrUrl,
+    qrSvg: session.qrSvg,
+    expiresAt: session.expiresAt,
+    startedAt: session.startedAt,
+    updatedAt: session.updatedAt,
+    saved: session.saved,
+    appIdMasked: session.appIdMasked,
+    openId: session.openId,
+    tenantBrand: session.tenantBrand,
+    settings: getFeishuSettingsSnapshot(),
+  };
+}
+
+function startFeishuSetupSession(domain) {
+  cleanupFeishuSetupSessions();
+  const id = randomUUID();
+  const controller = new AbortController();
+  let resolveQrReady;
+  const qrReady = new Promise(resolve => { resolveQrReady = resolve; });
+  const session = {
+    id,
+    domain,
+    controller,
+    qrReady,
+    status: 'starting',
+    statusDetail: '',
+    error: '',
+    qrUrl: '',
+    qrSvg: '',
+    expiresAt: '',
+    startedAt: new Date().toISOString(),
+    startedAtMs: Date.now(),
+    updatedAt: new Date().toISOString(),
+    saved: false,
+    appIdMasked: '',
+    openId: '',
+    tenantBrand: '',
+  };
+  FEISHU_SETUP_SESSIONS.set(id, session);
+
+  session.promise = (async () => {
+    try {
+      const larkModule = await import('@larksuiteoapi/node-sdk');
+      const lark = larkModule.default || larkModule;
+      const result = await lark.registerApp({
+        domain: getFeishuAccountDomain(domain),
+        larkDomain: 'accounts.larksuite.com',
+        source: 'agentmobile',
+        signal: controller.signal,
+        onQRCodeReady(info) {
+          touchFeishuSetupSession(session, {
+            status: 'waiting',
+            statusDetail: 'waiting_scan',
+            qrUrl: info.url,
+            expiresAt: new Date(Date.now() + info.expireIn * 1000).toISOString(),
+          });
+          resolveQrReady();
+        },
+        onStatusChange(info) {
+          const status = info.status === 'polling' || info.status === 'domain_switched'
+            ? 'waiting'
+            : info.status;
+          touchFeishuSetupSession(session, {
+            status,
+            statusDetail: info.status,
+          });
+        },
+      });
+
+      saveFeishuRegistration(session, result);
+      touchFeishuSetupSession(session, {
+        status: 'saved',
+        statusDetail: 'authorized',
+        saved: true,
+        appIdMasked: maskValue(result.client_id),
+        openId: result.user_info?.open_id || '',
+        tenantBrand: result.user_info?.tenant_brand || getFeishuSdkDomain(domain, result) || 'feishu',
+      });
+    } catch (err) {
+      const code = err?.code || '';
+      touchFeishuSetupSession(session, {
+        status: code === 'abort' ? 'aborted' : 'error',
+        statusDetail: code,
+        error: err?.description || err?.message || String(err),
+      });
+      resolveQrReady();
+    }
+  })();
+
+  return session;
+}
+
+async function waitForFeishuQr(session) {
+  await Promise.race([
+    session.qrReady,
+    session.promise,
+    new Promise(resolve => setTimeout(resolve, 15000)),
+  ]);
+}
+
+app.get('/api/feishu/settings', authMiddleware, (req, res) => {
+  res.json(getFeishuSettingsSnapshot());
+});
+
+app.post('/api/feishu/setup', authMiddleware, async (req, res) => {
+  const domain = req.body?.domain === 'lark' ? 'lark' : 'feishu';
+  const session = startFeishuSetupSession(domain);
+  await waitForFeishuQr(session);
+  if (!session.qrUrl && session.status === 'error') {
+    return res.status(502).json(await serializeFeishuSetupSession(session));
+  }
+  res.json(await serializeFeishuSetupSession(session));
+});
+
+app.get('/api/feishu/setup/:id', authMiddleware, async (req, res) => {
+  cleanupFeishuSetupSessions();
+  const session = FEISHU_SETUP_SESSIONS.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'not found' });
+  res.json(await serializeFeishuSetupSession(session));
+});
+
+app.delete('/api/feishu/setup/:id', authMiddleware, async (req, res) => {
+  const session = FEISHU_SETUP_SESSIONS.get(req.params.id);
+  if (!session) return res.json({ ok: true });
+  session.controller.abort();
+  touchFeishuSetupSession(session, {
+    status: 'aborted',
+    statusDetail: 'abort',
+    error: '',
+  });
+  res.json({ ok: true });
 });
 
 app.get('/api/browse', authMiddleware, (req, res) => {

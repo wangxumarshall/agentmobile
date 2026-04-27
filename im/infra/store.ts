@@ -85,9 +85,13 @@ export class JsonFileStore {
     return this.state.bindings[id];
   }
 
-  getBindingByChat(channelType: string, chatId: string): ChannelBinding | undefined {
+  getBindingByChat(channelType: string, chatId: string, channelInstanceId?: string): ChannelBinding | undefined {
     return Object.values(this.state.bindings).find(
-      b => b.channelType === channelType && b.chatId === chatId && b.active
+      b =>
+        b.channelType === channelType &&
+        b.chatId === chatId &&
+        b.active &&
+        (!channelInstanceId || b.channelInstanceId === channelInstanceId)
     );
   }
 

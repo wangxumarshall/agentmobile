@@ -29,6 +29,7 @@ interface PreviewArtifact {
   lastSentAt: number;
   degraded: boolean;
   failureCount: number;
+  sequence: number;
 }
 
 export class PreviewService {
@@ -116,6 +117,7 @@ export class PreviewService {
         lastSentAt: Date.now(),
         degraded: false,
         failureCount: 0,
+        sequence: 0,
       };
 
       this.previewArtifacts.set(routeKey, artifact);
@@ -201,25 +203,15 @@ export class PreviewService {
     text: string,
   ): Promise<'sent' | 'degrade'> {
     try {
-      const client = await this.larkClient.getClient();
-      if (!client) throw new Error('Lark client not initialized');
-
-      // Check client supports request method (mock may not)
-      if (typeof client.request !== 'function') {
-        artifact.degraded = true;
-        return this.patchPreview(artifact, text);
-      }
-
-      // Use CardKit API to update specific element
-      await client.request(
-        'PATCH',
-        `/open-apis/cardkit/v1/card_elements/content`,
+      artifact.sequence += 1;
+      await this.larkClient.updateCardElementContent(
+        artifact.messageId,
+        'stream_content',
+        text,
         {
-          data: {
-            message_id: artifact.openMessageId || artifact.messageId,
-            element_id: 'stream_content',
-            content: text,
-          },
+          openMessageId: artifact.openMessageId,
+          sequence: artifact.sequence,
+          uuid: randomUUID(),
         },
       );
 
