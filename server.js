@@ -146,6 +146,18 @@ if (!JWT_SECRET || !ACC_PASSWORD_HASH) {
   process.exit(1);
 }
 
+function getTelegramBotToken() {
+  return process.env.TELEGRAM_BOT_TOKEN || ''
+}
+
+function getTelegramWebhookSecret() {
+  return process.env.TELEGRAM_WEBHOOK_SECRET || ''
+}
+
+function getTelegramDefaultSession() {
+  return process.env.TELEGRAM_DEFAULT_SESSION || ''
+}
+
 function commandExists(cmd) {
   try {
     execSync(`command -v ${cmd} >/dev/null 2>&1`, { env: { ...process.env, PATH: process.env.PATH } });
@@ -695,6 +707,22 @@ function getFeishuSettingsSnapshot() {
   };
 }
 
+function getTelegramSettingsSnapshot(botInfo = null) {
+  const botToken = getTelegramBotToken();
+  return {
+    imBridgeEnabled: process.env.IM_BRIDGE_ENABLED === 'true' || process.env.IM_BRIDGE_ENABLED === '1',
+    telegramEnabled: process.env.TELEGRAM_ENABLED === 'true' || process.env.TELEGRAM_ENABLED === '1',
+    configured: Boolean(botToken),
+    botTokenMasked: maskValue(botToken),
+    defaultSession: getTelegramDefaultSession(),
+    webhookSecretConfigured: Boolean(getTelegramWebhookSecret()),
+    botUsername: botInfo?.username || '',
+    botDisplayName: botInfo?.first_name || '',
+    botId: botInfo?.id ? String(botInfo.id) : '',
+    botLink: botInfo?.username ? `https://t.me/${botInfo.username}` : '',
+  };
+}
+
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -939,6 +967,43 @@ app.delete('/api/feishu/setup/:id', authMiddleware, async (req, res) => {
     error: '',
   });
   res.json({ ok: true });
+});
+
+app.get('/api/telegram/settings', authMiddleware, async (req, res) => {
+  try {
+    const botToken = getTelegramBotToken();
+    const botInfo = botToken ? await fetchTelegramBotInfo(botToken).catch(() => null) : null;
+    res.json(getTelegramSettingsSnapshot(botInfo));
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/telegram/settings', authMiddleware, async (req, res) => {
+  try {
+    const requestedToken = normalizeEnvValue(req.body?.botToken || '');
+    const defaultSession = normalizeEnvValue(req.body?.defaultSession || '');
+    const effectiveToken = requestedToken || getTelegramBotToken();
+    if (!effectiveToken) {
+      return res.status(400).json({ error: 'Telegram bot token is required' });
+    }
+
+    const botInfo = await fetchTelegramBotInfo(effectiveToken);
+
+    updateEnvFile({
+      IM_BRIDGE_ENABLED: 'true',
+      TELEGRAM_ENABLED: 'true',
+      TELEGRAM_BOT_TOKEN: effectiveToken,
+      TELEGRAM_DEFAULT_SESSION: defaultSession,
+    });
+
+    res.json({
+      ok: true,
+      settings: getTelegramSettingsSnapshot(botInfo),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
 });
 
 app.get('/api/browse', authMiddleware, (req, res) => {
@@ -2326,22 +2391,22 @@ app.post('/api/tasks', authMiddleware, (req, res) => {
 
 // ---- Telegram Bot Webhook (F-16) ----
 
-function telegramRequest(method, payload) {
-  if (!TELEGRAM_BOT_TOKEN) return Promise.resolve(null)
+function telegramApiRequest(botToken, method, payload) {
+  if (!botToken) return Promise.resolve(null)
   return new Promise((resolve) => {
-    const body = JSON.stringify(payload)
+    const body = JSON.stringify(payload || {})
     const options = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     }
     const req = https.request(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`,
+      `https://api.telegram.org/bot${botToken}/${method}`,
       options,
       (res) => {
         let data = ''
         res.on('data', d => data += d)
         res.on('end', () => {
-          try { resolve(JSON.parse(data)) } catch { resolve(null) }
+          try { resolve(JSON.parse(data || '{}')) } catch { resolve(null) }
         })
       }
     )
@@ -2349,6 +2414,18 @@ function telegramRequest(method, payload) {
     req.write(body)
     req.end()
   })
+}
+
+async function fetchTelegramBotInfo(botToken) {
+  const result = await telegramApiRequest(botToken, 'getMe', {})
+  if (!result?.ok || !result?.result) {
+    throw new Error(result?.description || 'Failed to validate Telegram bot token')
+  }
+  return result.result
+}
+
+function telegramRequest(method, payload) {
+  return telegramApiRequest(getTelegramBotToken(), method, payload)
 }
 
 // Returns the sent message_id (or null)
@@ -2366,8 +2443,10 @@ function telegramEdit(chatId, messageId, text) {
 // 下载 Telegram 文件到指定目录
 function downloadTelegramFile(fileId, destDir, filename) {
   return new Promise((resolve, reject) => {
+    const botToken = getTelegramBotToken()
+    if (!botToken) return reject(new Error('Telegram not configured'))
     // 1. 获取 file_path
-    const infoUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`
+    const infoUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`
     https.get(infoUrl, (res) => {
       let data = ''
       res.on('data', d => data += d)
@@ -2376,7 +2455,7 @@ function downloadTelegramFile(fileId, destDir, filename) {
           const info = JSON.parse(data)
           if (!info.ok) return reject(new Error('getFile failed: ' + info.description))
           const filePath = info.result.file_path
-          const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`
+          const fileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`
 
           // 2. 下载文件
           https.get(fileUrl, (fres) => {
@@ -2402,14 +2481,14 @@ let telegramAgentType = 'claude'
 // POST /api/webhooks/telegram — Telegram Bot webhook
 app.post('/api/webhooks/telegram', (req, res) => {
   // 验证 secret（如果配置了）
-  if (TELEGRAM_WEBHOOK_SECRET) {
+  if (getTelegramWebhookSecret()) {
     const secret = req.headers['x-telegram-bot-api-secret-token']
-    if (secret !== TELEGRAM_WEBHOOK_SECRET) {
+    if (secret !== getTelegramWebhookSecret()) {
       return res.status(403).json({ error: 'forbidden' })
     }
   }
 
-  if (!TELEGRAM_BOT_TOKEN) return res.status(503).json({ error: 'Telegram not configured' })
+  if (!getTelegramBotToken()) return res.status(503).json({ error: 'Telegram not configured' })
 
   const update = req.body
   res.json({ ok: true }) // 立即返回，以避免 Telegram 重试
@@ -2563,7 +2642,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
   const text = message.text?.trim()
   if (!text) return
   let cwd = WORKSPACE_ROOT
-  let sessionName = TELEGRAM_DEFAULT_SESSION
+  let sessionName = getTelegramDefaultSession()
 
   try {
     const windows = execSync(`tmux list-windows -t ${TMUX_SESSION} -F "#I:#W:#{pane_current_path}"`).toString().trim().split('\n')
@@ -2573,7 +2652,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
       const idx = parts[0]
       const name = parts[1]
       const path = parts.slice(2).join(':')
-      if (TELEGRAM_DEFAULT_SESSION && name === TELEGRAM_DEFAULT_SESSION) {
+      if (getTelegramDefaultSession() && name === getTelegramDefaultSession()) {
         cwd = path
         sessionName = name
         break
@@ -2599,10 +2678,12 @@ app.post('/api/webhooks/telegram', (req, res) => {
 
 // GET /api/telegram/setup — 一键配置 Telegram webhook URL
 app.get('/api/telegram/setup', authMiddleware, (req, res) => {
-  if (!TELEGRAM_BOT_TOKEN) return res.status(503).json({ error: 'TELEGRAM_BOT_TOKEN not set' })
+  const botToken = getTelegramBotToken()
+  if (!botToken) return res.status(503).json({ error: 'TELEGRAM_BOT_TOKEN not set' })
   const webhookUrl = `${req.protocol}://${req.get('host')}/api/webhooks/telegram`
-  const secretParam = TELEGRAM_WEBHOOK_SECRET ? `&secret_token=${TELEGRAM_WEBHOOK_SECRET}` : ''
-  const setupUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${encodeURIComponent(webhookUrl)}${secretParam}`
+  const secret = getTelegramWebhookSecret()
+  const secretParam = secret ? `&secret_token=${secret}` : ''
+  const setupUrl = `https://api.telegram.org/bot${botToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}${secretParam}`
 
   // 调用 Telegram API 设置 webhook
   https.get(setupUrl, (r) => {

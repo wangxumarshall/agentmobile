@@ -59,7 +59,7 @@
 
 F-16 v1 边界：飞书支持私聊/群聊收消息、`/new:claude`、`/new:codex`、普通对话、streaming preview fallback、权限卡片、`/reset`、`/mode`、图片作为附件上下文。Plan confirmation workflow 与 structured input cards 暂保留文本降级提示。
 
-F-16 配置体验：飞书 / Lark 支持在 Web Settings 中生成二维码，用户用飞书扫码后自动写入 app id / secret 并开启 IM bridge；卡片按钮 callback URL 仍需按部署域名在飞书后台配置。
+F-16 配置体验：Telegram 支持在 Web Settings 中填写 BotFather token 并保存到 `.env`；飞书 / Lark 支持在 Web Settings 中生成二维码，用户用飞书扫码后自动写入 app id / secret 并开启 IM bridge；卡片按钮 callback URL 仍需按部署域名在飞书后台配置。
 
 ### Nice（v4：直觉化项目管理）
 

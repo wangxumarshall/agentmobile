@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import FeishuSettings from './FeishuSettings'
+import TelegramSettings from './TelegramSettings'
 
 interface Props {
   token: string
@@ -145,6 +146,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
             </button>
           </div>
 
+          <TelegramSettings token={token} />
           <FeishuSettings token={token} />
 
           {/* About section */}
