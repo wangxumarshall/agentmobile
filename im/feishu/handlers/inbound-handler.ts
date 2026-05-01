@@ -216,7 +216,7 @@ export async function handleDirectMessage(
   if (text.startsWith('/new')) {
     return handleNewCommand(ctx, inbound, text);
   }
-  if (text.startsWith('/resume')) {
+  if (text.startsWith('/resume') || text.startsWith('/sessions')) {
     await handleResumeSessionCommand(ctx, inbound.address);
     return null;
   }
@@ -264,6 +264,10 @@ export async function handleGroupMessage(
   // Parse commands
   if (text.startsWith('/new')) {
     return handleNewCommand(ctx, inbound, text);
+  }
+  if (text.startsWith('/resume') || text.startsWith('/sessions')) {
+    await handleResumeSessionCommand(ctx, inbound.address);
+    return null;
   }
   if (text.startsWith('/reset')) {
     await handleResetCommand(ctx, inbound.address);
@@ -335,11 +339,14 @@ async function sendHelpMessage(
 **Direct Messages:**
 • \`/new:claude\` — Start Claude Code session
 • \`/new:codex\` — Start Codex session
+• \`/sessions\` — Show recent sessions
 • \`/resume\` — Resume recent session
 
 **Group Chats:**
 • \`/new:claude\` — Start Claude session in group
 • \`/new:codex\` — Start Codex session in group
+• \`/sessions\` — Show recent sessions
+• \`/resume\` — Resume recent session
 • \`/reset\` — Reset session
 • \`/mode plan|code|ask\` — Change mode
 • \`/help\` — Show help

@@ -1205,6 +1205,46 @@ async function main() {
       }
     });
 
+    await test('/sessions command shows Telegram resume card', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_sessions',
+        agentSessionId: 'session_tg_sessions',
+        workingDirectory: '/tmp/project-a',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_sessions_command',
+          address: {
+            channelType: 'telegram',
+            channelInstanceId: 'default',
+            chatId: 'tg_sessions',
+            userId: 'tg_user',
+          },
+          text: '/sessions',
+        }));
+
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Resume Session')));
+        const card = adapter.sentMessages.find(message => message.text.includes('Resume Session'));
+        assert(card?.inlineButtons?.length === 1, 'Should include one session button');
+        assert(!card?.text.includes('Unknown command'), 'Should not render unknown command');
+      } finally {
+        await manager.stop();
+      }
+    });
+
     await test('Telegram permission callback patches original permission card', async () => {
       const store = new MockStore();
       const router = new ChannelRouter(store as any);

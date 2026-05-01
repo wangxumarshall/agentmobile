@@ -479,7 +479,8 @@ export class BridgeManager {
         break;
       }
 
-      case 'resume': {
+      case 'resume':
+      case 'sessions': {
         if (message.address.channelType === 'telegram') {
           await this.sendTelegramResumeCard(adapter, message.address);
         }
@@ -520,6 +521,8 @@ Commands:
 • \`/reset\` — reset the current session
 • \`/stop\` — stop the active task
 • \`/mode code|plan|ask\` — change session mode
+• \`/sessions\` — show recent sessions
+• \`/resume\` — resume a recent session
 • \`/help\` — show this help
 
 After creating a session, send any text to continue the conversation.`;
