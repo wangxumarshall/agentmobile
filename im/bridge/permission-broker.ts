@@ -6,6 +6,7 @@
 import type { ChannelAddress, InlineButton, OutboundMessage, PermissionRequest, SendResult } from './types.js';
 import type { BaseChannelAdapter } from './channel-adapter.js';
 import { deliver } from './delivery-layer.js';
+import { buildPermissionCard } from '../telegram/cards/index.js';
 import { info } from '../config/logger.js';
 
 interface PendingPermission {
@@ -16,6 +17,12 @@ interface PendingPermission {
   createdAt: number;
   resolved: boolean;
   timeoutTimer: ReturnType<typeof setTimeout>;
+}
+
+export interface PermissionCallbackResult {
+  handled: boolean;
+  request?: PermissionRequest;
+  resolution?: 'allow' | 'deny' | 'allow_session';
 }
 
 export class PermissionBroker {
@@ -40,12 +47,21 @@ export class PermissionBroker {
       ],
     ];
 
-    const message: OutboundMessage = {
-      address,
-      text: `🔐 *Permission Required*\n\n**Tool:** ${request.toolName}\n\n${request.prompt}`,
-      parseMode: 'Markdown',
-      inlineButtons: buttons,
-    };
+    const message: OutboundMessage = address.channelType === 'telegram'
+      ? {
+          address,
+          ...buildPermissionCard(
+            request.toolName,
+            JSON.stringify(request.toolInput, null, 2) || request.prompt,
+            request.id,
+          ),
+        }
+      : {
+          address,
+          text: `🔐 *Permission Required*\n\n**Tool:** ${request.toolName}\n\n${request.prompt}`,
+          parseMode: 'Markdown',
+          inlineButtons: buttons,
+        };
 
     const result = await deliver(adapter, message);
     if (!result.ok) {
@@ -87,21 +103,34 @@ export class PermissionBroker {
    * Returns true if the callback was resolved.
    */
   handleCallback(callbackData: string): boolean {
-    if (!callbackData.startsWith('perm:')) return false;
+    return this.handleCallbackWithResult(callbackData).handled;
+  }
+
+  /**
+   * Handle a permission callback and return the resolved request metadata.
+   */
+  handleCallbackWithResult(callbackData: string): PermissionCallbackResult {
+    if (!callbackData.startsWith('perm:')) return { handled: false };
 
     const parts = callbackData.split(':');
-    if (parts.length !== 3) return false;
+    if (parts.length !== 3) return { handled: false };
 
     const [, requestId, resolution] = parts;
     const pending = this.pending.get(requestId);
 
     if (!pending) {
       info('permission', `Callback for unknown permission: ${requestId}`);
-      return false;
+      return { handled: false };
     }
 
-    this.resolvePermission(requestId, resolution as 'allow' | 'deny' | 'allow_session');
-    return true;
+    const resolvedAs = resolution as 'allow' | 'deny' | 'allow_session';
+    const request = pending.request;
+    this.resolvePermission(requestId, resolvedAs);
+    return {
+      handled: true,
+      request,
+      resolution: resolvedAs,
+    };
   }
 
   /**

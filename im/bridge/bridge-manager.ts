@@ -4,12 +4,30 @@
  */
 
 import type { BaseChannelAdapter } from './channel-adapter.js';
-import type { InboundMessage, ChannelBinding, BridgeStatus, AdapterStatus } from './types.js';
+import type {
+  InboundMessage,
+  ChannelBinding,
+  BridgeStatus,
+  AdapterStatus,
+  CardMessage,
+  ChannelAddress,
+  ClaudePermissionMode,
+} from './types.js';
 import type { LLMProvider } from './context.js';
 import { ChannelRouter } from './channel-router.js';
 import { ConversationEngine } from './conversation-engine.js';
 import { PermissionBroker } from './permission-broker.js';
 import { JsonFileStore } from '../infra/store.js';
+import {
+  buildClaudeModeCard,
+  buildHandledPermissionCard,
+  buildNewSessionCard,
+  buildResetConfirmationCard,
+  buildResumeCard,
+  buildSessionCreatedCard,
+  buildSessionResumedCard,
+} from '../telegram/cards/index.js';
+import { normalizeClaudePermissionMode } from '../runtime/claude-mode.js';
 import { info, error, warn, debug } from '../config/logger.js';
 
 interface BridgeManagerState {
@@ -180,16 +198,18 @@ export class BridgeManager {
         // Handle callback (button presses, etc.)
         if (message.callbackData) {
           // Check if it's a permission callback
-          if (this.permissionBroker.handleCallback(message.callbackData)) {
+          const permissionResult = this.permissionBroker.handleCallbackWithResult(message.callbackData);
+          if (permissionResult.handled) {
             debug('bridge-manager', `Resolved permission callback: ${message.callbackData}`);
+            await this.handleResolvedPermissionCallback(adapter, message, permissionResult);
             continue;
           }
-          // Handle other callbacks...
+          await this.handleCallback(adapter, message);
           continue;
         }
 
         // Process regular message
-        await this.processMessage(adapter, message).catch(e => {
+        this.processMessage(adapter, message).catch(e => {
           error('bridge-manager', `Failed to process message: ${e.message}`);
         });
       } catch (e) {
@@ -220,11 +240,21 @@ export class BridgeManager {
 
     if (!binding) {
       // No binding exists — send instructions to create one
-      await adapter.send({
-        address: message.address,
-        text: '👋 Welcome! Please send `/new:claude` or `/new:codex` to start a session.',
-        parseMode: 'Markdown',
-      });
+      if (message.address.channelType === 'telegram') {
+        const card = buildNewSessionCard();
+        await adapter.send({
+          address: message.address,
+          text: card.text,
+          parseMode: card.parseMode,
+          inlineButtons: card.inlineButtons,
+        });
+      } else {
+        await adapter.send({
+          address: message.address,
+          text: '👋 Welcome! Please send `/new:claude` or `/new:codex` to start a session.',
+          parseMode: 'Markdown',
+        });
+      }
       return;
     }
 
@@ -349,6 +379,17 @@ export class BridgeManager {
 
       case 'new': {
         const arg = cmd.args[0];
+        if (!arg && message.address.channelType === 'telegram') {
+          const card = buildNewSessionCard();
+          await adapter.send({
+            address: message.address,
+            text: card.text,
+            parseMode: card.parseMode,
+            inlineButtons: card.inlineButtons,
+          });
+          break;
+        }
+
         const runtime: 'claude' | 'codex' = arg === 'codex' ? 'codex' : 'claude';
         const binding = this.router.createBinding({
           channelType: message.address.channelType,
@@ -373,11 +414,21 @@ export class BridgeManager {
         if (binding) {
           binding.updatedAt = new Date().toISOString();
           this.router.deactivateBinding(binding.id);
-          await adapter.send({
-            address: message.address,
-            text: '🔄 Session reset. Send `/new` to start fresh.',
-            parseMode: 'Markdown',
-          });
+          if (message.address.channelType === 'telegram') {
+            const card = buildResetConfirmationCard(binding.id, binding.runtime);
+            await adapter.send({
+              address: message.address,
+              text: card.text,
+              parseMode: card.parseMode,
+              inlineButtons: card.inlineButtons,
+            });
+          } else {
+            await adapter.send({
+              address: message.address,
+              text: '🔄 Session reset. Send `/new` to start fresh.',
+              parseMode: 'Markdown',
+            });
+          }
         }
         break;
       }
@@ -403,6 +454,17 @@ export class BridgeManager {
         const binding = this.router.resolve(message.address);
         if (binding) {
           const mode = cmd.args[0];
+          if (!mode && message.address.channelType === 'telegram' && binding.runtime === 'claude') {
+            const card = buildClaudeModeCard(binding.claudePermissionMode || 'default', binding.id);
+            await adapter.send({
+              address: message.address,
+              text: card.text,
+              parseMode: card.parseMode,
+              inlineButtons: card.inlineButtons,
+            });
+            break;
+          }
+
           if (mode === 'code' || mode === 'plan' || mode === 'ask') {
             binding.mode = mode;
             binding.updatedAt = new Date().toISOString();
@@ -413,6 +475,13 @@ export class BridgeManager {
               parseMode: 'Markdown',
             });
           }
+        }
+        break;
+      }
+
+      case 'resume': {
+        if (message.address.channelType === 'telegram') {
+          await this.sendTelegramResumeCard(adapter, message.address);
         }
         break;
       }
@@ -454,6 +523,219 @@ Commands:
 • \`/help\` — show this help
 
 After creating a session, send any text to continue the conversation.`;
+  }
+
+  private async handleResolvedPermissionCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    result: {
+      request?: { toolName: string };
+      resolution?: 'allow' | 'allow_session' | 'deny';
+    },
+  ): Promise<void> {
+    await adapter.answerCallback(message.messageId, 'Permission recorded');
+    if (!message.callbackMessageId || !adapter.patchCard) return;
+
+    const resolution = result.resolution;
+    if (!resolution) return;
+
+    const card = buildHandledPermissionCard(result.request?.toolName || 'Requested tool', resolution);
+    await adapter.patchCard(message.address, message.callbackMessageId, card);
+  }
+
+  private async handleCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+  ): Promise<void> {
+    const callbackData = message.callbackData;
+    if (!callbackData) return;
+
+    try {
+      if (callbackData.startsWith('new-session:')) {
+        await this.handleNewSessionCallback(adapter, message, callbackData);
+        return;
+      }
+      if (callbackData.startsWith('resume:')) {
+        await this.handleResumeCallback(adapter, message, callbackData);
+        return;
+      }
+      if (callbackData.startsWith('claude-mode:')) {
+        await this.handleClaudeModeCallback(adapter, message, callbackData);
+        return;
+      }
+      if (callbackData.startsWith('input:')) {
+        await adapter.answerCallback(message.messageId, 'Input recorded');
+        return;
+      }
+      if (callbackData.startsWith('plan:') || callbackData.startsWith('planexit:')) {
+        await adapter.answerCallback(message.messageId, 'Action recorded');
+        return;
+      }
+
+      await adapter.answerCallback(message.messageId, 'Unsupported action');
+    } catch (e) {
+      error('bridge-manager', `Callback failed for ${callbackData}: ${e}`);
+      await adapter.answerCallback(message.messageId, 'Action failed');
+    }
+  }
+
+  private async handleNewSessionCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const parts = callbackData.split(':');
+    if (parts.length < 3) {
+      await adapter.answerCallback(message.messageId, 'Invalid session action');
+      return;
+    }
+
+    const runtime = parts[1] === 'codex' ? 'codex' : 'claude';
+    const mode = this.normalizeMode(parts[2]);
+    const binding = this.router.createBinding({
+      channelType: message.address.channelType,
+      channelInstanceId: message.address.channelInstanceId || adapter.profileId || 'default',
+      chatId: message.address.chatId,
+      agentSessionId: `session_${Date.now()}`,
+      workingDirectory: process.env.CTI_DEFAULT_WORKDIR || process.cwd(),
+      runtime,
+      model: 'default',
+      mode,
+    });
+
+    const card = buildSessionCreatedCard(runtime, mode, binding);
+    await this.patchOrSendCard(adapter, message, card);
+    await adapter.answerCallback(message.messageId, 'Session created');
+  }
+
+  private async handleResumeCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const parts = callbackData.split(':');
+    if (parts.length < 4) {
+      await adapter.answerCallback(message.messageId, 'Invalid resume action');
+      return;
+    }
+
+    const runtime = parts[2] === 'codex' ? 'codex' : 'claude';
+    const bindingId = parts[3];
+    const binding = this.store.getBinding(bindingId);
+    if (!binding) {
+      await adapter.answerCallback(message.messageId, 'Session not found');
+      return;
+    }
+
+    for (const existing of this.router.listBindings(message.address.channelType)) {
+      if (
+        existing.id !== bindingId &&
+        existing.active &&
+        existing.channelInstanceId === binding.channelInstanceId &&
+        existing.chatId === message.address.chatId
+      ) {
+        this.router.deactivateBinding(existing.id);
+      }
+    }
+
+    binding.active = true;
+    binding.updatedAt = new Date().toISOString();
+    this.store.saveBinding(binding);
+
+    const card = buildSessionResumedCard(runtime, bindingId);
+    await this.patchOrSendCard(adapter, message, card);
+    await adapter.answerCallback(message.messageId, 'Session resumed');
+  }
+
+  private async handleClaudeModeCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const parts = callbackData.split(':');
+    if (parts.length < 3) {
+      await adapter.answerCallback(message.messageId, 'Invalid mode action');
+      return;
+    }
+
+    const bindingId = parts[1];
+    const requestedMode: ClaudePermissionMode = normalizeClaudePermissionMode(parts[2]);
+    const binding = this.store.getBinding(bindingId);
+    if (!binding || binding.runtime !== 'claude') {
+      await adapter.answerCallback(message.messageId, 'No active Claude session found');
+      return;
+    }
+
+    binding.claudePermissionMode = requestedMode;
+    binding.updatedAt = new Date().toISOString();
+    if (requestedMode === 'plan') {
+      binding.mode = 'plan';
+    } else if (binding.mode === 'plan') {
+      binding.mode = 'code';
+    }
+    this.store.saveBinding(binding);
+
+    const card = buildClaudeModeCard(requestedMode, bindingId);
+    await this.patchOrSendCard(adapter, message, card);
+    await adapter.answerCallback(message.messageId, 'Mode updated');
+  }
+
+  private async sendTelegramResumeCard(
+    adapter: BaseChannelAdapter,
+    address: ChannelAddress,
+  ): Promise<void> {
+    const sessions = this.store.listBindings()
+      .sort((a, b) => {
+        const sameChat = Number(
+          a.channelType === address.channelType &&
+          a.channelInstanceId === (address.channelInstanceId || adapter.profileId || 'default') &&
+          a.chatId === address.chatId,
+        ) - Number(
+          b.channelType === address.channelType &&
+          b.channelInstanceId === (address.channelInstanceId || adapter.profileId || 'default') &&
+          b.chatId === address.chatId,
+        );
+        if (sameChat !== 0) return -sameChat;
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      })
+      .slice(0, 5)
+      .map(binding => ({
+        id: binding.id,
+        title: `${binding.runtime} · ${binding.workingDirectory.split('/').filter(Boolean).pop() || 'session'}`,
+        runtime: binding.runtime,
+        updatedAt: binding.updatedAt,
+      }));
+
+    const card = buildResumeCard(sessions);
+    await adapter.send({
+      address,
+      text: card.text,
+      parseMode: card.parseMode,
+      inlineButtons: card.inlineButtons,
+    });
+  }
+
+  private async patchOrSendCard(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    card: CardMessage,
+  ): Promise<void> {
+    if (message.callbackMessageId && adapter.patchCard) {
+      const result = await adapter.patchCard(message.address, message.callbackMessageId, card);
+      if (result.ok) return;
+    }
+
+    await adapter.send({
+      address: message.address,
+      text: card.text,
+      parseMode: card.parseMode,
+      inlineButtons: card.inlineButtons,
+    });
+  }
+
+  private normalizeMode(value: string): 'code' | 'plan' | 'ask' {
+    if (value === 'plan' || value === 'ask') return value;
+    return 'code';
   }
 
   private renderInboundPrompt(message: InboundMessage): string {

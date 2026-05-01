@@ -61,6 +61,7 @@ async function main(): Promise<void> {
       webhookSecret: config.im.telegram.webhookSecret,
       allowedUsers: [],
       defaultSession: config.im.telegram.defaultSession,
+      showToolCallCards: config.im.telegram.showToolCallCards,
     });
     bridgeManager.registerAdapter(telegramAdapter);
   }

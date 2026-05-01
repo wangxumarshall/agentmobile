@@ -26,6 +26,7 @@ export interface TelegramConfig {
   botToken?: string;
   webhookSecret?: string;
   defaultSession?: string;
+  showToolCallCards?: boolean;
 }
 
 export interface ImConfig {
@@ -131,6 +132,7 @@ export function loadConfig(): AgentMobileConfig {
         botToken: telegramEnabled ? getEnv('TELEGRAM_BOT_TOKEN', '') : undefined,
         webhookSecret: telegramEnabled ? getEnv('TELEGRAM_WEBHOOK_SECRET', '') : undefined,
         defaultSession: getEnv('TELEGRAM_DEFAULT_SESSION', 'default'),
+        showToolCallCards: getEnvBool('TELEGRAM_SHOW_TOOL_CALL_CARDS', false),
       },
       feishu: {
         id: 'default',

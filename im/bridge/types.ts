@@ -89,6 +89,16 @@ export interface OutboundMessage {
   rawCard?: Record<string, unknown>;
 }
 
+/** Minimal editable card shape shared by card-capable adapters. */
+export interface CardMessage {
+  /** Message/card body text */
+  text: string;
+  /** Parse mode for the text */
+  parseMode?: 'HTML' | 'Markdown' | 'plain';
+  /** Inline keyboard buttons */
+  inlineButtons?: InlineButton[][];
+}
+
 /** Outbound image to send to an IM channel */
 export interface OutboundImage {
   /** Target address */

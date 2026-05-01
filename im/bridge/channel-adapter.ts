@@ -7,6 +7,7 @@
 
 import type {
   ActivityEvent,
+  CardMessage,
   ChannelAddress,
   ChannelType,
   InboundMessage,
@@ -75,6 +76,15 @@ export abstract class BaseChannelAdapter {
   async answerCallback(_callbackQueryId: string, _text?: string): Promise<void> {
     // No-op by default
   }
+
+  /**
+   * Patch an existing card/message in place, if supported by the channel.
+   */
+  patchCard?(
+    _address: ChannelAddress,
+    _messageId: string,
+    _card: CardMessage,
+  ): Promise<SendResult>;
 
   /**
    * Validate the adapter configuration.

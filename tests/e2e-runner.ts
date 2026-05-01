@@ -26,6 +26,7 @@ import type { AddressInfo } from 'node:net';
 import { MockLarkClient } from './mocks/mock-lark-client.js';
 import { MockLLMProvider } from './mocks/mock-llm-provider.js';
 import { MockStore } from './mocks/mock-store.js';
+import { MockTelegramCardClient } from './mocks/mock-telegram-card-client.js';
 import {
   makeInboundMessage,
   makeChannelAddress,
@@ -47,13 +48,20 @@ import { buildPermissionCard, buildSimpleCard, buildStatusCard, buildActionCard,
 import { buildToolActivityCard, buildCommandExecutionCard, buildFileChangeCard, buildLightweightActivityCard } from '../im/feishu/cards/activity-cards.js';
 import { buildNewSessionCard, buildResumeCard, buildClaudeModeCard, buildResetConfirmationCard } from '../im/feishu/cards/session-cards.js';
 import { buildStreamingCardSkeleton, buildFinalCard, buildStatusHeader } from '../im/feishu/cards/streaming-cards.js';
+import {
+  buildNewSessionCard as buildTelegramNewSessionCard,
+  buildPermissionCard as buildTelegramPermissionCard,
+  buildClaudeModeCard as buildTelegramClaudeModeCard,
+} from '../im/telegram/cards/index.js';
 import { PreviewService } from '../im/feishu/services/preview-service.js';
 import { ActivityService } from '../im/feishu/services/activity-service.js';
+import { TelegramPreviewService, TelegramActivityService } from '../im/telegram/services/index.js';
 import { loadConfig } from '../im/config/config.js';
 import { JsonFileStore } from '../im/infra/store.js';
 import { ClaudeSDKProvider, classifyAuthError, isAuthError } from '../im/providers/claude-sdk.js';
 import { LarkClient } from '../im/feishu/lark-client.js';
 import { createFeishuEventDispatcher } from '../im/adapters/feishu-adapter.js';
+import { TelegramAdapter } from '../im/adapters/telegram-adapter.js';
 import { handleIncomingEvent } from '../im/feishu/handlers/inbound-handler.js';
 import { handleCardAction } from '../im/feishu/handlers/card-action-handler.js';
 import { startFeishuCardActionServer, FEISHU_CARD_ACTION_PATH } from '../im/feishu/card-action-server.js';
@@ -147,6 +155,24 @@ class QueueAdapter {
       messageId: `sent_${this.sentMessages.length}`,
       openMessageId: `open_sent_${this.sentMessages.length}`,
     };
+  }
+}
+
+class TelegramQueueAdapter extends QueueAdapter {
+  readonly channelType = 'telegram';
+  readonly adapterId = 'telegram';
+  readonly profileId = 'default';
+  readonly label = 'Telegram';
+  patchedCards: Array<{ messageId: string; card: any }> = [];
+  answeredCallbacks: Array<{ id: string; text?: string }> = [];
+
+  async patchCard(_address: any, messageId: string, card: any): Promise<SendResult> {
+    this.patchedCards.push({ messageId, card });
+    return { ok: true, messageId };
+  }
+
+  async answerCallback(callbackQueryId: string, text?: string): Promise<void> {
+    this.answeredCallbacks.push({ id: callbackQueryId, text });
   }
 }
 
@@ -379,6 +405,147 @@ async function main() {
       assertEquals(buildStatusHeader('streaming').template, 'blue');
       assertEquals(buildStatusHeader('complete').template, 'green');
       assertEquals(buildStatusHeader('error').template, 'red');
+    });
+  });
+
+  // ── 6. Telegram Cards and Services ──────────────────────
+  await suite('6. Telegram Cards and Services', async () => {
+    await test('Telegram new session card uses shared callback data', () => {
+      const card = buildTelegramNewSessionCard();
+      assert(card.text.includes('Create New Session'), 'Should show new session title');
+      assertEquals(card.inlineButtons?.[0]?.[0]?.callbackData, 'new-session:claude:code');
+      assertEquals(card.inlineButtons?.[0]?.[1]?.callbackData, 'new-session:codex:code');
+    });
+
+    await test('Telegram permission card has allow and deny actions', () => {
+      const card = buildTelegramPermissionCard('Bash', 'ls -la', 'perm_123');
+      assert(card.text.includes('Permission Required'), 'Should show permission title');
+      assertEquals(card.inlineButtons?.[0]?.[0]?.callbackData, 'perm:perm_123:allow');
+      assertEquals(card.inlineButtons?.[0]?.[1]?.callbackData, 'perm:perm_123:allow_session');
+      assertEquals(card.inlineButtons?.[1]?.[0]?.callbackData, 'perm:perm_123:deny');
+    });
+
+    await test('Telegram Claude mode card uses claude-mode callbacks', () => {
+      const card = buildTelegramClaudeModeCard('default', 'binding_123');
+      assertEquals(card.inlineButtons?.length, 3, 'Should have 3 mode rows');
+      assertEquals(card.inlineButtons?.[0]?.[0]?.callbackData, 'claude-mode:binding_123:plan');
+    });
+
+    await test('Telegram preview service edits one message in place', async () => {
+      const client = new MockTelegramCardClient();
+      const service = new TelegramPreviewService(client);
+      const address = makeChannelAddress({ channelType: 'telegram' });
+
+      const primed = await service.primePreview(address, 123);
+      assertEquals(primed, 'sent', 'Should prime preview');
+      const updated = await service.sendPreview(address, 'This is a substantial Telegram preview update', 123);
+      assert(updated === 'sent' || updated === 'skip', `Should send or throttle, got ${updated}`);
+      const finalized = await service.finalizePreview(address, 'Final Telegram answer');
+      assert(finalized.ok, 'Should finalize preview');
+      assertEquals(client.sentCards.length, 1, 'Should send only one preview message');
+      assert(client.patchedCards.length >= 1, 'Should patch preview message');
+    });
+
+    await test('Telegram activity service creates then patches activity card', async () => {
+      const client = new MockTelegramCardClient();
+      const service = new TelegramActivityService(client, true);
+      const address = makeChannelAddress({ channelType: 'telegram' });
+
+      const first = await service.upsertActivityEvent(address, {
+        type: 'tool_use',
+        title: 'Bash',
+        description: 'ls',
+        timestamp: Date.now(),
+        metadata: { toolId: 'tool_1' },
+      });
+      const second = await service.upsertActivityEvent(address, {
+        type: 'tool_use',
+        title: 'Bash',
+        description: 'pwd',
+        timestamp: Date.now(),
+        metadata: { toolId: 'tool_1' },
+      });
+
+      assert(first.ok && second.ok, 'Both activity upserts should succeed');
+      assertEquals(client.sentCards.length, 1, 'Should create one activity message');
+      assertEquals(client.patchedCards.length, 1, 'Should patch existing activity message');
+    });
+
+    await test('Telegram adapter rejects callback data over platform limit', async () => {
+      const adapter = new TelegramAdapter({ botToken: 'test-token' });
+      const result = await adapter.send({
+        address: makeChannelAddress({ channelType: 'telegram' }),
+        text: 'Too long callback',
+        inlineButtons: [[{ text: 'Too long', callbackData: 'x'.repeat(65) }]],
+      });
+
+      assertEquals(result.ok, false, 'Should reject oversized callback_data before API call');
+      assert(result.error?.includes('callback_data') || false, 'Should mention callback_data');
+    });
+
+    await test('Telegram adapter falls back to plain text on parse errors', async () => {
+      const adapter = new TelegramAdapter({ botToken: 'test-token' });
+      const calls: any[] = [];
+      (adapter as any).telegramRequest = async (_method: string, payload: any) => {
+        calls.push(payload);
+        if (calls.length === 1) {
+          return { ok: false, error_code: 400, description: "Bad Request: can't parse entities" };
+        }
+        return { ok: true, result: { message_id: 88 } };
+      };
+
+      const result = await adapter.send({
+        address: makeChannelAddress({ channelType: 'telegram' }),
+        text: '<b>broken',
+        parseMode: 'HTML',
+      });
+
+      assert(result.ok, 'Fallback send should succeed');
+      assertEquals(calls.length, 2, 'Should retry once');
+      assertEquals(calls[0].parse_mode, 'HTML', 'First attempt should use requested parse mode');
+      assertEquals(calls[1].parse_mode, undefined, 'Fallback should send plain text');
+    });
+
+    await test('Telegram adapter truncates long HTML cards safely', async () => {
+      const adapter = new TelegramAdapter({ botToken: 'test-token' });
+      let payload: any = null;
+      (adapter as any).telegramRequest = async (_method: string, body: any) => {
+        payload = body;
+        return { ok: true, result: { message_id: 89 } };
+      };
+
+      const result = await adapter.send({
+        address: makeChannelAddress({ channelType: 'telegram' }),
+        text: `<b>${'x'.repeat(5000)}</b>`,
+        parseMode: 'HTML',
+      });
+
+      assert(result.ok, 'Long message should be sendable after truncation');
+      assert(payload.text.length <= 4096, 'Telegram message text should be <= 4096 chars');
+      assertEquals(payload.parse_mode, undefined, 'Truncated HTML should downgrade to plain text');
+    });
+
+    await test('Telegram adapter uploads local images with multipart', async () => {
+      const adapter = new TelegramAdapter({ botToken: 'test-token' });
+      const imagePath = join(tmpdir(), `agentmobile-tg-image-${Date.now()}.png`);
+      writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+      let multipartCalled = false;
+      (adapter as any).telegramMultipartRequest = async (_method: string, fields: any, file: any) => {
+        multipartCalled = true;
+        assertEquals(fields.chat_id, 'chat_123', 'Should include chat id as multipart field');
+        assertEquals(file.filePath, imagePath, 'Should attach local file path');
+        return { ok: true, result: { message_id: 90 } };
+      };
+
+      const result = await adapter.sendImage({
+        address: makeChannelAddress({ channelType: 'telegram', chatId: 'chat_123' }),
+        filePath: imagePath,
+      });
+
+      rmSync(imagePath, { force: true });
+      assert(result.ok, 'Image send should succeed');
+      assert(multipartCalled, 'Should use multipart upload for local files');
     });
   });
 
@@ -989,6 +1156,111 @@ async function main() {
         await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Permission granted')));
       } finally {
         await closeServer(callbackServer);
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram session callback creates binding and patches card', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'callback_new',
+          callbackMessageId: '42',
+          callbackData: 'new-session:codex:code',
+          address: {
+            channelType: 'telegram',
+            channelInstanceId: 'default',
+            chatId: 'tg_chat',
+            userId: 'tg_user',
+          },
+          text: 'Create New Session',
+        }));
+
+        await waitFor(() => router.resolve({
+          channelType: 'telegram',
+          channelInstanceId: 'default',
+          chatId: 'tg_chat',
+        }) !== undefined);
+
+        const binding = router.resolve({
+          channelType: 'telegram',
+          channelInstanceId: 'default',
+          chatId: 'tg_chat',
+        });
+        assertEquals(binding?.runtime, 'codex', 'Should create requested runtime');
+        await waitFor(() => adapter.patchedCards.length === 1);
+        assert(adapter.patchedCards[0].card.text.includes('Session Created'), 'Should patch original card');
+        assertEquals(adapter.answeredCallbacks[0].id, 'callback_new', 'Should answer callback query');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram permission callback patches original permission card', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const permissionBroker = new PermissionBroker();
+      const llm = new MockLLMProvider();
+      llm.responseConfig = {
+        toolUses: [{ id: 'tool_tg', name: 'Bash', input: { command: 'pwd' } }],
+        text: 'Telegram permission granted',
+      };
+      llm.shouldRequirePermission = true;
+
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker,
+      });
+      const adapter = new TelegramQueueAdapter();
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_perm',
+        agentSessionId: 'session_tg_perm',
+        workingDirectory: '/tmp',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_user_msg',
+          address: {
+            channelType: 'telegram',
+            channelInstanceId: 'default',
+            chatId: 'tg_perm',
+            userId: 'tg_user',
+          },
+          text: 'please run pwd',
+        }));
+
+        await waitFor(() => adapter.sentMessages.some(message => Boolean(message.inlineButtons)));
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_perm_callback',
+          callbackMessageId: 'sent_1',
+          callbackData: 'perm:tool_tg:allow',
+          address: {
+            channelType: 'telegram',
+            channelInstanceId: 'default',
+            chatId: 'tg_perm',
+            userId: 'tg_user',
+          },
+          text: 'Permission Required',
+        }));
+
+        await waitFor(() => adapter.patchedCards.some(card => card.card.text.includes('Permission Resolved')));
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Telegram permission granted')));
+      } finally {
         await manager.stop();
       }
     });

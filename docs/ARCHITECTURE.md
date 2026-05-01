@@ -309,6 +309,7 @@ agentmobile/
 | `OPENAI_BASE_URL` | | — | OpenAI API Base URL（自定义 endpoint） |
 | `TELEGRAM_BOT_TOKEN` | | — | Telegram Bot token（可选） |
 | `TELEGRAM_CHAT_ID` | | — | 允许的 Telegram chat ID（可选） |
+| `TELEGRAM_SHOW_TOOL_CALL_CARDS` | | `false` | 是否在 Telegram 显示 tool / activity cards |
 | `IM_BRIDGE_ENABLED` | | `false` | 是否启用 IM bridge 进程 |
 | `FEISHU_ENABLED` | | `false` | 是否启用 Feishu / Lark adapter |
 | `CTI_HOME` | | `./im-data` | IM bridge 持久化目录 |

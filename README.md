@@ -77,6 +77,7 @@ npm run start:im
 
 - Telegram can be configured from the web UI: open Settings → Telegram, paste the BotFather token, optionally set a default tmux window, then restart `agentmobile-im`
 - Manual Telegram setup still uses `TELEGRAM_BOT_TOKEN`
+- Telegram cards use native inline buttons and in-place message edits; set `TELEGRAM_SHOW_TOOL_CALL_CARDS=true` to show tool / activity cards.
 - Feishu / Lark can be initialized from the web UI: open Settings → Feishu, generate a QR code, and scan it in Feishu / Lark. This writes `CTI_FEISHU_APP_ID`, `CTI_FEISHU_APP_SECRET`, and enables the IM bridge in `.env`.
 - Manual Feishu / Lark setup still uses `CTI_FEISHU_APP_ID` and `CTI_FEISHU_APP_SECRET`
 - Feishu message events use long connection mode; card buttons need an HTTP callback at `/api/webhooks/feishu/card-action` on `CTI_FEISHU_CALLBACK_PORT`
