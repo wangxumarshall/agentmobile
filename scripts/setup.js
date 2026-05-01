@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // agentmobile automated setup script — run with: node scripts/setup.js
 // Requires Node.js 20+. All other dependencies are installed by this script.
-// Default service manager: systemd (PM2 available as fallback)
+// Default service manager: systemd (PM2 fallback when systemd is unavailable)
 
 import { spawnSync } from 'child_process';
 import { existsSync, copyFileSync, writeFileSync, mkdirSync } from 'fs';
@@ -104,7 +104,7 @@ function ensurePm2Installed(hasSudo) {
     return true;
   }
 
-  step('Installing PM2');
+  step('Installing PM2 fallback');
   let install = run('npm install -g pm2');
   if (install.status !== 0 && hasSudo) {
     warn('Global PM2 install without sudo failed, retrying with sudo');
@@ -126,7 +126,7 @@ function extractPm2StartupCommand(output) {
 }
 
 function configurePm2Autostart(hasSudo) {
-  step('Configuring PM2 auto-start');
+  step('Configuring PM2 fallback auto-start');
   const startup = capture('pm2 startup');
   const combined = `${startup.stdout || ''}\n${startup.stderr || ''}`;
   const startupCmd = extractPm2StartupCommand(combined);
@@ -153,7 +153,7 @@ function configurePm2Autostart(hasSudo) {
 }
 
 function createPm2Config(nodeBinary) {
-  step('Creating PM2 config');
+  step('Creating PM2 fallback config');
   mkdirSync(resolve(ROOT, 'logs'), { recursive: true });
   const runtimePath = buildRuntimePath();
   const ecosystemContent = `module.exports = {
@@ -216,9 +216,9 @@ function installSystemdService() {
 
 function installPm2Service(nodeBinary, hasSudo) {
   createPm2Config(nodeBinary);
-  if (!ensurePm2Installed(hasSudo)) fail('PM2 is required for the non-systemd install path');
+  if (!ensurePm2Installed(hasSudo)) fail('PM2 is required when systemd is unavailable');
 
-  step('Starting agentmobile via PM2');
+  step('Starting agentmobile via PM2 fallback');
   const startResult = run('pm2 start ecosystem.config.cjs');
   if (startResult.status !== 0) fail('PM2 start failed — check: pm2 logs agentmobile');
   ok('agentmobile started via PM2');
@@ -286,7 +286,7 @@ if (serviceManager.useSystemd) {
   if (!serviceManager.hasSystemctl) reasons.push('systemctl not found');
   if (!serviceManager.systemdActive) reasons.push('systemd not active');
   if (!serviceManager.hasSudo) reasons.push('passwordless sudo unavailable');
-  warn(`Falling back to PM2: ${reasons.join(', ')}`);
+  warn(`systemd unavailable, falling back to PM2: ${reasons.join(', ')}`);
 }
 
 let serviceStatus;
@@ -323,7 +323,7 @@ const successBanner = `
 ║  sudo systemctl restart agentmobile
 ║  journalctl -u agentmobile -f
 ║
-║  PM2:
+║  PM2 fallback:
 ║  pm2 start ecosystem.config.cjs
 ║  pm2 logs agentmobile
 ╚══════════════════════════════════════════╝

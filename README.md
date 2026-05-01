@@ -92,7 +92,7 @@ If you're an AI assistant helping a user install agentmobile, follow this path:
 1. Clone this repo and `cd` into it
 2. Run `node scripts/setup.js` — handles deps, frontend build, service install, and first tmux session
 3. Verify:
-   - `systemctl status agentmobile` if systemd is available
+   - `systemctl status agentmobile` for the default systemd path
    - `pm2 status` if setup fell back to PM2
    - then open `http://localhost:5000`
 
@@ -106,6 +106,7 @@ Default login password: `agentmobile` (user can change it in `.env` after setup)
 |---|---|---|
 | Node.js | 20+ | |
 | tmux | any recent | |
+| systemd | any recent | default service manager |
 | PM2 | any recent | auto-installed by `setup.js` when fallback is needed |
 | **Claude Code** | latest | for Claude backend |
 | **Codex CLI** | latest | for Codex backend (optional) |

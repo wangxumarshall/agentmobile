@@ -38,6 +38,42 @@ function authHeaders(token: string) {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+async function readJsonResponse(response: Response, invalidResponseMessage: string): Promise<unknown> {
+  const text = await response.text()
+  if (!text) return null
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    const contentType = response.headers.get('content-type') || 'unknown content type'
+    const preview = text.trim().replace(/\s+/g, ' ').slice(0, 120)
+    throw new Error(`${invalidResponseMessage}: ${contentType}${preview ? ` (${preview})` : ''}`)
+  }
+}
+
+function getResponseError(data: unknown, fallback: string) {
+  return isRecord(data) && typeof data.error === 'string' ? data.error : fallback
+}
+
+function isTelegramSettingsSnapshot(value: unknown): value is TelegramSettingsSnapshot {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.imBridgeEnabled === 'boolean' &&
+    typeof value.telegramEnabled === 'boolean' &&
+    typeof value.configured === 'boolean' &&
+    typeof value.botTokenMasked === 'string' &&
+    typeof value.defaultSession === 'string' &&
+    typeof value.webhookSecretConfigured === 'boolean' &&
+    typeof value.botUsername === 'string' &&
+    typeof value.botDisplayName === 'string' &&
+    typeof value.botId === 'string' &&
+    typeof value.botLink === 'string'
+  )
+}
+
 function StatusPill({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span className={`text-xs px-2 py-1 rounded-md ${ok ? 'bg-green-500/15 text-green-400' : 'bg-agentmobile-bg-2 text-agentmobile-text-2'}`}>
@@ -76,8 +112,9 @@ export default function TelegramSettings({ token }: Props) {
       const res = await fetch('/api/telegram/settings', {
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!res.ok) throw new Error(t('settings.telegramLoadFailed'))
-      const data: TelegramSettingsSnapshot = await res.json()
+      const data = await readJsonResponse(res, t('settings.telegramInvalidResponse'))
+      if (!res.ok) throw new Error(getResponseError(data, t('settings.telegramLoadFailed')))
+      if (!isTelegramSettingsSnapshot(data)) throw new Error(t('settings.telegramInvalidResponse'))
       setSettings(data)
       setDefaultSession(data.defaultSession || '')
     } catch (e) {
@@ -100,11 +137,13 @@ export default function TelegramSettings({ token }: Props) {
           defaultSession,
         }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error || t('settings.telegramSaveFailed'))
-      setSettings(data.settings as TelegramSettingsSnapshot)
+      const data = await readJsonResponse(res, t('settings.telegramInvalidResponse'))
+      if (!res.ok) throw new Error(getResponseError(data, t('settings.telegramSaveFailed')))
+      if (!isRecord(data) || !isTelegramSettingsSnapshot(data.settings)) throw new Error(t('settings.telegramInvalidResponse'))
+      const savedSettings = data.settings
+      setSettings(savedSettings)
       setBotToken('')
-      setDefaultSession(data.settings?.defaultSession || '')
+      setDefaultSession(savedSettings.defaultSession || '')
       setSaved(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -139,6 +178,21 @@ export default function TelegramSettings({ token }: Props) {
         <SettingRow label={t('settings.telegramBot')} value={botDisplay} ok={settings.configured} />
         <SettingRow label={t('settings.telegramDefaultSession')} value={settings.defaultSession || t('settings.notConfigured')} ok={Boolean(settings.defaultSession)} />
       </div>
+
+      <p className="text-xs text-agentmobile-text-2 mb-3">
+        {t('settings.telegramGuide')}
+        {' '}
+        <a
+          className="text-agentmobile-accent underline"
+          href="https://t.me/BotFather"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          @BotFather
+        </a>
+        {' '}
+        {t('settings.telegramGuideSuffix')}
+      </p>
 
       <div className="flex flex-col gap-2 mb-3">
         <input
@@ -180,9 +234,11 @@ export default function TelegramSettings({ token }: Props) {
       </div>
 
       {settings.configured && (
-        <p className="text-xs text-agentmobile-text-2 mt-3">
-          {t('settings.telegramRestartHint')}
-        </p>
+        <div className="text-xs text-agentmobile-text-2 mt-3 flex flex-col gap-1.5">
+          <p>{t('settings.telegramRestartHint')}</p>
+          <p>{t('settings.telegramUsageHint')}</p>
+          <p>{t('settings.telegramCommandHint')}</p>
+        </div>
       )}
 
       {error && <p className="text-xs text-red-400 mt-2 break-words">{error}</p>}

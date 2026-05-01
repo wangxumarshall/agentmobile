@@ -76,7 +76,7 @@ npm start
 # 在任意设备打开 http://localhost:59000 🚀
 ```
 
-> 完整配置指南（AI Profile、PM2、移动端访问、故障排查）：**[QUICKSTART.md →](docs/QUICKSTART.md)**
+> 完整配置指南（AI Profile、systemd 服务、移动端访问、故障排查）：**[QUICKSTART.md →](docs/QUICKSTART.md)**
 
 ## IM 渠道
 
@@ -129,7 +129,7 @@ CTI_FEISHU_DOMAIN=...
 npm run start:im
 ```
 
-如通过 systemd 或 PM2 托管 IM bridge，则重启对应的 `agentmobile-im` 进程或服务。
+如通过 systemd 托管 IM bridge，则重启对应的 `agentmobile-im` 服务；PM2 fallback 部署时重启对应进程。
 
 ### 手动配置飞书 / Lark
 
@@ -219,11 +219,11 @@ npm run start:im
 如果你是正在帮用户安装 agentmobile 的 AI 助手，按以下步骤执行：
 
 1. 克隆本仓库并 `cd` 进入目录
-2. 运行 `node scripts/setup.js` — 自动处理依赖安装、前端构建、PM2 启动和 tmux 会话创建
-3. 验证：`pm2 status` 显示 `agentmobile` 在线 → 打开 `http://localhost:59000`
+2. 运行 `node scripts/setup.js` — 自动处理依赖安装、前端构建、systemd 服务安装和 tmux 会话创建；systemd 不可用时会 fallback 到 PM2
+3. 验证：优先用 `systemctl status agentmobile`；如果脚本 fallback 到 PM2，则用 `pm2 status` → 打开 `http://localhost:59000`
 
-前置要求：Node.js 20+、tmux。PM2 不存在时会自动全局安装。  
-默认登录密码：`agentmobile123`（安装完成后可在 `.env` 中修改）。
+前置要求：Node.js 20+、tmux。默认使用 systemd；systemd 不可用时脚本会自动安装/使用 PM2 fallback。
+默认登录密码：`agentmobile`（安装完成后可在 `.env` 中修改）。
 
 ---
 
@@ -239,7 +239,8 @@ npm run start:im
 |---|---|---|
 | Node.js | 20+ | |
 | tmux | 任意近期版本 | |
-| PM2 | 任意近期版本 | `setup.js` 自动安装 |
+| systemd | 任意近期版本 | 默认服务管理方式 |
+| PM2 | 任意近期版本 | systemd 不可用时由 `setup.js` 自动安装/使用 |
 | **Claude Code** | 最新 | 使用 Claude 后端时需要 |
 | **Codex CLI** | 最新 | 使用 Codex 后端时安装（可选） |
 | 操作系统 | Linux / WSL2 | |

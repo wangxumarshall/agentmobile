@@ -279,7 +279,8 @@ data/
 agentmobile/
 ├── server.js              # 唯一后端（ESM，Node 20）
 ├── package.json           # 依赖：express ws node-pty bcrypt
-├── ecosystem.config.cjs   # PM2 配置（当前部署方式）
+├── agentmobile.service    # systemd unit 模板（默认部署方式）
+├── ecosystem.config.cjs   # PM2 fallback 配置（systemd 不可用时生成/使用）
 ├── start.sh               # 手动启动脚本
 ├── agentmobile-run-claude.sh    # claude 会话启动脚本（server.js 调用）
 ├── frontend/

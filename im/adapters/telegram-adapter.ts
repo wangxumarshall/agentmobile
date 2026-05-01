@@ -190,11 +190,12 @@ export class TelegramAdapter extends BaseChannelAdapter {
   }
 
   private enqueue(message: InboundMessage): void {
-    this.queue.push(message);
     if (this.waiters.length > 0) {
       const waiter = this.waiters.shift()!;
       waiter(message);
+      return;
     }
+    this.queue.push(message);
   }
 
   private formatText(message: OutboundMessage): string {

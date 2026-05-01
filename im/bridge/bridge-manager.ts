@@ -337,6 +337,16 @@ export class BridgeManager {
     cmd: { name: string; args: string[] },
   ): Promise<void> {
     switch (cmd.name) {
+      case 'start':
+      case 'help': {
+        await adapter.send({
+          address: message.address,
+          text: this.renderHelpMessage(),
+          parseMode: 'Markdown',
+        });
+        break;
+      }
+
       case 'new': {
         const arg = cmd.args[0];
         const runtime: 'claude' | 'codex' = arg === 'codex' ? 'codex' : 'claude';
@@ -410,7 +420,7 @@ export class BridgeManager {
       default:
         await adapter.send({
           address: message.address,
-          text: `❌ Unknown command: /${cmd.name}`,
+          text: `❌ Unknown command: /${cmd.name}\n\nSend \`/help\` to see available commands.`,
           parseMode: 'Markdown',
         });
     }
@@ -430,6 +440,20 @@ export class BridgeManager {
     const args = [...inlineArgs, ...restTokens];
 
     return { name, args };
+  }
+
+  private renderHelpMessage(): string {
+    return `👋 *agentmobile Bot* is ready.
+
+Commands:
+• \`/new:claude\` — start a Claude Code session
+• \`/new:codex\` — start a Codex session
+• \`/reset\` — reset the current session
+• \`/stop\` — stop the active task
+• \`/mode code|plan|ask\` — change session mode
+• \`/help\` — show this help
+
+After creating a session, send any text to continue the conversation.`;
   }
 
   private renderInboundPrompt(message: InboundMessage): string {

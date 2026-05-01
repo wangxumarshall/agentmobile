@@ -16,7 +16,8 @@ pm2 --version || true
 
 - Node.js 需要 20+
 - `tmux` 必须可用
-- 若使用 systemd 部署，确认 `sudo -n true` 可通过
+- 默认使用 systemd，确认 `sudo -n true` 可通过
+- 若 systemd 不可用，`setup.js` 可自动 fallback 到 PM2
 
 ## 安装步骤
 
@@ -29,7 +30,7 @@ node scripts/setup.js
 `setup.js` 的预期行为：
 
 - 优先安装并启用 `agentmobile.service`
-- 若 systemd 不可用，则自动回退到 PM2
+- 若 systemd 不可用，则自动 fallback 到 PM2
 - 自动创建首个 `tmux` session
 
 ## 支持的 Agent CLI
@@ -64,7 +65,7 @@ cd frontend && npm install && npm run build && cd ..
 sudo systemctl restart agentmobile
 ```
 
-如果机器不是 systemd 路径，则改用：
+如果当前机器是 PM2 fallback 部署，则改用：
 
 ```bash
 pm2 restart agentmobile
@@ -100,7 +101,7 @@ sudo systemctl restart agentmobile
 curl -I http://127.0.0.1:5000/
 ```
 
-若是 PM2：
+如果当前机器是 PM2 fallback 部署：
 
 ```bash
 pm2 restart agentmobile

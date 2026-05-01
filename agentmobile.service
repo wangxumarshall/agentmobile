@@ -4,15 +4,16 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /opt/agentmobile/server.js
-WorkingDirectory=/opt/agentmobile
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/code/idea0019-agent-mobile
+ExecStart=/usr/bin/node /home/ubuntu/code/idea0019-agent-mobile/server.js
 Restart=on-failure
 RestartSec=10
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=agentmobile
+StandardOutput=journal
+StandardError=journal
 Environment=NODE_ENV=production
-Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/bin:/home/ubuntu/.npm-global/bin:/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.opencode/bin:/home/ubuntu/bin:/home/ubuntu/.npm-global/bin:/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target

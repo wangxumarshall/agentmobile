@@ -127,6 +127,14 @@ if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
 
 const app = express();
 app.use(express.json());
+app.use((err, req, res, next) => {
+  if (req.path === '/api' || req.path.startsWith('/api/')) {
+    const status = err?.status || err?.statusCode || 400;
+    const message = err?.type === 'entity.parse.failed' ? 'invalid JSON body' : (err?.message || 'invalid request');
+    return res.status(status).json({ error: message });
+  }
+  next(err);
+});
 
 const {
   JWT_SECRET,
@@ -2698,6 +2706,10 @@ app.get('/api/telegram/setup', authMiddleware, (req, res) => {
     })
   }).on('error', (e) => res.status(500).json({ error: e.message }))
 })
+
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'api route not found' });
+});
 
 // SPA fallback — 所有非 API 路由返回 index.html
 app.get('*', (req, res) => {
