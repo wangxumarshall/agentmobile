@@ -429,6 +429,8 @@ export class BridgeManager {
               parseMode: 'Markdown',
             });
           }
+        } else {
+          await this.sendNoActiveSessionMessage(adapter, message.address);
         }
         break;
       }
@@ -446,36 +448,104 @@ export class BridgeManager {
             text: '🛑 Active task stopped.',
             parseMode: 'Markdown',
           });
+        } else {
+          await this.sendNoActiveSessionMessage(adapter, message.address);
         }
         break;
       }
 
       case 'mode': {
         const binding = this.router.resolve(message.address);
-        if (binding) {
-          const mode = cmd.args[0];
-          if (!mode && message.address.channelType === 'telegram' && binding.runtime === 'claude') {
-            const card = buildClaudeModeCard(binding.claudePermissionMode || 'default', binding.id);
-            await adapter.send({
-              address: message.address,
-              text: card.text,
-              parseMode: card.parseMode,
-              inlineButtons: card.inlineButtons,
-            });
-            break;
-          }
-
-          if (mode === 'code' || mode === 'plan' || mode === 'ask') {
-            binding.mode = mode;
-            binding.updatedAt = new Date().toISOString();
-            this.store.saveBinding(binding);
-            await adapter.send({
-              address: message.address,
-              text: `✅ Mode changed to: \`${mode}\``,
-              parseMode: 'Markdown',
-            });
-          }
+        if (!binding) {
+          await this.sendNoActiveSessionMessage(adapter, message.address);
+          break;
         }
+
+        const mode = cmd.args[0];
+        if (!mode && message.address.channelType === 'telegram' && binding.runtime === 'claude') {
+          const card = buildClaudeModeCard(binding.claudePermissionMode || 'default', binding.id);
+          await adapter.send({
+            address: message.address,
+            text: card.text,
+            parseMode: card.parseMode,
+            inlineButtons: card.inlineButtons,
+          });
+          break;
+        }
+
+        if (!mode) {
+          await adapter.send({
+            address: message.address,
+            text: this.renderBindingStatus(binding),
+            parseMode: 'Markdown',
+          });
+          break;
+        }
+
+        if (mode === 'code' || mode === 'plan' || mode === 'ask') {
+          binding.mode = mode;
+          binding.updatedAt = new Date().toISOString();
+          this.store.saveBinding(binding);
+          await adapter.send({
+            address: message.address,
+            text: `✅ Mode changed to: \`${mode}\``,
+            parseMode: 'Markdown',
+          });
+        } else {
+          await adapter.send({
+            address: message.address,
+            text: '❌ Invalid mode. Usage: `/mode code|plan|ask`',
+            parseMode: 'Markdown',
+          });
+        }
+        break;
+      }
+
+      case 'bind':
+      case 'binding': {
+        const binding = this.router.resolve(message.address);
+        if (binding) {
+          await adapter.send({
+            address: message.address,
+            text: this.renderBindingStatus(binding),
+            parseMode: 'Markdown',
+          });
+        } else if (message.address.channelType === 'telegram') {
+          const card = buildNewSessionCard();
+          await adapter.send({
+            address: message.address,
+            text: card.text,
+            parseMode: card.parseMode,
+            inlineButtons: card.inlineButtons,
+          });
+        } else {
+          await this.sendNoActiveSessionMessage(adapter, message.address);
+        }
+        break;
+      }
+
+      case 'cwd':
+      case 'pwd': {
+        const binding = this.router.resolve(message.address);
+        if (binding) {
+          await adapter.send({
+            address: message.address,
+            text: `📂 Current working directory:\n\`${binding.workingDirectory}\``,
+            parseMode: 'Markdown',
+          });
+        } else {
+          await this.sendNoActiveSessionMessage(adapter, message.address);
+        }
+        break;
+      }
+
+      case 'status': {
+        const binding = this.router.resolve(message.address);
+        await adapter.send({
+          address: message.address,
+          text: this.renderStatusMessage(binding),
+          parseMode: 'Markdown',
+        });
         break;
       }
 
@@ -483,6 +553,12 @@ export class BridgeManager {
       case 'sessions': {
         if (message.address.channelType === 'telegram') {
           await this.sendTelegramResumeCard(adapter, message.address);
+        } else {
+          await adapter.send({
+            address: message.address,
+            text: this.renderStatusMessage(this.router.resolve(message.address)),
+            parseMode: 'Markdown',
+          });
         }
         break;
       }
@@ -500,7 +576,8 @@ export class BridgeManager {
     const trimmed = text.trim();
     if (!trimmed.startsWith('/')) return null;
 
-    const withoutSlash = trimmed.slice(1);
+    const commandLine = trimmed.split(/\r?\n/, 1)[0].trim();
+    const withoutSlash = commandLine.slice(1);
     const [commandToken, ...restTokens] = withoutSlash.split(/\s+/).filter(Boolean);
     if (!commandToken) return null;
 
@@ -521,11 +598,72 @@ Commands:
 • \`/reset\` — reset the current session
 • \`/stop\` — stop the active task
 • \`/mode code|plan|ask\` — change session mode
+• \`/bind\` — show the current chat binding
+• \`/cwd\` — show the current working directory
+• \`/status\` — show bridge and session status
 • \`/sessions\` — show recent sessions
 • \`/resume\` — resume a recent session
 • \`/help\` — show this help
 
 After creating a session, send any text to continue the conversation.`;
+  }
+
+  private async sendNoActiveSessionMessage(
+    adapter: BaseChannelAdapter,
+    address: ChannelAddress,
+  ): Promise<void> {
+    await adapter.send({
+      address,
+      text: '❌ No active session found. Send `/new:claude` or `/new:codex` first.',
+      parseMode: 'Markdown',
+    });
+  }
+
+  private renderStatusMessage(binding: ChannelBinding | undefined): string {
+    const status = this.getStatus();
+    const adapters = status.adapters.length > 0
+      ? status.adapters
+          .map(adapter => {
+            const running = adapter.running ? 'running' : 'stopped';
+            const label = adapter.label || adapter.adapterId;
+            const errorSuffix = adapter.error ? `, error: ${adapter.error}` : '';
+            return `• \`${label}\` (${adapter.channelType}): ${running}${errorSuffix}`;
+          })
+          .join('\n')
+      : '• No adapters registered';
+
+    const session = binding
+      ? this.renderBindingStatus(binding)
+      : 'No active session bound to this chat.';
+
+    return `📡 *Bridge Status*
+
+Running: \`${status.running ? 'yes' : 'no'}\`
+Started: \`${status.startedAt || 'not started'}\`
+
+Adapters:
+${adapters}
+
+Current session:
+${session}`;
+  }
+
+  private renderBindingStatus(binding: ChannelBinding): string {
+    const sdkSession = binding.sdkSessionId || 'not established yet';
+    const claudeMode = binding.claudePermissionMode
+      ? `\nClaude permission: \`${binding.claudePermissionMode}\``
+      : '';
+
+    return `🔗 *Current Binding*
+
+Binding ID: \`${binding.id}\`
+Runtime: \`${binding.runtime}\`
+Mode: \`${binding.mode}\`${claudeMode}
+Agent session: \`${binding.agentSessionId}\`
+SDK session: \`${sdkSession}\`
+CWD: \`${binding.workingDirectory}\`
+Active: \`${binding.active ? 'yes' : 'no'}\`
+Updated: \`${binding.updatedAt}\``;
   }
 
   private async handleResolvedPermissionCallback(

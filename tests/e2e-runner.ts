@@ -1003,6 +1003,73 @@ async function main() {
       assertEquals(next?.text, 'hello after binding', 'Should preserve message text');
     });
 
+    await test('Feishu /mode ignores following slash-command lines', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      let sentCards = 0;
+      const sentTexts: string[] = [];
+      const ctx: any = {
+        larkClient: new MockLarkClient(),
+        store,
+        router,
+        permissionBroker: new PermissionBroker(),
+        previewService: {},
+        activityService: {},
+        inboundImageService: {},
+        profileId: 'default',
+        createBoundSession: async () => {
+          throw new Error('not used');
+        },
+        getActiveBinding: (address: any) => router.resolve(address),
+        deactivateBinding: (bindingId: string) => router.deactivateBinding(bindingId),
+        isAuthorized: () => true,
+        sendCard: async () => {
+          sentCards++;
+          return { ok: true };
+        },
+        patchCard: async () => ({ ok: true }),
+        sendText: async (_address: any, text: string) => {
+          sentTexts.push(text);
+          return { ok: true };
+        },
+        handleNewSessionCardAction: async () => {},
+        handleResumeCardAction: async () => {},
+        handleClaudeModeCardAction: async () => {},
+        handleStructuredInputCardAction: async () => {},
+        handlePlanCardAction: async () => {},
+        handleClaudePlanExitCardAction: async () => {},
+      };
+
+      router.createBinding({
+        channelType: 'feishu',
+        channelInstanceId: 'default',
+        chatId: 'chat_mode',
+        agentSessionId: 'session_feishu_mode',
+        workingDirectory: '/tmp/project-mode',
+        runtime: 'claude',
+      });
+
+      const handled = await handleIncomingEvent(ctx, {
+        message: {
+          chat_id: 'chat_mode',
+          chat_type: 'p2p',
+          message_type: 'text',
+          message_id: 'msg_feishu_multiline_mode',
+          create_time: String(Date.now()),
+          update_time: String(Date.now()),
+          content: JSON.stringify({ text: '/mode\n\n/status' }),
+        },
+        sender: {
+          sender_type: 'user',
+          sender_id: { open_id: 'user_mode' },
+        },
+      } as any);
+
+      assertEquals(handled, null, '/mode should be handled by the adapter layer');
+      assertEquals(sentCards, 1, 'Should show Claude mode card');
+      assert(!sentTexts.some(text => text.includes('Usage:')), 'Should not treat the next line as a mode argument');
+    });
+
     await test('session card callbacks can route using button metadata', async () => {
       const store = new MockStore();
       const router = new ChannelRouter(store as any);
@@ -1240,6 +1307,100 @@ async function main() {
         const card = adapter.sentMessages.find(message => message.text.includes('Resume Session'));
         assert(card?.inlineButtons?.length === 1, 'Should include one session button');
         assert(!card?.text.includes('Unknown command'), 'Should not render unknown command');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram binding commands return session details', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_binding_commands',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_binding_commands',
+        workingDirectory: '/tmp/project-bind',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        for (const text of ['/bind', '/cwd', '/status']) {
+          adapter.push(makeInboundMessage({
+            messageId: `tg_${text.slice(1)}_command`,
+            address,
+            text,
+          }));
+        }
+
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Bridge Status')));
+        assert(
+          adapter.sentMessages.some(message => message.text.includes('Current Binding')),
+          'Should show current binding',
+        );
+        assert(
+          adapter.sentMessages.some(message => message.text.includes('/tmp/project-bind')),
+          'Should show working directory',
+        );
+        assert(
+          adapter.sentMessages.every(message => !message.text.includes('Unknown command')),
+          'Should not render unknown command',
+        );
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram /mode ignores following slash-command lines', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_multiline_mode',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_multiline_mode',
+        workingDirectory: '/tmp/project-mode',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_multiline_mode_command',
+          address,
+          text: '/mode\n\n/status',
+        }));
+
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Claude Permission Mode')));
+        assert(
+          adapter.sentMessages.every(message => !message.text.includes('Invalid mode')),
+          'Should not treat the next line as a mode argument',
+        );
       } finally {
         await manager.stop();
       }

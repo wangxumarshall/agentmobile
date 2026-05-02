@@ -232,7 +232,8 @@ export async function handleModeCommand(
     return;
   }
 
-  const requestedMode = text.trim().split(/\s+/)[1];
+  const commandLine = text.trim().split(/\r?\n/, 1)[0].trim();
+  const requestedMode = commandLine.split(/\s+/)[1];
   if (!requestedMode && binding.runtime === 'claude') {
     const card = buildClaudeModeCard(
       binding.claudePermissionMode || 'default',
