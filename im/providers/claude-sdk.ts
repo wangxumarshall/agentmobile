@@ -4,6 +4,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { CanUseTool, Options, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { ChannelBinding } from '../bridge/types.js';
 import type { LLMProvider, PermissionResolution, SSEEvent } from '../bridge/context.js';
 import { toSdkPermissionMode } from '../runtime/claude-mode.js';
@@ -45,8 +46,11 @@ export class ClaudeSDKProvider implements LLMProvider {
 
     debug('claude-sdk', `Starting Claude session for binding ${binding.id}`);
 
+    let streamedText = false;
+    let assistantFallbackText = '';
+
     try {
-      const queryOptions: Record<string, unknown> = {
+      const queryOptions: Options = {
         cwd: binding.workingDirectory,
         permissionMode: binding.mode === 'plan'
           ? 'plan'
@@ -54,6 +58,10 @@ export class ClaudeSDKProvider implements LLMProvider {
         allowDangerouslySkipPermissions: false,
         includePartialMessages: true,
       };
+
+      if (onPermissionRequest) {
+        queryOptions.canUseTool = this.buildPermissionHandler(onPermissionRequest);
+      }
 
       if (this.cliPath) {
         queryOptions.pathToClaudeCodeExecutable = this.cliPath;
@@ -80,6 +88,7 @@ export class ClaudeSDKProvider implements LLMProvider {
           case 'stream_event': {
             const event = msg.event;
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+              streamedText = true;
               yield { type: 'text', text: event.delta.text };
             }
             break;
@@ -88,6 +97,11 @@ export class ClaudeSDKProvider implements LLMProvider {
           case 'assistant': {
             if (msg.message?.content) {
               for (const block of msg.message.content) {
+                if (block.type === 'text') {
+                  assistantFallbackText += block.text;
+                  continue;
+                }
+
                 if (block.type === 'tool_use') {
                   onActivityEvent?.({
                     type: 'tool_use',
@@ -95,29 +109,6 @@ export class ClaudeSDKProvider implements LLMProvider {
                     description: JSON.stringify(block.input).slice(0, 500),
                     metadata: { toolId: block.id },
                   });
-                  yield {
-                    type: 'permission_request',
-                    data: {
-                      permissionRequestId: block.id,
-                      toolName: block.name,
-                      toolInput: block.input,
-                    },
-                  };
-
-                  // Wait for permission resolution
-                  if (onPermissionRequest) {
-                    const resolution = await onPermissionRequest({
-                      id: block.id,
-                      toolName: block.name,
-                      toolInput: block.input as Record<string, unknown>,
-                      prompt: `Allow tool ${block.name}?`,
-                    });
-
-                    if (resolution.resolution === 'deny') {
-                      yield { type: 'error', data: { message: 'Permission denied' } };
-                      return;
-                    }
-                  }
                 }
               }
             }
@@ -126,6 +117,12 @@ export class ClaudeSDKProvider implements LLMProvider {
 
           case 'result': {
             if (msg.subtype === 'success') {
+              if (!streamedText) {
+                const finalText = msg.result || assistantFallbackText;
+                if (finalText) {
+                  yield { type: 'text', text: finalText };
+                }
+              }
               yield {
                 type: 'result',
                 data: {
@@ -136,7 +133,7 @@ export class ClaudeSDKProvider implements LLMProvider {
             } else {
               yield {
                 type: 'error',
-                data: { message: 'SDK result error' },
+                data: { message: this.formatResultError(msg) },
               };
             }
             break;
@@ -148,5 +145,44 @@ export class ClaudeSDKProvider implements LLMProvider {
       error('claude-sdk', `Stream error: ${err.message}`);
       yield { type: 'error', data: { message: err.message } };
     }
+  }
+
+  private buildPermissionHandler(onPermissionRequest: NonNullable<StreamChatOptions['onPermissionRequest']>): CanUseTool {
+    return async (toolName, input, permissionOptions): Promise<PermissionResult> => {
+      const toolInput = this.asRecord(input);
+      const resolution = await onPermissionRequest({
+        id: permissionOptions.toolUseID,
+        toolName,
+        toolInput,
+        prompt: permissionOptions.title || permissionOptions.description || `Allow tool ${toolName}?`,
+      });
+
+      if (resolution.resolution === 'deny') {
+        return {
+          behavior: 'deny',
+          message: 'Permission denied',
+          toolUseID: permissionOptions.toolUseID,
+        };
+      }
+
+      return {
+        behavior: 'allow',
+        updatedPermissions: resolution.resolution === 'allow_session'
+          ? permissionOptions.suggestions
+          : undefined,
+        toolUseID: permissionOptions.toolUseID,
+      };
+    };
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  private formatResultError(msg: { errors?: string[]; subtype?: string }): string {
+    const details = msg.errors?.filter(Boolean).join('\n').trim();
+    return details || `SDK result error: ${msg.subtype || 'unknown'}`;
   }
 }

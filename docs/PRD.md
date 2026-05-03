@@ -83,9 +83,17 @@ POST /api/tasks
   → 同步回发起方渠道（Web / Telegram / ...）
 
 POST /api/webhooks/telegram
-  → 解析消息 + 附件（图片/文件）
+  → legacy webhook only
+  → 旧路径解析消息 + 附件（图片/文件）
   → 调用 POST /api/tasks
   → 结果回传 Telegram 对话
+
+npm run start:im
+  → Telegram adapter 使用 polling（启动时 deleteWebhook）
+  → /new:codex 绑定长期运行的交互式 Codex PTY
+  → 普通 Telegram 文本写入同一 Codex 进程
+  → 默认编辑一条 Telegram preview 展示终端转写
+  → /screen 返回原始终端快照，/ctrlc 等命令映射终端按键
 ```
 
 **设计原则**：任务派发与交互终端解耦——交互 PTY 继续用于实时 claude 对话，tasks API 用于异步一次性任务，两者共存，各司其职。

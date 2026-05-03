@@ -107,6 +107,7 @@ export class TelegramAdapter extends BaseChannelAdapter implements TelegramCardC
     if (this.running) return;
     this.running = true;
     info('telegram-adapter', 'Starting Telegram adapter (polling mode)');
+    await this.clearWebhookForPolling();
     this.startPolling();
   }
 
@@ -299,6 +300,17 @@ export class TelegramAdapter extends BaseChannelAdapter implements TelegramCardC
         this.pollTimer = setTimeout(() => this.startPolling(), 5000);
       }
     });
+  }
+
+  private async clearWebhookForPolling(): Promise<void> {
+    try {
+      const result = await this.telegramRequest('deleteWebhook', { drop_pending_updates: false });
+      if (!result.ok) {
+        debug('telegram-adapter', `deleteWebhook returned non-ok response: ${result.description || 'unknown error'}`);
+      }
+    } catch (e) {
+      debug('telegram-adapter', `deleteWebhook failed before polling: ${e}`);
+    }
   }
 
   private async pollMessages(): Promise<void> {

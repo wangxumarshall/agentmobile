@@ -91,7 +91,7 @@ agentmobile IM Bridge（Node.js，im/server-im.ts，可选独立进程）
 | POST | `/api/tasks` | Bearer | 提交任务（SSE 流式输出） |
 | DELETE | `/api/tasks/:id` | Bearer | 删除任务记录 |
 | **Telegram** | | | |
-| POST | `/api/webhooks/telegram` | 无（secret check） | Telegram Bot webhook |
+| POST | `/api/webhooks/telegram` | 无（secret check） | Legacy Telegram Bot webhook；正式 IM bridge 使用 `agentmobile-im` polling |
 | GET | `/api/telegram/setup` | Bearer | Telegram Bot 状态信息 |
 | GET | `*` | 无 | SPA fallback → index.html |
 
@@ -158,12 +158,13 @@ function runTask(prompt, cwd, opts) {
 - Telegram 端通过 `onChunk` 定时 editMessageText（每 5 秒）
 - `tasks.json` 上限 200 条（`saveTasks` 强制执行）
 
-### Telegram Bot
+### Telegram Bot（Legacy Webhook）
 
 - 支持命令：`/list`（列窗口）、`/switch <name>`（切换目标窗口）、`/agent claude|codex`（切换 AI 后端）
 - 接收消息 → `runTask()` 在目标窗口 cwd 执行（使用当前 agent_type）
 - 接收文件/图片 → 下载到 WORKSPACE_ROOT → `runTask()` 附路径执行
 - 目标窗口状态：持久化在内存 `telegramAgentType`（默认 'claude'）和服务重启后重置）
+- 该入口仅保留兼容；新 Telegram 能力在 `agentmobile-im` Telegram adapter 中实现，避免 webhook 与 polling 两套行为并存。
 
 ### IM Bridge（im/server-im.ts）
 
@@ -174,7 +175,9 @@ function runTask(prompt, cwd, opts) {
 - Feishu 消息事件：SDK long connection 订阅 `im.message.receive_v1`
 - Feishu 卡片交互：HTTP callback `/api/webhooks/feishu/card-action`，用于权限按钮和 session/mode 卡片操作
 - Claude runtime 使用 `@anthropic-ai/claude-agent-sdk`
-- Codex runtime 使用 `codex exec` 非交互 provider
+- Telegram Codex runtime 使用长期运行的交互式 Codex PTY（`--no-alt-screen` + 全自动无审批），每个 binding 维护一个 terminal session；普通文本写入同一 PTY，`//<text>` 转义发送 Codex slash 命令。
+- Telegram Codex 命令：`/screen` 发送原始终端快照；`/enter`、`/esc`、`/tab`、`/backspace`、`/ctrlc`、`/ctrld`、`/up`、`/down`、`/left`、`/right`、`/pgup`、`/pgdn` 映射终端按键；`/stop` 发送 Ctrl+C 并保留会话，`/reset` 终止 PTY 并停用 binding。
+- 非 Telegram Codex runtime 仍使用 `codex exec` 非交互 provider；Web TaskPanel 的 `codex exec` 异步任务能力不变。
 - 运行时状态持久化到 `im-data/`（bindings / sessions / cache）
 - v1 边界：普通对话、`/new`、`/reset`、`/mode`、streaming preview fallback、权限卡片、图片附件上下文可用；Plan confirmation workflow 与 structured input cards 保持文本降级，后续补全。
 - 可选 systemd unit：`agentmobile-im.service`

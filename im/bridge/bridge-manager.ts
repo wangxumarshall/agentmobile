@@ -13,11 +13,18 @@ import type {
   ChannelAddress,
   ClaudePermissionMode,
 } from './types.js';
+import type { ActivityEventInfo } from './context.js';
 import type { LLMProvider } from './context.js';
 import { ChannelRouter } from './channel-router.js';
 import { ConversationEngine } from './conversation-engine.js';
 import { PermissionBroker } from './permission-broker.js';
 import { JsonFileStore } from '../infra/store.js';
+import {
+  CodexTerminalSessionManager,
+  type CodexTerminalKey,
+  type CodexTerminalRuntime,
+  isCodexTerminalKey,
+} from '../runtime/codex-terminal-session.js';
 import {
   buildClaudeModeCard,
   buildHandledPermissionCard,
@@ -44,6 +51,13 @@ interface BridgeManagerState {
 export interface BridgeManagerOptions {
   router?: ChannelRouter;
   permissionBroker?: PermissionBroker;
+  codexTerminalRuntime?: CodexTerminalRuntime;
+}
+
+interface TerminalPreviewState {
+  address: ChannelAddress;
+  draftId: number;
+  active: boolean;
 }
 
 export class BridgeManager {
@@ -52,6 +66,8 @@ export class BridgeManager {
   private router: ChannelRouter;
   private engine: ConversationEngine;
   private permissionBroker: PermissionBroker;
+  private codexTerminalRuntime: CodexTerminalRuntime;
+  private terminalPreviews = new Map<string, TerminalPreviewState>();
 
   private state: BridgeManagerState = {
     adapters: new Map(),
@@ -74,6 +90,7 @@ export class BridgeManager {
     this.router = options.router || new ChannelRouter(store);
     this.engine = new ConversationEngine(llm, store);
     this.permissionBroker = options.permissionBroker || new PermissionBroker();
+    this.codexTerminalRuntime = options.codexTerminalRuntime || new CodexTerminalSessionManager();
   }
 
   registerAdapter(adapter: BaseChannelAdapter): void {
@@ -152,6 +169,8 @@ export class BridgeManager {
     this.state.startedAt = null;
     this.state.loopAborts.clear();
     this.state.activeTasks.clear();
+    this.terminalPreviews.clear();
+    this.codexTerminalRuntime.stopAll();
 
     info('bridge-manager', 'Bridge manager stopped');
   }
@@ -229,15 +248,18 @@ export class BridgeManager {
   ): Promise<void> {
     debug('bridge-manager', `Processing message: ${message.text.slice(0, 50)}...`);
 
+    let binding = this.router.resolve(message.address);
+    const escapedCodexText = binding && this.isTelegramCodexTerminalBinding(binding, message)
+      ? this.unescapeTelegramCodexSlash(message.text)
+      : null;
+
     // Parse commands (/new, /reset, /stop, /mode, etc.)
-    const cmd = this.parseCommand(message.text);
+    const cmd = escapedCodexText === null ? this.parseCommand(message.text) : null;
     if (cmd) {
       return await this.handleCommand(adapter, message, cmd);
     }
 
     // Regular message — route to existing binding or create new one
-    let binding = this.router.resolve(message.address);
-
     if (!binding) {
       // No binding exists — send instructions to create one
       if (message.address.channelType === 'telegram') {
@@ -260,6 +282,16 @@ export class BridgeManager {
 
     // Process with session lock (serialize messages to same session)
     await this.processWithSessionLock(binding.id, async () => {
+      if (this.isTelegramCodexTerminalBinding(binding, message)) {
+        await this.processTelegramCodexInput(
+          adapter,
+          message,
+          binding,
+          this.renderInboundPrompt(message, escapedCodexText ?? undefined),
+        );
+        return;
+      }
+
       const abortController = new AbortController();
       this.state.activeTasks.set(binding.id, abortController);
 
@@ -321,11 +353,6 @@ export class BridgeManager {
 
         if (!result.ok) {
           error('bridge-manager', `Conversation failed: ${result.error}`);
-          await adapter.send({
-            address: message.address,
-            text: `❌ ${result.error || 'Conversation failed'}`,
-            parseMode: 'Markdown',
-          });
         } else if (result.sdkSessionId) {
           binding.sdkSessionId = result.sdkSessionId;
         }
@@ -334,30 +361,276 @@ export class BridgeManager {
         this.store.saveBinding(binding);
 
         if (canPreview && draftId !== null) {
-          if (result.ok && result.text) {
+          const finalText = result.ok
+            ? result.text || 'No response text was returned.'
+            : `❌ ${result.error || 'Conversation failed'}`;
+
+          if (finalText) {
             if (previewActive) {
-              const finalized = await adapter.finalizePreview?.(message.address, result.text, draftId);
+              const finalized = await adapter.finalizePreview?.(message.address, finalText, draftId);
               if (!finalized?.ok) {
                 await adapter.send({
                   address: message.address,
-                  text: result.text,
+                  text: finalText,
                   parseMode: 'Markdown',
                 });
               }
             } else {
               await adapter.send({
                 address: message.address,
-                text: result.text,
+                text: finalText,
                 parseMode: 'Markdown',
               });
             }
           }
           adapter.endPreview?.(message.address, draftId);
+        } else if (!result.ok) {
+          await adapter.send({
+            address: message.address,
+            text: `❌ ${result.error || 'Conversation failed'}`,
+            parseMode: 'Markdown',
+          });
+        } else if (!result.text) {
+          await adapter.send({
+            address: message.address,
+            text: 'No response text was returned.',
+            parseMode: 'Markdown',
+          });
         }
       } finally {
         this.state.activeTasks.delete(binding.id);
         abortController.abort();
       }
+    });
+  }
+
+  private unescapeTelegramCodexSlash(text: string): string | null {
+    const leadingWhitespace = text.match(/^\s*/)?.[0] || '';
+    const rest = text.slice(leadingWhitespace.length);
+    if (!rest.startsWith('//')) return null;
+    return leadingWhitespace + rest.slice(1);
+  }
+
+  private isTelegramCodexTerminalBinding(binding: ChannelBinding, message: InboundMessage): boolean {
+    return binding.runtime === 'codex' && message.address.channelType === 'telegram';
+  }
+
+  private async processTelegramCodexInput(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    binding: ChannelBinding,
+    text: string,
+  ): Promise<void> {
+    const previewCaps = adapter.getPreviewCapabilities?.(message.address) || null;
+    const canPreview = Boolean(
+      previewCaps?.supported &&
+      adapter.primePreview &&
+      adapter.sendPreview,
+    );
+    const terminalPreview = canPreview
+      ? this.getOrCreateTerminalPreview(binding.id, message.address)
+      : null;
+    const draftId = terminalPreview?.draftId ?? null;
+    let previewUpdates = Promise.resolve();
+    let previewActive = Boolean(terminalPreview?.active);
+    let latestTranscript = this.codexTerminalRuntime.getTranscriptSnapshot(binding.id);
+
+    if (canPreview && draftId !== null && !previewActive) {
+      try {
+        const primed = await adapter.primePreview!(message.address, draftId);
+        previewActive = primed === 'sent' || primed === 'skip';
+        if (terminalPreview) terminalPreview.active = previewActive;
+      } catch (e) {
+        debug('bridge-manager', `Codex terminal preview prime failed: ${e}`);
+      }
+    }
+
+    const onTranscriptUpdate = canPreview && draftId !== null
+      ? (transcript: string) => {
+          latestTranscript = transcript;
+          const projected = this.renderCodexTranscript(transcript);
+          previewUpdates = previewUpdates
+            .then(async () => {
+              const outcome = await adapter.sendPreview!(message.address, projected, draftId);
+              if (outcome === 'sent') {
+                previewActive = true;
+                if (terminalPreview) terminalPreview.active = true;
+              }
+            })
+            .catch(e => debug('bridge-manager', `Codex terminal preview update failed: ${e}`));
+        }
+      : (transcript: string) => {
+          latestTranscript = transcript;
+        };
+
+    const onActivityEvent = this.buildActivityProjector(adapter, message);
+
+    try {
+      const previousTranscript = latestTranscript;
+      this.codexTerminalRuntime.sendInput(binding, text, {
+        onTranscriptUpdate,
+        onActivityEvent,
+      });
+      binding.terminalSessionId ||= `codex_terminal_${binding.id}`;
+      binding.updatedAt = new Date().toISOString();
+      this.store.saveBinding(binding);
+
+      if (latestTranscript === previousTranscript) {
+        await this.waitForTerminalOutput(binding.id, () => latestTranscript, previousTranscript);
+      }
+      await previewUpdates;
+
+      const finalText = this.renderCodexTranscript(latestTranscript) || 'Codex terminal session started.';
+      if (canPreview && draftId !== null) {
+        if (!previewActive) {
+          const outcome = await adapter.sendPreview!(message.address, finalText, draftId);
+          previewActive = outcome === 'sent';
+          if (terminalPreview) terminalPreview.active = previewActive;
+        }
+      } else {
+        await adapter.send({
+          address: message.address,
+          text: finalText,
+          parseMode: 'plain',
+        });
+      }
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      error('bridge-manager', `Codex terminal input failed: ${err.message}`);
+      if (canPreview && draftId !== null) {
+        await previewUpdates;
+        const finalText = `❌ ${err.message}`;
+        const outcome = await adapter.sendPreview!(message.address, finalText, draftId);
+        if (outcome === 'sent' && terminalPreview) terminalPreview.active = true;
+        return;
+      }
+      await adapter.send({
+        address: message.address,
+        text: `❌ ${err.message}`,
+        parseMode: 'plain',
+      });
+    }
+  }
+
+  private buildActivityProjector(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+  ): ((event: ActivityEventInfo) => void) | undefined {
+    if (!adapter.upsertActivityEvent || !adapter.shouldProjectActivityEvent) return undefined;
+    return (event: ActivityEventInfo) => {
+      const activityEvent = {
+        ...event,
+        timestamp: Date.now(),
+      };
+      if (!adapter.shouldProjectActivityEvent?.(activityEvent)) return;
+      void adapter.upsertActivityEvent?.(message.address, activityEvent, message.messageId);
+    };
+  }
+
+  private renderCodexTranscript(transcript: string): string {
+    const trimmed = transcript.trim();
+    if (!trimmed) return '';
+    const maxChars = 3800;
+    return trimmed.length <= maxChars
+      ? trimmed
+      : `...[transcript truncated]\n${trimmed.slice(trimmed.length - maxChars)}`;
+  }
+
+  private getOrCreateTerminalPreview(bindingId: string, address: ChannelAddress): TerminalPreviewState {
+    const existing = this.terminalPreviews.get(bindingId);
+    if (existing) {
+      existing.address = address;
+      return existing;
+    }
+
+    const created: TerminalPreviewState = {
+      address,
+      draftId: Math.floor(Math.random() * 0x7fffffff) + 1,
+      active: false,
+    };
+    this.terminalPreviews.set(bindingId, created);
+    return created;
+  }
+
+  private endTerminalPreview(adapter: BaseChannelAdapter, bindingId: string): void {
+    const preview = this.terminalPreviews.get(bindingId);
+    if (!preview) return;
+    adapter.endPreview?.(preview.address, preview.draftId);
+    this.terminalPreviews.delete(bindingId);
+  }
+
+  private renderScreenSnapshot(snapshot: string): string {
+    const body = snapshot.trimEnd() || '(no active Codex terminal screen yet)';
+    const prefix = 'Codex screen snapshot:\n\n';
+    const maxChars = 4096 - prefix.length;
+    if (body.length <= maxChars) {
+      return prefix + body;
+    }
+
+    const marker = '[screen truncated to tail]\n';
+    return prefix + marker + body.slice(body.length - maxChars + marker.length);
+  }
+
+  private async waitForTerminalOutput(
+    bindingId: string,
+    getTranscript: () => string,
+    before: string,
+  ): Promise<void> {
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline) {
+      const current = getTranscript() || this.codexTerminalRuntime.getTranscriptSnapshot(bindingId);
+      if (current && current !== before) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  private async handleTerminalKeyCommand(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    name: string,
+  ): Promise<void> {
+    const binding = this.router.resolve(message.address);
+    if (!binding) {
+      await this.sendNoActiveSessionMessage(adapter, message.address);
+      return;
+    }
+
+    if (!this.isTelegramCodexTerminalBinding(binding, message)) {
+      await adapter.send({
+        address: message.address,
+        text: `❌ \`/${name}\` is available for Telegram Codex terminal sessions.`,
+        parseMode: 'Markdown',
+      });
+      return;
+    }
+
+    if (!isCodexTerminalKey(name)) {
+      await adapter.send({
+        address: message.address,
+        text: `❌ Unsupported terminal key: /${name}`,
+        parseMode: 'Markdown',
+      });
+      return;
+    }
+
+    const session = this.codexTerminalRuntime.sendKey(binding, name as CodexTerminalKey, {
+      onActivityEvent: this.buildActivityProjector(adapter, message),
+    });
+    if (!session) {
+      await adapter.send({
+        address: message.address,
+        text: '❌ No active Codex terminal. Send a prompt first, or use `/new:codex` to create a session.',
+        parseMode: 'Markdown',
+      });
+      return;
+    }
+
+    binding.updatedAt = new Date().toISOString();
+    this.store.saveBinding(binding);
+    await adapter.send({
+      address: message.address,
+      text: `⌨️ Sent /${name}`,
+      parseMode: 'plain',
     });
   }
 
@@ -412,7 +685,11 @@ export class BridgeManager {
       case 'reset': {
         const binding = this.router.resolve(message.address);
         if (binding) {
+          this.codexTerminalRuntime.stopSession(binding.id);
+          this.endTerminalPreview(adapter, binding.id);
+          binding.terminalSessionId = undefined;
           binding.updatedAt = new Date().toISOString();
+          this.store.saveBinding(binding);
           this.router.deactivateBinding(binding.id);
           if (message.address.channelType === 'telegram') {
             const card = buildResetConfirmationCard(binding.id, binding.runtime);
@@ -438,10 +715,16 @@ export class BridgeManager {
       case 'stop': {
         const binding = this.router.resolve(message.address);
         if (binding) {
-          const task = this.state.activeTasks.get(binding.id);
-          if (task) {
-            task.abort();
-            this.state.activeTasks.delete(binding.id);
+          if (this.isTelegramCodexTerminalBinding(binding, message) && this.codexTerminalRuntime.hasSession(binding.id)) {
+            this.codexTerminalRuntime.sendKey(binding, 'ctrlc', {
+              onActivityEvent: this.buildActivityProjector(adapter, message),
+            });
+          } else {
+            const task = this.state.activeTasks.get(binding.id);
+            if (task) {
+              task.abort();
+              this.state.activeTasks.delete(binding.id);
+            }
           }
           await adapter.send({
             address: message.address,
@@ -451,6 +734,46 @@ export class BridgeManager {
         } else {
           await this.sendNoActiveSessionMessage(adapter, message.address);
         }
+        break;
+      }
+
+      case 'screen': {
+        const binding = this.router.resolve(message.address);
+        if (!binding) {
+          await this.sendNoActiveSessionMessage(adapter, message.address);
+          break;
+        }
+        if (!this.isTelegramCodexTerminalBinding(binding, message)) {
+          await adapter.send({
+            address: message.address,
+            text: '❌ `/screen` is available for Telegram Codex terminal sessions.',
+            parseMode: 'Markdown',
+          });
+          break;
+        }
+
+        const snapshot = this.codexTerminalRuntime.getScreenSnapshot(binding.id);
+        await adapter.send({
+          address: message.address,
+          text: this.renderScreenSnapshot(snapshot),
+          parseMode: 'plain',
+        });
+        break;
+      }
+
+      case 'enter':
+      case 'esc':
+      case 'tab':
+      case 'backspace':
+      case 'ctrlc':
+      case 'ctrld':
+      case 'up':
+      case 'down':
+      case 'left':
+      case 'right':
+      case 'pgup':
+      case 'pgdn': {
+        await this.handleTerminalKeyCommand(adapter, message, cmd.name);
         break;
       }
 
@@ -597,6 +920,9 @@ Commands:
 • \`/new:codex\` — start a Codex session
 • \`/reset\` — reset the current session
 • \`/stop\` — stop the active task
+• \`/screen\` — show the current Codex terminal screen
+• \`/enter\`, \`/esc\`, \`/tab\`, \`/backspace\`, \`/ctrlc\`, \`/ctrld\` — send terminal keys
+• \`/up\`, \`/down\`, \`/left\`, \`/right\`, \`/pgup\`, \`/pgdn\` — navigate the Codex terminal
 • \`/mode code|plan|ask\` — change session mode
 • \`/bind\` — show the current chat binding
 • \`/cwd\` — show the current working directory
@@ -605,7 +931,7 @@ Commands:
 • \`/resume\` — resume a recent session
 • \`/help\` — show this help
 
-After creating a session, send any text to continue the conversation.`;
+After creating a session, send any text to continue the conversation. Use \`//model\` to send a Codex slash command such as \`/model\`.`;
   }
 
   private async sendNoActiveSessionMessage(
@@ -650,6 +976,9 @@ ${session}`;
 
   private renderBindingStatus(binding: ChannelBinding): string {
     const sdkSession = binding.sdkSessionId || 'not established yet';
+    const terminalSession = binding.terminalSessionId
+      ? `\nTerminal session: \`${binding.terminalSessionId}\``
+      : '';
     const claudeMode = binding.claudePermissionMode
       ? `\nClaude permission: \`${binding.claudePermissionMode}\``
       : '';
@@ -660,7 +989,7 @@ Binding ID: \`${binding.id}\`
 Runtime: \`${binding.runtime}\`
 Mode: \`${binding.mode}\`${claudeMode}
 Agent session: \`${binding.agentSessionId}\`
-SDK session: \`${sdkSession}\`
+SDK session: \`${sdkSession}\`${terminalSession}
 CWD: \`${binding.workingDirectory}\`
 Active: \`${binding.active ? 'yes' : 'no'}\`
 Updated: \`${binding.updatedAt}\``;
@@ -879,8 +1208,8 @@ Updated: \`${binding.updatedAt}\``;
     return 'code';
   }
 
-  private renderInboundPrompt(message: InboundMessage): string {
-    const baseText = message.text.trim();
+  private renderInboundPrompt(message: InboundMessage, textOverride?: string): string {
+    const baseText = (textOverride ?? message.text).trim();
     if (!message.attachments || message.attachments.length === 0) {
       return baseText;
     }

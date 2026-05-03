@@ -155,6 +155,8 @@ export interface ChannelBinding {
   agentSessionId: string;
   /** SDK session ID for resume (cached from last conversation) */
   sdkSessionId: string;
+  /** Long-running terminal runtime handle for interactive Codex sessions */
+  terminalSessionId?: string;
   /** Working directory for this binding */
   workingDirectory: string;
   /** Model override for this binding */

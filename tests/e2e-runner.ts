@@ -59,6 +59,16 @@ import { TelegramPreviewService, TelegramActivityService } from '../im/telegram/
 import { loadConfig } from '../im/config/config.js';
 import { JsonFileStore } from '../im/infra/store.js';
 import { ClaudeSDKProvider, classifyAuthError, isAuthError } from '../im/providers/claude-sdk.js';
+import type {
+  CodexTerminalCallbacks,
+  CodexTerminalKey,
+  CodexTerminalRuntime,
+} from '../im/runtime/codex-terminal-session.js';
+import {
+  CODEX_TERMINAL_KEY_SEQUENCES,
+  buildCodexInteractiveArgs,
+  isCodexTerminalKey,
+} from '../im/runtime/codex-terminal-session.js';
 import { LarkClient } from '../im/feishu/lark-client.js';
 import { createFeishuEventDispatcher } from '../im/adapters/feishu-adapter.js';
 import { TelegramAdapter } from '../im/adapters/telegram-adapter.js';
@@ -173,6 +183,103 @@ class TelegramQueueAdapter extends QueueAdapter {
 
   async answerCallback(callbackQueryId: string, text?: string): Promise<void> {
     this.answeredCallbacks.push({ id: callbackQueryId, text });
+  }
+}
+
+class PreviewQueueAdapter extends QueueAdapter {
+  previewUpdates: Array<{ text: string; draftId: number }> = [];
+  finalizedPreviews: Array<{ text: string; draftId: number }> = [];
+  endedPreviews: number[] = [];
+
+  getPreviewCapabilities() {
+    return {
+      supported: true,
+      privateOnly: false,
+      finalDelivery: 'replace_preview' as const,
+    };
+  }
+
+  async primePreview(_address: any, _draftId: number): Promise<'sent'> {
+    return 'sent';
+  }
+
+  async sendPreview(_address: any, text: string, draftId: number): Promise<'sent'> {
+    this.previewUpdates.push({ text, draftId });
+    return 'sent';
+  }
+
+  async finalizePreview(_address: any, text: string, draftId: number): Promise<SendResult> {
+    this.finalizedPreviews.push({ text, draftId });
+    return { ok: true, messageId: `preview_${draftId}` };
+  }
+
+  endPreview(_address: any, draftId: number): void {
+    this.endedPreviews.push(draftId);
+  }
+}
+
+class FakeCodexTerminalRuntime implements CodexTerminalRuntime {
+  inputs: Array<{ bindingId: string; text: string }> = [];
+  keys: Array<{ bindingId: string; key: CodexTerminalKey }> = [];
+  stoppedSessions: string[] = [];
+  stoppedAll = false;
+  private sessions = new Set<string>();
+  private transcripts = new Map<string, string>();
+  private screens = new Map<string, string>();
+
+  getOrCreate(binding: any, callbacks: CodexTerminalCallbacks = {}): any {
+    this.sessions.add(binding.id);
+    binding.terminalSessionId ||= `fake_terminal_${binding.id}`;
+    callbacks.onTranscriptUpdate?.(this.getTranscriptSnapshot(binding.id));
+    return { id: binding.terminalSessionId };
+  }
+
+  hasSession(bindingId: string): boolean {
+    return this.sessions.has(bindingId);
+  }
+
+  sendInput(binding: any, text: string, callbacks: CodexTerminalCallbacks = {}): any {
+    this.inputs.push({ bindingId: binding.id, text });
+    this.sessions.add(binding.id);
+    binding.terminalSessionId ||= `fake_terminal_${binding.id}`;
+    const transcript = `Codex received:\n${text}`;
+    this.transcripts.set(binding.id, transcript);
+    this.screens.set(binding.id, `codex-screen\n> ${text}`);
+    callbacks.onTranscriptUpdate?.(transcript);
+    callbacks.onActivityEvent?.({
+      type: 'progress',
+      title: 'Codex status',
+      description: 'thinking',
+      metadata: { status: 'running', source: 'fake' },
+    });
+    return { id: binding.terminalSessionId };
+  }
+
+  sendKey(binding: any, key: CodexTerminalKey, callbacks: CodexTerminalCallbacks = {}): any | null {
+    if (!this.sessions.has(binding.id)) return null;
+    this.keys.push({ bindingId: binding.id, key });
+    callbacks.onTranscriptUpdate?.(this.getTranscriptSnapshot(binding.id));
+    return { id: binding.terminalSessionId || `fake_terminal_${binding.id}` };
+  }
+
+  getTranscriptSnapshot(bindingId: string): string {
+    return this.transcripts.get(bindingId) || '';
+  }
+
+  getScreenSnapshot(bindingId: string): string {
+    return this.screens.get(bindingId) || '';
+  }
+
+  stopSession(bindingId: string): void {
+    this.stoppedSessions.push(bindingId);
+    this.sessions.delete(bindingId);
+    this.transcripts.delete(bindingId);
+    this.screens.delete(bindingId);
+  }
+
+  stopAll(): void {
+    this.stoppedAll = true;
+    this.sessions.clear();
   }
 }
 
@@ -547,6 +654,23 @@ async function main() {
       assert(result.ok, 'Image send should succeed');
       assert(multipartCalled, 'Should use multipart upload for local files');
     });
+
+    await test('Telegram adapter clears webhook before polling', async () => {
+      const adapter = new TelegramAdapter({ botToken: 'test-token' });
+      const methods: string[] = [];
+      (adapter as any).telegramRequest = async (method: string) => {
+        methods.push(method);
+        if (method === 'getUpdates') {
+          await adapter.stop();
+        }
+        return { ok: true, result: [] };
+      };
+
+      await adapter.start();
+      await waitFor(() => methods.includes('getUpdates'));
+      assertEquals(methods[0], 'deleteWebhook', 'Should delete webhook before first poll');
+      assert(methods.includes('getUpdates'), 'Should continue to polling');
+    });
   });
 
   // ── 6. Mock LLM Provider ────────────────────────────────
@@ -897,6 +1021,408 @@ async function main() {
       assertEquals(status.running, true, 'Should be running');
       await manager.stop();
       assertEquals(manager.getStatus().running, false, 'Should be stopped');
+    });
+  });
+
+  // ── 13b. Codex Telegram Terminal Runtime ─────────────────
+  await suite('13b. Codex Telegram Terminal Runtime', async () => {
+    await test('Codex interactive args use no-alt-screen and no approval', () => {
+      const binding = makeTestBinding({
+        runtime: 'codex',
+        workingDirectory: '/tmp/project-codex',
+      }) as any;
+      binding.model = 'gpt-5.1';
+      const args = buildCodexInteractiveArgs(binding);
+
+      assertContains(args, '--no-alt-screen', 'Should preserve terminal scrollback');
+      assertContains(args, '--dangerously-bypass-approvals-and-sandbox', 'Should use full-auto interactive mode');
+      assertContains(args, '--cd', 'Should set working directory with Codex CLI flag');
+      assertContains(args, '/tmp/project-codex', 'Should include binding cwd');
+      assertContains(args, '-m', 'Should include model flag');
+      assertContains(args, 'gpt-5.1', 'Should include requested model');
+    });
+
+    await test('Codex terminal key map covers Telegram key commands', () => {
+      const expected: Array<[CodexTerminalKey, string]> = [
+        ['enter', '\r'],
+        ['esc', '\x1b'],
+        ['tab', '\t'],
+        ['backspace', '\x7f'],
+        ['ctrlc', '\x03'],
+        ['ctrld', '\x04'],
+        ['up', '\x1b[A'],
+        ['down', '\x1b[B'],
+        ['left', '\x1b[D'],
+        ['right', '\x1b[C'],
+        ['pgup', '\x1b[5~'],
+        ['pgdn', '\x1b[6~'],
+      ];
+
+      for (const [key, sequence] of expected) {
+        assert(isCodexTerminalKey(key), `${key} should be a supported key`);
+        assertEquals(CODEX_TERMINAL_KEY_SEQUENCES[key], sequence, `${key} sequence`);
+      }
+      assert(!isCodexTerminalKey('unknown'), 'Unknown key should not be supported');
+    });
+
+    await test('Telegram Codex text uses terminal runtime instead of LLM provider', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new PreviewQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_terminal',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_terminal',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_codex_text',
+          address,
+          text: 'hello codex',
+        }));
+
+        await waitFor(() => terminalRuntime.inputs.length === 1);
+        assertEquals(llm.callCount, 0, 'Should not call codex exec provider through LLM');
+        assertEquals(terminalRuntime.inputs[0].text, 'hello codex', 'Should send prompt to terminal runtime');
+        await waitFor(() => adapter.previewUpdates.some(update => update.text.includes('Codex received')));
+        assert(
+          adapter.previewUpdates.some(update => update.text.includes('Codex received')),
+          'Should update Telegram preview with transcript text',
+        );
+        assertEquals(adapter.finalizedPreviews.length, 0, 'Codex terminal preview should remain editable');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram Codex consecutive messages reuse one terminal session', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new PreviewQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_reuse',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_reuse',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_reuse_1', address, text: 'first' }));
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_reuse_2', address, text: 'second' }));
+
+        await waitFor(() => terminalRuntime.inputs.length === 2);
+        assertEquals(terminalRuntime.inputs[0].bindingId, binding.id, 'First input should use binding id');
+        assertEquals(terminalRuntime.inputs[1].bindingId, binding.id, 'Second input should use same binding id');
+        assertEquals(terminalRuntime.inputs[1].text, 'second', 'Should send second message to same session');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram Codex keeps one editable preview across messages', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new PreviewQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_persistent_preview',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_persistent_preview',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_preview_1', address, text: 'first' }));
+        await waitFor(() => adapter.previewUpdates.some(update => update.text.includes('first')));
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_preview_2', address, text: 'second' }));
+        await waitFor(() => adapter.previewUpdates.some(update => update.text.includes('second')));
+
+        const draftIds = new Set(adapter.previewUpdates.map(update => update.draftId));
+        assertEquals(draftIds.size, 1, 'Should reuse one preview draft for the terminal session');
+        assertEquals(adapter.finalizedPreviews.length, 0, 'Should not finalize terminal preview after each prompt');
+        assertEquals(adapter.endedPreviews.length, 0, 'Should not end preview while terminal binding is active');
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_preview_reset', address, text: '/reset' }));
+        await waitFor(() => adapter.endedPreviews.length === 1);
+        assertEquals(adapter.endedPreviews[0], adapter.previewUpdates[0].draftId, 'Reset should end the persistent preview');
+        assert(!terminalRuntime.hasSession(binding.id), 'Reset should stop the terminal session');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram Codex slash escaping sends Codex slash command', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new PreviewQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_slash',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_slash',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_model', address, text: '//model' }));
+        await waitFor(() => terminalRuntime.inputs.length === 1);
+        assertEquals(terminalRuntime.inputs[0].text, '/model', 'Should remove one slash for Codex command');
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_unknown', address, text: '/model' }));
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Unknown command: /model')));
+        assertEquals(terminalRuntime.inputs.length, 1, 'Unescaped unknown slash command should not reach Codex');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('/screen returns current Codex terminal screen snapshot', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_screen',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_screen',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_screen_seed', address, text: 'look around' }));
+        await waitFor(() => terminalRuntime.inputs.length === 1);
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_screen_cmd', address, text: '/screen' }));
+
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Codex screen snapshot')));
+        const screenMessage = adapter.sentMessages.find(message => message.text.includes('Codex screen snapshot'));
+        assert(screenMessage?.text.includes('look around') || false, 'Should include current terminal screen');
+        assertEquals(screenMessage?.parseMode, 'plain', 'Screen should be sent as plain monospace-safe text');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram Codex key commands send mapped terminal keys', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_keys',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_keys',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_key_seed', address, text: 'seed' }));
+        await waitFor(() => terminalRuntime.inputs.length === 1);
+
+        const keyCommands: CodexTerminalKey[] = [
+          'enter',
+          'esc',
+          'tab',
+          'backspace',
+          'ctrlc',
+          'ctrld',
+          'up',
+          'down',
+          'left',
+          'right',
+          'pgup',
+          'pgdn',
+        ];
+        for (const key of keyCommands) {
+          adapter.push(makeInboundMessage({ messageId: `tg_codex_key_${key}`, address, text: `/${key}` }));
+        }
+
+        await waitFor(() => terminalRuntime.keys.length === keyCommands.length);
+        assertEquals(
+          terminalRuntime.keys.map(item => item.key).join(','),
+          keyCommands.join(','),
+          'Should send all key commands to terminal runtime',
+        );
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('/stop sends Ctrl+C and /reset clears Codex terminal session', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_stop_reset',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_stop_reset',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_stop_seed', address, text: 'seed' }));
+        await waitFor(() => terminalRuntime.inputs.length === 1);
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_stop', address, text: '/stop' }));
+        await waitFor(() => terminalRuntime.keys.some(item => item.key === 'ctrlc'));
+        assert(terminalRuntime.hasSession(binding.id), 'Stop should keep terminal session alive');
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_reset', address, text: '/reset' }));
+        await waitFor(() => terminalRuntime.stoppedSessions.includes(binding.id));
+        assert(!terminalRuntime.hasSession(binding.id), 'Reset should remove terminal session');
+        assertEquals(router.resolve(address as any), undefined, 'Reset should deactivate binding');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Codex terminal screen command truncates long Telegram output', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_long_screen',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_long_screen',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+      (terminalRuntime as any).sessions.add(binding.id);
+      (terminalRuntime as any).screens.set(binding.id, 'x'.repeat(5000));
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_long_screen_cmd', address, text: '/screen' }));
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('screen truncated')));
+        const screenMessage = adapter.sentMessages.find(message => message.text.includes('screen truncated'));
+        assert((screenMessage?.text.length || 0) <= 4096, 'Screen snapshot should fit Telegram limit');
+      } finally {
+        await manager.stop();
+      }
     });
   });
 
@@ -1461,6 +1987,98 @@ async function main() {
 
         await waitFor(() => adapter.patchedCards.some(card => card.card.text.includes('Permission Resolved')));
         await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Telegram permission granted')));
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Preview finalizes errors in place instead of leaving skeleton', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      llm.responseConfig = { error: 'Claude request failed' };
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new PreviewQueueAdapter();
+      const address = {
+        channelType: 'feishu',
+        channelInstanceId: 'default',
+        chatId: 'preview_error',
+        userId: 'user_preview',
+      };
+      router.createBinding({
+        channelType: 'feishu',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_preview_error',
+        workingDirectory: '/tmp',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'preview_error_msg',
+          address,
+          text: 'please create a snake game',
+        }));
+
+        await waitFor(() => adapter.finalizedPreviews.length === 1);
+        assert(
+          adapter.finalizedPreviews[0].text.includes('Claude request failed'),
+          'Should write error text into the preview',
+        );
+        assertEquals(adapter.sentMessages.length, 0, 'Should not send a separate error when preview exists');
+        assertEquals(adapter.endedPreviews.length, 1, 'Should clean up preview state');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Preview finalizes empty successful responses in place', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      llm.responseConfig = {};
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new PreviewQueueAdapter();
+      const address = {
+        channelType: 'feishu',
+        channelInstanceId: 'default',
+        chatId: 'preview_empty',
+        userId: 'user_preview',
+      };
+      router.createBinding({
+        channelType: 'feishu',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_preview_empty',
+        workingDirectory: '/tmp',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'preview_empty_msg',
+          address,
+          text: 'hello',
+        }));
+
+        await waitFor(() => adapter.finalizedPreviews.length === 1);
+        assertEquals(
+          adapter.finalizedPreviews[0].text,
+          'No response text was returned.',
+          'Should replace the preview with an explicit empty response message',
+        );
+        assertEquals(adapter.sentMessages.length, 0, 'Should not send a separate empty-response message');
       } finally {
         await manager.stop();
       }

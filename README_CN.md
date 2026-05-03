@@ -89,6 +89,9 @@ npm run start:im
 
 - Telegram 可在 Web 设置中初始化：打开 Settings → Telegram，填入 BotFather 生成的 Bot Token，并可选设置默认 tmux 窗口，然后重启 `agentmobile-im`
 - 手动配置 Telegram 时仍使用 `TELEGRAM_BOT_TOKEN`
+- Telegram 卡片使用原生 inline buttons 和可编辑消息；设置 `TELEGRAM_SHOW_TOOL_CALL_CARDS=true` 可显示 tool / activity cards
+- Telegram 中 `/new:codex` 创建的 Codex 会话会绑定一个长期运行的交互式 Codex 终端。用 `/screen` 查看原始终端快照，用 `/ctrlc`、`/up` 等按键命令控制终端，用 `//model` 向 Codex 发送 `/model` 这类 slash 命令。
+- `agentmobile-im` 使用 Telegram polling，启动时会清理旧 webhook；`server.js` 里的 Telegram webhook 仅保留为 legacy 入口，不再作为正式 IM bridge 路径。
 - 飞书 / Lark 可在 Web 设置中初始化：打开 Settings → Feishu，生成二维码后用飞书 / Lark 扫码认证，系统会把 `CTI_FEISHU_APP_ID`、`CTI_FEISHU_APP_SECRET` 写入 `.env` 并开启 IM bridge
 - 手动配置飞书 / Lark 时仍使用 `CTI_FEISHU_APP_ID` 和 `CTI_FEISHU_APP_SECRET`
 - 飞书消息事件走长连接；卡片按钮需要把 `/api/webhooks/feishu/card-action` 配到 `CTI_FEISHU_CALLBACK_PORT` 对外入口
@@ -254,7 +257,7 @@ agentmobile 支持 **Claude Code** 和 **OpenAI Codex CLI** 作为并行的 AI �
 | | Claude Code ⚡ | Codex CLI 🔷 |
 |---|---|---|
 | **安装** | `npm install -g @anthropic-ai/claude-code` | `npm install -g @openai/codex` |
-| **交互模式** | `claude --dangerously-skip-permissions` | `codex --yolo` |
+| **交互模式** | `claude --dangerously-skip-permissions` | `codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox` |
 | **异步任务** | `claude -p <prompt>` | `codex exec <prompt> --yolo --json` |
 | **Profile** | `data/configs/*.json`（无 `agent_type` 或 `claude`） | `data/configs/*.json`（`"agent_type": "codex"`） |
 
