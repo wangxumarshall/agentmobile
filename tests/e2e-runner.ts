@@ -2070,6 +2070,54 @@ async function main() {
       }
     });
 
+    await test('Telegram new-session callback without instance routes following message', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      llm.responseConfig = { text: 'Plan for snake battle' };
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        chatId: 'tg_new_callback_no_instance',
+        userId: 'tg_user',
+      };
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'callback_new_no_instance',
+          callbackMessageId: '46',
+          callbackData: 'new-session:codex:plan',
+          address,
+          text: 'Create New Session',
+        }));
+
+        await waitFor(() => router.resolve(address) !== undefined);
+        const binding = router.resolve(address);
+        assertEquals(binding?.channelInstanceId, 'default', 'Callback-created Telegram binding should use default instance');
+        assertEquals(binding?.runtime, 'codex', 'Should create Codex binding');
+        assertEquals(binding?.mode, 'plan', 'Should preserve requested plan mode');
+
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_after_callback_no_instance',
+          address,
+          text: '贪吃蛇大作战部队',
+        }));
+
+        await waitFor(() => store.getActivePlanWorkflowByBinding(binding!.id)?.status === 'awaiting_decision');
+        assertEquals(llm.lastBinding?.id, binding?.id, 'Following message should route to created binding');
+        assert(llm.lastMessages.some(message => message.content === '贪吃蛇大作战部队'), 'Should send follow-up text into plan workflow');
+        assert(!adapter.sentMessages.some(message => message.text.includes('No active session')), 'Should not show command center after callback-created session');
+      } finally {
+        await manager.stop();
+      }
+    });
+
     await test('/sessions command shows Telegram resume card', async () => {
       const store = new MockStore();
       const router = new ChannelRouter(store as any);

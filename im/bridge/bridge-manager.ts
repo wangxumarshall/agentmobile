@@ -14,6 +14,7 @@ import type {
   ClaudePermissionMode,
   PlanWorkflow,
 } from './types.js';
+import { resolveChannelInstanceId } from './types.js';
 import type { ActivityEventInfo } from './context.js';
 import type { LLMProvider } from './context.js';
 import { ChannelRouter } from './channel-router.js';
@@ -1345,7 +1346,7 @@ Updated: \`${binding.updatedAt}\``;
     const mode = this.normalizeMode(parts[2]);
     const binding = this.router.createBinding({
       channelType: message.address.channelType,
-      channelInstanceId: message.address.channelInstanceId || adapter.profileId || 'default',
+      channelInstanceId: resolveChannelInstanceId(message.address),
       chatId: message.address.chatId,
       agentSessionId: `session_${Date.now()}`,
       workingDirectory: process.env.CTI_DEFAULT_WORKDIR || process.cwd(),
@@ -1902,15 +1903,16 @@ ${workflow.planText}`;
     address: ChannelAddress,
     patchMessageId?: string,
   ): Promise<void> {
+    const channelInstanceId = resolveChannelInstanceId(address);
     const sessions = this.store.listBindings()
       .sort((a, b) => {
         const sameChat = Number(
           a.channelType === address.channelType &&
-          a.channelInstanceId === (address.channelInstanceId || adapter.profileId || 'default') &&
+          a.channelInstanceId === channelInstanceId &&
           a.chatId === address.chatId,
         ) - Number(
           b.channelType === address.channelType &&
-          b.channelInstanceId === (address.channelInstanceId || adapter.profileId || 'default') &&
+          b.channelInstanceId === channelInstanceId &&
           b.chatId === address.chatId,
         );
         if (sameChat !== 0) return -sameChat;
