@@ -108,8 +108,12 @@ export function buildResumeCard(
     text,
     inlineButtons: sessions.slice(0, 5).map((session, index) => [
       {
-        text: `${index + 1}. ${truncateText(session.title, 42)}`,
+        text: `${index + 1}. ${truncateText(session.title, 32)}`,
         callbackData: `resume:pick:${session.runtime}:${session.id}`,
+      },
+      {
+        text: 'Delete',
+        callbackData: `session-delete:${session.id}`,
       },
     ]),
   };
@@ -149,6 +153,25 @@ export function buildResetConfirmationCard(
     inlineButtons: [
       [
         { text: `New ${cap.label} Session`, callbackData: `new-session:${runtime}:code` },
+      ],
+    ],
+  };
+}
+
+export function buildSessionDeletedCard(
+  binding: ChannelBinding,
+): TelegramCard {
+  const cap = getRuntimeCapabilities(binding.runtime);
+  return {
+    parseMode: 'HTML',
+    text: `<b>🗑️ Session Deleted</b>\n\nDeleted ${escapeHtml(cap.symbol)} ${escapeHtml(cap.label)} session ${inlineCode(binding.id)}.\n\nOther sessions were not changed.`,
+    inlineButtons: [
+      [
+        { text: 'Command Center', callbackData: 'cmd:help' },
+      ],
+      [
+        { text: 'New Session', callbackData: 'cmd:new' },
+        { text: 'Resume', callbackData: 'cmd:resume' },
       ],
     ],
   };

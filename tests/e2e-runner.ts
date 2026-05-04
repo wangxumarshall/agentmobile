@@ -261,7 +261,13 @@ class FakeCodexTerminalRuntime implements CodexTerminalRuntime {
   sendKey(binding: any, key: CodexTerminalKey, callbacks: CodexTerminalCallbacks = {}): any | null {
     if (!this.sessions.has(binding.id)) return null;
     this.keys.push({ bindingId: binding.id, key });
-    callbacks.onTranscriptUpdate?.(this.getTranscriptSnapshot(binding.id));
+    const previous = this.getTranscriptSnapshot(binding.id);
+    const transcript = previous
+      ? `${previous}\nKey pressed: ${key}`
+      : `Key pressed: ${key}`;
+    this.transcripts.set(binding.id, transcript);
+    this.screens.set(binding.id, `codex-screen\n${transcript}`);
+    callbacks.onTranscriptUpdate?.(transcript);
     return { id: binding.terminalSessionId || `fake_terminal_${binding.id}` };
   }
 
@@ -594,6 +600,25 @@ async function main() {
       assert(finalized.ok, 'Should finalize preview');
       assertEquals(client.sentCards.length, 1, 'Should send only one preview message');
       assert(client.patchedCards.length >= 1, 'Should patch preview message');
+    });
+
+    await test('Telegram preview service keeps active preview until ended', async () => {
+      const client = new MockTelegramCardClient();
+      const service = new TelegramPreviewService(client);
+      const address = makeChannelAddress({ channelType: 'telegram' });
+
+      await service.primePreview(address, 456);
+      await service.sendPreview(address, 'First substantial preview update for Telegram', 456);
+      await service.finalizePreview(address, 'Interim final text');
+      const followUpText = `${'x'.repeat(120)} second substantial preview update after finalize`;
+      await service.sendPreview(address, followUpText, 456);
+
+      assertEquals(client.deletedCards.length, 0, 'Finalize should not end the active preview');
+      assert(client.patchedCards.some(card => card.card.text.includes('second substantial preview update')), 'Should patch after finalize');
+
+      service.endPreview(address, 456);
+      const afterEnd = await service.finalizePreview(address, 'After end');
+      assertEquals(afterEnd.ok, false, 'End should close active preview state');
     });
 
     await test('Telegram activity service creates then patches activity card', async () => {
@@ -1118,7 +1143,11 @@ async function main() {
         permissionBroker: new PermissionBroker(),
         codexTerminalRuntime: terminalRuntime,
       });
-      const adapter = new PreviewQueueAdapter();
+      const adapter = new PreviewQueueAdapter() as any;
+      adapter.channelType = 'telegram';
+      adapter.adapterId = 'telegram';
+      adapter.profileId = 'default';
+      adapter.label = 'Telegram';
       const address = {
         channelType: 'telegram',
         channelInstanceId: 'default',
@@ -1166,7 +1195,11 @@ async function main() {
         permissionBroker: new PermissionBroker(),
         codexTerminalRuntime: terminalRuntime,
       });
-      const adapter = new PreviewQueueAdapter();
+      const adapter = new PreviewQueueAdapter() as any;
+      adapter.channelType = 'telegram';
+      adapter.adapterId = 'telegram';
+      adapter.profileId = 'default';
+      adapter.label = 'Telegram';
       const address = {
         channelType: 'telegram',
         channelInstanceId: 'default',
@@ -1244,6 +1277,85 @@ async function main() {
       }
     });
 
+    await test('/delete removes active Codex binding, history, preview, and workflow', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new PreviewQueueAdapter() as any;
+      adapter.channelType = 'telegram';
+      adapter.adapterId = 'telegram';
+      adapter.profileId = 'default';
+      adapter.label = 'Telegram';
+      adapter.patchedCards = [] as any[];
+      const originalPatchCard = adapter.patchCard?.bind(adapter);
+      adapter.patchCard = async (address: any, messageId: string, card: any) => {
+        adapter.patchedCards.push({ messageId, card });
+        if (originalPatchCard) return originalPatchCard(address, messageId, card);
+        return { ok: true, messageId };
+      };
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_delete',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_delete',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+      store.saveSession({
+        id: binding.id,
+        bindingId: binding.id,
+        messages: [{ role: 'user', content: 'old prompt', timestamp: Date.now() }],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      store.savePlanWorkflow({
+        id: 'pw_delete_codex',
+        bindingId: binding.id,
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        userId: address.userId,
+        promptText: 'old plan',
+        planText: '',
+        status: 'awaiting_decision',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_delete_seed', address, text: 'seed delete' }));
+        await waitFor(() => adapter.previewUpdates.some((update: any) => update.text.includes('seed delete')));
+        const previewDraftId = adapter.previewUpdates[0].draftId;
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_delete_command', address, text: '/delete' }));
+        await waitFor(() => adapter.sentMessages.some((message: any) => message.text.includes('Session Deleted')));
+
+        assertEquals(store.getBinding(binding.id), undefined, 'Binding should be removed');
+        assertEquals(store.getSession(binding.id), undefined, 'Local conversation history should be removed');
+        assertEquals(store.getPlanWorkflow('pw_delete_codex')?.status, 'cancelled', 'Active plan workflow should be cancelled');
+        assert(terminalRuntime.stoppedSessions.includes(binding.id), 'Delete should stop Codex terminal runtime');
+        assert(adapter.endedPreviews.includes(previewDraftId), 'Delete should end persistent terminal preview');
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_delete_after', address, text: 'hello after delete' }));
+        await waitFor(() => adapter.sentMessages.some((message: any) => message.text.includes('Command Center')));
+      } finally {
+        await manager.stop();
+      }
+    });
+
     await test('Telegram Codex slash escaping sends Codex slash command', async () => {
       const store = new MockStore();
       const router = new ChannelRouter(store as any);
@@ -1284,7 +1396,7 @@ async function main() {
       }
     });
 
-    await test('/screen returns current Codex terminal screen snapshot', async () => {
+    await test('/screen returns latest Codex terminal live state', async () => {
       const store = new MockStore();
       const router = new ChannelRouter(store as any);
       const terminalRuntime = new FakeCodexTerminalRuntime();
@@ -1320,6 +1432,11 @@ async function main() {
         const screenMessage = adapter.sentMessages.find(message => message.text.includes('Codex screen snapshot'));
         assert(screenMessage?.text.includes('look around') || false, 'Should include current terminal screen');
         assertEquals(screenMessage?.parseMode, 'plain', 'Screen should be sent as plain monospace-safe text');
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_screen_key', address, text: '/enter' }));
+        await waitFor(() => terminalRuntime.keys.some(item => item.key === 'enter'));
+        adapter.push(makeInboundMessage({ messageId: 'tg_codex_screen_after_key', address, text: '/screen' }));
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Key pressed: enter')));
       } finally {
         await manager.stop();
       }
@@ -1334,7 +1451,7 @@ async function main() {
         permissionBroker: new PermissionBroker(),
         codexTerminalRuntime: terminalRuntime,
       });
-      const adapter = new TelegramQueueAdapter();
+      const adapter = new PreviewQueueAdapter();
       const address = {
         channelType: 'telegram',
         channelInstanceId: 'default',
@@ -1380,6 +1497,10 @@ async function main() {
           keyCommands.join(','),
           'Should send all key commands to terminal runtime',
         );
+        await waitFor(() => adapter.previewUpdates.some(update => update.text.includes('Key pressed: pgdn')));
+        const draftIds = new Set(adapter.previewUpdates.map(update => update.draftId));
+        assertEquals(draftIds.size, 1, 'Key commands should update the same persistent preview');
+        assertEquals(adapter.sentMessages.length, 0, 'Key commands should not send separate acknowledgement messages');
       } finally {
         await manager.stop();
       }
@@ -1983,7 +2104,79 @@ async function main() {
         await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Resume Session')));
         const card = adapter.sentMessages.find(message => message.text.includes('Resume Session'));
         assert(card?.inlineButtons?.length === 1, 'Should include one session button');
+        const callbacks = (card?.inlineButtons || []).flat().map(button => button.callbackData);
+        assert(callbacks.some(callback => callback.startsWith('resume:pick:')), 'Should include resume callback');
+        assert(callbacks.some(callback => callback.startsWith('session-delete:')), 'Should include delete callback');
         assert(!card?.text.includes('Unknown command'), 'Should not render unknown command');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram session delete callback deletes only selected binding', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_session_delete_callback',
+        userId: 'tg_user',
+      };
+      const selected = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_delete_selected',
+        workingDirectory: '/tmp/selected',
+        runtime: 'codex',
+      });
+      const other = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_session_delete_other',
+        agentSessionId: 'session_delete_other',
+        workingDirectory: '/tmp/other',
+        runtime: 'claude',
+      });
+      store.saveSession({
+        id: selected.id,
+        bindingId: selected.id,
+        messages: [{ role: 'user', content: 'selected history', timestamp: Date.now() }],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      (terminalRuntime as any).sessions.add(selected.id);
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_session_delete_callback',
+          callbackMessageId: '501',
+          callbackData: `session-delete:${selected.id}`,
+          address,
+          text: 'Resume Session',
+        }));
+
+        await waitFor(() => adapter.patchedCards.some(card => card.messageId === '501' && card.card.text.includes('Session Deleted')));
+        assertEquals(store.getBinding(selected.id), undefined, 'Selected binding should be deleted');
+        assertEquals(store.getSession(selected.id), undefined, 'Selected history should be deleted');
+        assert(store.getBinding(other.id) !== undefined, 'Other binding should remain');
+        assert(terminalRuntime.stoppedSessions.includes(selected.id), 'Selected terminal runtime should be stopped');
+
+        adapter.push(makeInboundMessage({ messageId: 'tg_session_delete_sessions', address, text: '/sessions' }));
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Resume Session')));
+        const resumeCard = adapter.sentMessages.find(message => message.text.includes('Resume Session'));
+        const callbacks = (resumeCard?.inlineButtons || []).flat().map(button => button.callbackData);
+        assert(!callbacks.some(callback => callback.includes(selected.id)), 'Deleted binding should disappear from later sessions results');
+        assert(callbacks.some(callback => callback.includes(other.id)), 'Other session should remain listed');
       } finally {
         await manager.stop();
       }

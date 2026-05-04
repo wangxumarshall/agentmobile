@@ -57,6 +57,26 @@ export class MockStore {
     this._sessions.delete(id);
   }
 
+  deleteSessionState(bindingId: string): void {
+    this._bindings.delete(bindingId);
+    this._sessions.delete(bindingId);
+    const now = new Date().toISOString();
+    for (const workflow of this._planWorkflows.values()) {
+      if (
+        workflow.bindingId === bindingId &&
+        (
+          workflow.status === 'drafting' ||
+          workflow.status === 'awaiting_decision' ||
+          workflow.status === 'revising' ||
+          workflow.status === 'executing'
+        )
+      ) {
+        workflow.status = 'cancelled';
+        workflow.updatedAt = now;
+      }
+    }
+  }
+
   // Plan workflows
   getPlanWorkflow(id: string): PlanWorkflow | undefined {
     return this._planWorkflows.get(id);

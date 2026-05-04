@@ -140,6 +140,29 @@ export class JsonFileStore {
     this.save();
   }
 
+  deleteSessionState(bindingId: string): void {
+    delete this.state.bindings[bindingId];
+    delete this.state.sessions[bindingId];
+    const now = new Date().toISOString();
+
+    for (const workflow of Object.values(this.state.planWorkflows)) {
+      if (
+        workflow.bindingId === bindingId &&
+        (
+          workflow.status === 'drafting' ||
+          workflow.status === 'awaiting_decision' ||
+          workflow.status === 'revising' ||
+          workflow.status === 'executing'
+        )
+      ) {
+        workflow.status = 'cancelled';
+        workflow.updatedAt = now;
+      }
+    }
+
+    this.save();
+  }
+
   // ── Plan Workflows ───────────────────────────────────────
 
   getPlanWorkflow(id: string): PlanWorkflow | undefined {

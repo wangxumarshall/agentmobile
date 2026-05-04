@@ -22,6 +22,7 @@ import { PermissionBroker } from './permission-broker.js';
 import { JsonFileStore } from '../infra/store.js';
 import {
   CodexTerminalSessionManager,
+  type CodexTerminalCallbacks,
   type CodexTerminalKey,
   type CodexTerminalRuntime,
   isCodexTerminalKey,
@@ -44,6 +45,7 @@ import {
   buildPlanRevisionRequestedCard,
   buildResetConfirmationCard,
   buildResumeCard,
+  buildSessionDeletedCard,
   buildSessionCreatedCard,
   buildSessionResumedCard,
 } from '../telegram/cards/index.js';
@@ -78,6 +80,16 @@ interface PreviewRunResult {
   text: string;
   sdkSessionId?: string;
   previewMessageId?: string;
+}
+
+interface TerminalLiveProjection {
+  callbacks: CodexTerminalCallbacks;
+  primePreview: () => Promise<void>;
+  flushPreviewUpdates: () => Promise<void>;
+  sendPreviewText: (text: string) => Promise<boolean>;
+  getLatestTranscript: () => string;
+  canPreview: boolean;
+  draftId: number | null;
 }
 
 export class BridgeManager {
@@ -359,6 +371,53 @@ export class BridgeManager {
     binding: ChannelBinding,
     text: string,
   ): Promise<void> {
+    const projection = this.createTerminalLiveProjection(adapter, message, binding);
+
+    try {
+      await projection.primePreview();
+      const previousTranscript = projection.getLatestTranscript();
+      this.codexTerminalRuntime.sendInput(binding, text, projection.callbacks);
+      binding.terminalSessionId ||= `codex_terminal_${binding.id}`;
+      binding.updatedAt = new Date().toISOString();
+      this.store.saveBinding(binding);
+
+      if (projection.getLatestTranscript() === previousTranscript) {
+        await this.waitForTerminalOutput(binding.id, projection.getLatestTranscript, previousTranscript);
+      }
+      await projection.flushPreviewUpdates();
+
+      const finalText = this.renderCodexTranscript(projection.getLatestTranscript()) || 'Codex terminal session started.';
+      if (projection.canPreview && projection.draftId !== null) {
+        await projection.sendPreviewText(finalText);
+      } else {
+        await adapter.send({
+          address: message.address,
+          text: finalText,
+          parseMode: 'plain',
+        });
+      }
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      error('bridge-manager', `Codex terminal input failed: ${err.message}`);
+      if (projection.canPreview && projection.draftId !== null) {
+        await projection.flushPreviewUpdates();
+        const finalText = `❌ ${err.message}`;
+        await projection.sendPreviewText(finalText);
+        return;
+      }
+      await adapter.send({
+        address: message.address,
+        text: `❌ ${err.message}`,
+        parseMode: 'plain',
+      });
+    }
+  }
+
+  private createTerminalLiveProjection(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    binding: ChannelBinding,
+  ): TerminalLiveProjection {
     const previewCaps = adapter.getPreviewCapabilities?.(message.address) || null;
     const canPreview = Boolean(
       previewCaps?.supported &&
@@ -373,81 +432,50 @@ export class BridgeManager {
     let previewActive = Boolean(terminalPreview?.active);
     let latestTranscript = this.codexTerminalRuntime.getTranscriptSnapshot(binding.id);
 
-    if (canPreview && draftId !== null && !previewActive) {
-      try {
-        const primed = await adapter.primePreview!(message.address, draftId);
-        previewActive = primed === 'sent' || primed === 'skip';
-        if (terminalPreview) terminalPreview.active = previewActive;
-      } catch (e) {
-        debug('bridge-manager', `Codex terminal preview prime failed: ${e}`);
+    const sendPreviewText = async (projected: string): Promise<boolean> => {
+      if (!canPreview || draftId === null || !adapter.sendPreview) return false;
+      const outcome = await adapter.sendPreview(message.address, projected, draftId);
+      if (outcome === 'sent') {
+        previewActive = true;
+        if (terminalPreview) terminalPreview.active = true;
       }
-    }
+      return outcome === 'sent' || outcome === 'skip';
+    };
 
-    const onTranscriptUpdate = canPreview && draftId !== null
-      ? (transcript: string) => {
-          latestTranscript = transcript;
-          const projected = this.renderCodexTranscript(transcript);
-          previewUpdates = previewUpdates
-            .then(async () => {
-              const outcome = await adapter.sendPreview!(message.address, projected, draftId);
-              if (outcome === 'sent') {
-                previewActive = true;
-                if (terminalPreview) terminalPreview.active = true;
-              }
-            })
-            .catch(e => debug('bridge-manager', `Codex terminal preview update failed: ${e}`));
-        }
-      : (transcript: string) => {
-          latestTranscript = transcript;
-        };
+    const onTranscriptUpdate = (transcript: string) => {
+      latestTranscript = transcript;
+      if (!canPreview || draftId === null) return;
+      const projected = this.renderCodexTranscript(transcript);
+      previewUpdates = previewUpdates
+        .then(async () => {
+          await sendPreviewText(projected);
+        })
+        .catch(e => debug('bridge-manager', `Codex terminal preview update failed: ${e}`));
+    };
 
-    const onActivityEvent = this.buildActivityProjector(adapter, message);
-
-    try {
-      const previousTranscript = latestTranscript;
-      this.codexTerminalRuntime.sendInput(binding, text, {
+    return {
+      callbacks: {
         onTranscriptUpdate,
-        onActivityEvent,
-      });
-      binding.terminalSessionId ||= `codex_terminal_${binding.id}`;
-      binding.updatedAt = new Date().toISOString();
-      this.store.saveBinding(binding);
-
-      if (latestTranscript === previousTranscript) {
-        await this.waitForTerminalOutput(binding.id, () => latestTranscript, previousTranscript);
-      }
-      await previewUpdates;
-
-      const finalText = this.renderCodexTranscript(latestTranscript) || 'Codex terminal session started.';
-      if (canPreview && draftId !== null) {
-        if (!previewActive) {
-          const outcome = await adapter.sendPreview!(message.address, finalText, draftId);
-          previewActive = outcome === 'sent';
+        onActivityEvent: this.buildActivityProjector(adapter, message),
+      },
+      primePreview: async () => {
+        if (!canPreview || draftId === null || previewActive || !adapter.primePreview) return;
+        try {
+          const primed = await adapter.primePreview(message.address, draftId);
+          previewActive = primed === 'sent' || primed === 'skip';
           if (terminalPreview) terminalPreview.active = previewActive;
+        } catch (e) {
+          debug('bridge-manager', `Codex terminal preview prime failed: ${e}`);
         }
-      } else {
-        await adapter.send({
-          address: message.address,
-          text: finalText,
-          parseMode: 'plain',
-        });
-      }
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      error('bridge-manager', `Codex terminal input failed: ${err.message}`);
-      if (canPreview && draftId !== null) {
+      },
+      flushPreviewUpdates: async () => {
         await previewUpdates;
-        const finalText = `❌ ${err.message}`;
-        const outcome = await adapter.sendPreview!(message.address, finalText, draftId);
-        if (outcome === 'sent' && terminalPreview) terminalPreview.active = true;
-        return;
-      }
-      await adapter.send({
-        address: message.address,
-        text: `❌ ${err.message}`,
-        parseMode: 'plain',
-      });
-    }
+      },
+      sendPreviewText,
+      getLatestTranscript: () => latestTranscript,
+      canPreview,
+      draftId,
+    };
   }
 
   private buildActivityProjector(
@@ -688,9 +716,10 @@ export class BridgeManager {
       return;
     }
 
-    const session = this.codexTerminalRuntime.sendKey(binding, name as CodexTerminalKey, {
-      onActivityEvent: this.buildActivityProjector(adapter, message),
-    });
+    const projection = this.createTerminalLiveProjection(adapter, message, binding);
+    await projection.primePreview();
+    const previousTranscript = projection.getLatestTranscript();
+    const session = this.codexTerminalRuntime.sendKey(binding, name as CodexTerminalKey, projection.callbacks);
     if (!session) {
       await adapter.send({
         address: message.address,
@@ -700,13 +729,17 @@ export class BridgeManager {
       return;
     }
 
+    if (projection.getLatestTranscript() === previousTranscript) {
+      await this.waitForTerminalOutput(binding.id, projection.getLatestTranscript, previousTranscript);
+    }
+    await projection.flushPreviewUpdates();
+    const latestText = this.renderCodexTranscript(projection.getLatestTranscript());
+    if (latestText && projection.canPreview && projection.draftId !== null) {
+      await projection.sendPreviewText(latestText);
+    }
+
     binding.updatedAt = new Date().toISOString();
     this.store.saveBinding(binding);
-    await adapter.send({
-      address: message.address,
-      text: `⌨️ Sent /${name}`,
-      parseMode: 'plain',
-    });
   }
 
   private async sendCodexScreenSnapshot(
@@ -725,7 +758,8 @@ export class BridgeManager {
       return;
     }
 
-    const snapshot = this.codexTerminalRuntime.getScreenSnapshot(binding.id);
+    const snapshot = this.codexTerminalRuntime.getTranscriptSnapshot(binding.id) ||
+      this.codexTerminalRuntime.getScreenSnapshot(binding.id);
     const card: CardMessage = {
       text: this.renderScreenSnapshot(snapshot),
       parseMode: 'plain',
@@ -805,6 +839,37 @@ export class BridgeManager {
     this.store.savePlanWorkflow(workflow);
   }
 
+  private async deleteSessionBinding(
+    adapter: BaseChannelAdapter,
+    address: ChannelAddress,
+    binding: ChannelBinding,
+    patchMessageId?: string,
+  ): Promise<void> {
+    this.codexTerminalRuntime.stopSession(binding.id);
+    this.endTerminalPreview(adapter, binding.id);
+
+    const task = this.state.activeTasks.get(binding.id);
+    if (task) {
+      task.abort();
+      this.state.activeTasks.delete(binding.id);
+    }
+
+    this.cancelActivePlanWorkflow(binding.id);
+    this.store.deleteSessionState(binding.id);
+
+    if (address.channelType === 'telegram') {
+      const card = buildSessionDeletedCard(binding);
+      await this.sendOrPatchTelegramCard(adapter, address, card, patchMessageId);
+      return;
+    }
+
+    await adapter.send({
+      address,
+      text: `🗑️ Session deleted: \`${binding.id}\``,
+      parseMode: 'Markdown',
+    });
+  }
+
   private async handleCommand(
     adapter: BaseChannelAdapter,
     message: InboundMessage,
@@ -881,6 +946,16 @@ export class BridgeManager {
       case 'reset': {
         if (this.router.resolve(message.address)) {
           await this.resetActiveBinding(adapter, message);
+        } else {
+          await this.sendNoActiveSessionMessage(adapter, message.address);
+        }
+        break;
+      }
+
+      case 'delete': {
+        const binding = this.router.resolve(message.address);
+        if (binding) {
+          await this.deleteSessionBinding(adapter, message.address, binding);
         } else {
           await this.sendNoActiveSessionMessage(adapter, message.address);
         }
@@ -1093,6 +1168,7 @@ Commands:
 • \`/new:claude\` — start a Claude Code session
 • \`/new:codex\` — start a Codex session
 • \`/reset\` — reset the current session
+• \`/delete\` — delete the current IM bridge session
 • \`/stop\` — stop the active task
 • \`/screen\` — show the current Codex terminal screen
 • \`/enter\`, \`/esc\`, \`/tab\`, \`/backspace\`, \`/ctrlc\`, \`/ctrld\` — send terminal keys
@@ -1224,6 +1300,10 @@ Updated: \`${binding.updatedAt}\``;
       }
       if (callbackData.startsWith('resume:')) {
         await this.handleResumeCallback(adapter, message, callbackData);
+        return;
+      }
+      if (callbackData.startsWith('session-delete:')) {
+        await this.handleSessionDeleteCallback(adapter, message, callbackData);
         return;
       }
       if (callbackData.startsWith('claude-mode:')) {
@@ -1412,12 +1492,22 @@ Updated: \`${binding.updatedAt}\``;
       return;
     }
 
-    const session = this.codexTerminalRuntime.sendKey(binding, name as CodexTerminalKey, {
-      onActivityEvent: this.buildActivityProjector(adapter, message),
-    });
+    const projection = this.createTerminalLiveProjection(adapter, message, binding);
+    await projection.primePreview();
+    const previousTranscript = projection.getLatestTranscript();
+    const session = this.codexTerminalRuntime.sendKey(binding, name as CodexTerminalKey, projection.callbacks);
     if (!session) {
       await adapter.answerCallback(message.messageId, 'No active Codex terminal');
       return;
+    }
+
+    if (projection.getLatestTranscript() === previousTranscript) {
+      await this.waitForTerminalOutput(binding.id, projection.getLatestTranscript, previousTranscript);
+    }
+    await projection.flushPreviewUpdates();
+    const latestText = this.renderCodexTranscript(projection.getLatestTranscript());
+    if (latestText && projection.canPreview && projection.draftId !== null) {
+      await projection.sendPreviewText(latestText);
     }
 
     binding.updatedAt = new Date().toISOString();
@@ -1462,6 +1552,29 @@ Updated: \`${binding.updatedAt}\``;
     const card = buildSessionResumedCard(runtime, bindingId);
     await this.patchOrSendCard(adapter, message, card);
     await adapter.answerCallback(message.messageId, 'Session resumed');
+  }
+
+  private async handleSessionDeleteCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const bindingId = callbackData.slice('session-delete:'.length);
+    if (!bindingId) {
+      await adapter.answerCallback(message.messageId, 'Invalid delete action');
+      return;
+    }
+
+    const binding = this.store.getBinding(bindingId);
+    if (!binding) {
+      await adapter.answerCallback(message.messageId, 'Session not found');
+      const card = buildCommandCenterCard(this.router.resolve(message.address));
+      await this.patchOrSendCard(adapter, message, card);
+      return;
+    }
+
+    await this.deleteSessionBinding(adapter, message.address, binding, message.callbackMessageId);
+    await adapter.answerCallback(message.messageId, 'Session deleted');
   }
 
   private async handleClaudeModeCallback(
