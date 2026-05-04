@@ -132,6 +132,33 @@ export interface BridgeMessageMeta {
   };
 }
 
+// ── Plan Workflow ────────────────────────────────────────────
+
+export type PlanWorkflowStatus =
+  | 'drafting'
+  | 'awaiting_decision'
+  | 'revising'
+  | 'executing'
+  | 'completed'
+  | 'cancelled';
+
+export interface PlanWorkflow {
+  id: string;
+  bindingId: string;
+  channelType: ChannelType;
+  channelInstanceId: string;
+  chatId: string;
+  userId?: string;
+  promptText: string;
+  planText: string;
+  status: PlanWorkflowStatus;
+  previewMessageId?: string;
+  returnMode?: ChannelBinding['mode'];
+  returnClaudePermissionMode?: ClaudePermissionMode;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type ClaudePermissionMode = 'plan' | 'acceptEdits' | 'default';
 
 /** Result of sending a message via an adapter */

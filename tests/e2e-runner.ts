@@ -52,6 +52,9 @@ import {
   buildNewSessionCard as buildTelegramNewSessionCard,
   buildPermissionCard as buildTelegramPermissionCard,
   buildClaudeModeCard as buildTelegramClaudeModeCard,
+  buildCommandCenterCard as buildTelegramCommandCenterCard,
+  buildCodexControlCard as buildTelegramCodexControlCard,
+  buildModeSelectionCard as buildTelegramModeSelectionCard,
 } from '../im/telegram/cards/index.js';
 import { PreviewService } from '../im/feishu/services/preview-service.js';
 import { ActivityService } from '../im/feishu/services/activity-service.js';
@@ -521,7 +524,47 @@ async function main() {
       const card = buildTelegramNewSessionCard();
       assert(card.text.includes('Create New Session'), 'Should show new session title');
       assertEquals(card.inlineButtons?.[0]?.[0]?.callbackData, 'new-session:claude:code');
-      assertEquals(card.inlineButtons?.[0]?.[1]?.callbackData, 'new-session:codex:code');
+      assertEquals(card.inlineButtons?.[0]?.[1]?.callbackData, 'new-session:claude:plan');
+      assertEquals(card.inlineButtons?.[1]?.[0]?.callbackData, 'new-session:codex:code');
+      assertEquals(card.inlineButtons?.[1]?.[1]?.callbackData, 'new-session:codex:plan');
+      assertEquals(card.inlineButtons?.[1]?.[2]?.callbackData, 'new-session:codex:ask');
+    });
+
+    await test('Telegram command center card exposes main actions', () => {
+      const card = buildTelegramCommandCenterCard();
+      const callbacks = (card.inlineButtons || []).flat().map(button => button.callbackData);
+      assert(card.text.includes('Command Center'), 'Should show command center title');
+      for (const callback of ['cmd:new', 'cmd:resume', 'cmd:status', 'cmd:mode', 'cmd:cwd', 'cmd:stop', 'cmd:reset', 'cmd:codex-controls']) {
+        assertContains(callbacks, callback, `Should include ${callback}`);
+      }
+    });
+
+    await test('Telegram mode card exposes runtime-specific choices', () => {
+      const claudeCard = buildTelegramModeSelectionCard(makeTestBinding({
+        id: 'binding_claude_mode_card',
+        runtime: 'claude',
+      }) as any);
+      const codexCard = buildTelegramModeSelectionCard(makeTestBinding({
+        id: 'binding_codex_mode_card',
+        runtime: 'codex',
+      }) as any);
+      const claudeCallbacks = (claudeCard.inlineButtons || []).flat().map(button => button.callbackData);
+      const codexCallbacks = (codexCard.inlineButtons || []).flat().map(button => button.callbackData);
+      assertContains(claudeCallbacks, 'mode:binding_claude_mode_card:plan', 'Claude should expose Plan');
+      assertContains(claudeCallbacks, 'claude-mode:binding_claude_mode_card:acceptEdits', 'Claude should expose Auto-Edits');
+      assertContains(claudeCallbacks, 'claude-mode:binding_claude_mode_card:default', 'Claude should expose Default');
+      assertContains(codexCallbacks, 'mode:binding_codex_mode_card:code', 'Codex should expose code');
+      assertContains(codexCallbacks, 'mode:binding_codex_mode_card:plan', 'Codex should expose plan');
+      assertContains(codexCallbacks, 'mode:binding_codex_mode_card:ask', 'Codex should expose ask');
+    });
+
+    await test('Telegram Codex control card exposes screen and terminal keys', () => {
+      const card = buildTelegramCodexControlCard();
+      const callbacks = (card.inlineButtons || []).flat().map(button => button.callbackData);
+      assertContains(callbacks, 'cmd:screen', 'Should include screen command');
+      for (const key of ['enter', 'esc', 'tab', 'backspace', 'ctrlc', 'ctrld', 'up', 'down', 'left', 'right', 'pgup', 'pgdn']) {
+        assertContains(callbacks, `terminal-key:${key}`, `Should include ${key}`);
+      }
     });
 
     await test('Telegram permission card has allow and deny actions', () => {
@@ -1798,6 +1841,114 @@ async function main() {
       }
     });
 
+    await test('Telegram /help returns command center card with buttons', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_help_command',
+          address: {
+            channelType: 'telegram',
+            channelInstanceId: 'default',
+            chatId: 'tg_help',
+            userId: 'tg_user',
+          },
+          text: '/help',
+        }));
+
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Command Center')));
+        const card = adapter.sentMessages.find(message => message.text.includes('Command Center'));
+        const callbacks = (card?.inlineButtons || []).flat().map(button => button.callbackData);
+        for (const callback of ['cmd:new', 'cmd:resume', 'cmd:status', 'cmd:mode', 'cmd:codex-controls']) {
+          assertContains(callbacks, callback, `Command center should include ${callback}`);
+        }
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram no active binding sends command center card', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_no_binding',
+          address: {
+            channelType: 'telegram',
+            channelInstanceId: 'default',
+            chatId: 'tg_no_binding',
+            userId: 'tg_user',
+          },
+          text: 'hello',
+        }));
+
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Command Center')));
+        const card = adapter.sentMessages.find(message => message.text.includes('Command Center'));
+        assert(card?.inlineButtons?.some(row => row.some(button => button.callbackData === 'cmd:new')) || false, 'Should include new session button');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram new-session callback creates requested runtime and mode', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'callback_new_codex_plan',
+          callbackMessageId: '45',
+          callbackData: 'new-session:codex:plan',
+          address: {
+            channelType: 'telegram',
+            channelInstanceId: 'default',
+            chatId: 'tg_new_codex_plan',
+            userId: 'tg_user',
+          },
+          text: 'Create New Session',
+        }));
+
+        await waitFor(() => router.resolve({
+          channelType: 'telegram',
+          channelInstanceId: 'default',
+          chatId: 'tg_new_codex_plan',
+        }) !== undefined);
+        const binding = router.resolve({
+          channelType: 'telegram',
+          channelInstanceId: 'default',
+          chatId: 'tg_new_codex_plan',
+        });
+        assertEquals(binding?.runtime, 'codex', 'Should create Codex session');
+        assertEquals(binding?.mode, 'plan', 'Should persist requested plan mode');
+        assert(adapter.patchedCards.some(card => card.card.text.includes('Mode:</b> plan')), 'Should patch mode into created card');
+      } finally {
+        await manager.stop();
+      }
+    });
+
     await test('/sessions command shows Telegram resume card', async () => {
       const store = new MockStore();
       const router = new ChannelRouter(store as any);
@@ -1922,11 +2073,387 @@ async function main() {
           text: '/mode\n\n/status',
         }));
 
-        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('Claude Permission Mode')));
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('<b>Mode</b>')));
         assert(
           adapter.sentMessages.every(message => !message.text.includes('Invalid mode')),
           'Should not treat the next line as a mode argument',
         );
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram /mode and mode callback persist binding mode', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_mode_callback',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_mode_callback',
+        workingDirectory: '/tmp/project-mode',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_mode_card',
+          address,
+          text: '/mode',
+        }));
+        await waitFor(() => adapter.sentMessages.some(message => message.text.includes('<b>Mode</b>')));
+        const modeCard = adapter.sentMessages.find(message => message.text.includes('<b>Mode</b>'));
+        const callbacks = (modeCard?.inlineButtons || []).flat().map(button => button.callbackData);
+        assertContains(callbacks, `mode:${binding.id}:plan`, 'Should include plan mode callback');
+
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_mode_plan_callback',
+          callbackMessageId: 'sent_1',
+          callbackData: `mode:${binding.id}:plan`,
+          address,
+          text: 'Mode',
+        }));
+        await waitFor(() => store.getBinding(binding.id)?.mode === 'plan');
+        assertEquals(store.getBinding(binding.id)?.mode, 'plan', 'Callback should persist binding mode');
+        assert(adapter.patchedCards.some(card => card.card.text.includes('Current mode: <code>plan</code>')), 'Should patch mode card');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram command center callbacks patch status and Codex controls', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_command_callbacks',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_command_callbacks',
+        workingDirectory: '/tmp/project-command',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_cmd_status',
+          callbackMessageId: '201',
+          callbackData: 'cmd:status',
+          address,
+          text: 'Command Center',
+        }));
+        await waitFor(() => adapter.patchedCards.some(card => card.messageId === '201' && card.card.text.includes('Bridge Status')));
+
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_cmd_controls',
+          callbackMessageId: '202',
+          callbackData: 'cmd:codex-controls',
+          address,
+          text: 'Command Center',
+        }));
+        await waitFor(() => adapter.patchedCards.some(card => card.messageId === '202' && card.card.text.includes('Codex Terminal Controls')));
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram Codex control callbacks trigger screen and terminal keys', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const terminalRuntime = new FakeCodexTerminalRuntime();
+      const manager = new BridgeManager(store as any, new MockLLMProvider() as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+        codexTerminalRuntime: terminalRuntime,
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_codex_control_callbacks',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_codex_control_callbacks',
+        workingDirectory: '/tmp/project-codex',
+        runtime: 'codex',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_control_seed', address, text: 'seed controls' }));
+        await waitFor(() => terminalRuntime.inputs.length === 1);
+
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_control_screen',
+          callbackMessageId: '301',
+          callbackData: 'cmd:screen',
+          address,
+          text: 'Codex Terminal Controls',
+        }));
+        await waitFor(() => adapter.patchedCards.some(card => card.messageId === '301' && card.card.text.includes('Codex screen snapshot')));
+
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_control_enter',
+          callbackMessageId: '302',
+          callbackData: 'terminal-key:enter',
+          address,
+          text: 'Codex Terminal Controls',
+        }));
+        await waitFor(() => terminalRuntime.keys.some(item => item.key === 'enter'));
+        assertEquals(terminalRuntime.keys.at(-1)?.key, 'enter', 'Should send terminal key from callback');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram plan session creates Plan Ready card', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      llm.responseConfig = { text: '1. Inspect files\n2. Apply focused changes\n3. Run tests' };
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_plan_ready',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_plan_ready',
+        workingDirectory: '/tmp/project-plan',
+        runtime: 'claude',
+        mode: 'plan',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_plan_task',
+          address,
+          text: 'Add command center buttons',
+        }));
+
+        await waitFor(() => adapter.patchedCards.some(card => card.card.text.includes('Plan Ready')));
+        const workflow = store.getActivePlanWorkflowByBinding(binding.id);
+        assertEquals(workflow?.status, 'awaiting_decision', 'Workflow should wait for decision');
+        assert(workflow?.planText.includes('Inspect files') || false, 'Should persist generated plan text');
+        const readyCard = adapter.patchedCards.find(card => card.card.text.includes('Plan Ready'))?.card;
+        const callbacks = (readyCard?.inlineButtons || []).flat().map((button: any) => button.callbackData);
+        assert(callbacks.some((callback: string) => callback.startsWith('plan:exec:')), 'Should include execute button');
+        assert(callbacks.some((callback: string) => callback.startsWith('plan:revise:')), 'Should include revise button');
+        assert(callbacks.some((callback: string) => callback.startsWith('plan:cancel:')), 'Should include cancel button');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram plan Execute Plan switches to execution and restores plan mode', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      llm.responseConfig = { text: 'Plan text ready' };
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new PreviewQueueAdapter() as any;
+      adapter.channelType = 'telegram';
+      adapter.adapterId = 'telegram';
+      adapter.profileId = 'default';
+      adapter.label = 'Telegram';
+      adapter.patchedCards = [] as any[];
+      adapter.answeredCallbacks = [] as any[];
+      const originalPatchCard = adapter.patchCard?.bind(adapter);
+      adapter.patchCard = async (address: any, messageId: string, card: any) => {
+        adapter.patchedCards.push({ messageId, card });
+        if (originalPatchCard) return originalPatchCard(address, messageId, card);
+        return { ok: true, messageId };
+      };
+      adapter.answerCallback = async (id: string, text?: string) => {
+        adapter.answeredCallbacks.push({ id, text });
+      };
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_plan_execute',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_plan_execute',
+        workingDirectory: '/tmp/project-plan',
+        runtime: 'claude',
+        mode: 'plan',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_plan_execute_task',
+          address,
+          text: 'Implement feature',
+        }));
+        await waitFor(() => store.getActivePlanWorkflowByBinding(binding.id)?.status === 'awaiting_decision');
+        const workflow = store.getActivePlanWorkflowByBinding(binding.id)!;
+
+        llm.responseConfig = { text: 'Execution completed with tests' };
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_plan_execute_callback',
+          callbackMessageId: workflow.previewMessageId || 'sent_1',
+          callbackData: `plan:exec:${workflow.id}`,
+          address,
+          text: 'Plan Ready',
+        }));
+
+        await waitFor(() => store.getPlanWorkflow(workflow.id)?.status === 'completed');
+        assertEquals(llm.callCount, 2, 'Should call LLM for planning and execution');
+        assertEquals(store.getBinding(binding.id)?.mode, 'plan', 'Claude plan session should restore plan mode after execution');
+        assert(adapter.finalizedPreviews.some((preview: any) => preview.text.includes('Plan Complete')), 'Should send execution completion feedback');
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram plan Revise Plan uses next message to regenerate plan', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      llm.responseConfig = { text: 'Initial plan' };
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_plan_revise',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_plan_revise',
+        workingDirectory: '/tmp/project-plan',
+        runtime: 'claude',
+        mode: 'plan',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_plan_revise_task', address, text: 'Plan the change' }));
+        await waitFor(() => store.getActivePlanWorkflowByBinding(binding.id)?.status === 'awaiting_decision');
+        const workflow = store.getActivePlanWorkflowByBinding(binding.id)!;
+
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_plan_revise_callback',
+          callbackMessageId: workflow.previewMessageId || 'sent_1',
+          callbackData: `plan:revise:${workflow.id}`,
+          address,
+          text: 'Plan Ready',
+        }));
+        await waitFor(() => store.getPlanWorkflow(workflow.id)?.status === 'revising');
+
+        llm.responseConfig = { text: 'Revised plan with smaller steps' };
+        adapter.push(makeInboundMessage({ messageId: 'tg_plan_revise_next', address, text: 'Make the plan more incremental' }));
+        await waitFor(() => store.getPlanWorkflow(workflow.id)?.planText.includes('Revised plan') || false);
+        assertEquals(store.getPlanWorkflow(workflow.id)?.status, 'awaiting_decision', 'Revision should return to decision state');
+        assert(
+          llm.lastMessages.some(message => message.content.includes('Requested changes')),
+          'Revision prompt should include requested changes',
+        );
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram plan Cancel does not call execution path', async () => {
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const llm = new MockLLMProvider();
+      llm.responseConfig = { text: 'Cancelable plan' };
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new TelegramQueueAdapter();
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_plan_cancel',
+        userId: 'tg_user',
+      };
+      const binding = router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_plan_cancel',
+        workingDirectory: '/tmp/project-plan',
+        runtime: 'claude',
+        mode: 'plan',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_plan_cancel_task', address, text: 'Plan and stop' }));
+        await waitFor(() => store.getActivePlanWorkflowByBinding(binding.id)?.status === 'awaiting_decision');
+        const workflow = store.getActivePlanWorkflowByBinding(binding.id)!;
+
+        adapter.push(makeInboundMessage({
+          messageId: 'tg_plan_cancel_callback',
+          callbackMessageId: workflow.previewMessageId || 'sent_1',
+          callbackData: `plan:cancel:${workflow.id}`,
+          address,
+          text: 'Plan Ready',
+        }));
+        await waitFor(() => store.getPlanWorkflow(workflow.id)?.status === 'cancelled');
+        assertEquals(llm.callCount, 1, 'Cancel should not call execution path');
+        assertEquals(store.getBinding(binding.id)?.mode, 'plan', 'Cancel should keep binding in plan mode');
+        assert(adapter.patchedCards.some(card => card.card.text.includes('Plan Cancelled')), 'Should patch cancelled card');
       } finally {
         await manager.stop();
       }

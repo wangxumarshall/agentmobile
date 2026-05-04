@@ -5,15 +5,17 @@
  * storage for speed and test isolation.
  */
 
-import type { ChannelBinding, ConversationSession } from '../../im/bridge/types.js';
+import type { ChannelBinding, ConversationSession, PlanWorkflow } from '../../im/bridge/types.js';
 
 export class MockStore {
   private _bindings: Map<string, ChannelBinding> = new Map();
   private _sessions: Map<string, ConversationSession> = new Map();
+  private _planWorkflows: Map<string, PlanWorkflow> = new Map();
   private _settings: Map<string, string> = new Map();
 
   get bindings() { return new Map(this._bindings); }
   get sessions() { return new Map(this._sessions); }
+  get planWorkflows() { return new Map(this._planWorkflows); }
   get settings() { return new Map(this._settings); }
 
   // Bindings
@@ -55,6 +57,37 @@ export class MockStore {
     this._sessions.delete(id);
   }
 
+  // Plan workflows
+  getPlanWorkflow(id: string): PlanWorkflow | undefined {
+    return this._planWorkflows.get(id);
+  }
+
+  getActivePlanWorkflowByBinding(bindingId: string): PlanWorkflow | undefined {
+    return Array.from(this._planWorkflows.values())
+      .filter(workflow =>
+        workflow.bindingId === bindingId &&
+        (
+          workflow.status === 'drafting' ||
+          workflow.status === 'awaiting_decision' ||
+          workflow.status === 'revising' ||
+          workflow.status === 'executing'
+        ),
+      )
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0];
+  }
+
+  savePlanWorkflow(workflow: PlanWorkflow): void {
+    this._planWorkflows.set(workflow.id, workflow);
+  }
+
+  deletePlanWorkflow(id: string): void {
+    this._planWorkflows.delete(id);
+  }
+
+  listPlanWorkflows(): PlanWorkflow[] {
+    return Array.from(this._planWorkflows.values());
+  }
+
   // Settings
   getSetting(key: string): string | undefined {
     return this._settings.get(key);
@@ -67,6 +100,7 @@ export class MockStore {
   clear(): void {
     this._bindings.clear();
     this._sessions.clear();
+    this._planWorkflows.clear();
     this._settings.clear();
   }
 }

@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import type { ChannelBinding, ConversationSession } from '../bridge/types.js';
+import type { ChannelBinding, ConversationSession, PlanWorkflow } from '../bridge/types.js';
 import { info, error } from '../config/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -16,6 +16,7 @@ const imDataDir = process.env.CTI_HOME || join(rootDir, 'im-data');
 interface StoreState {
   bindings: Record<string, ChannelBinding>;
   sessions: Record<string, ConversationSession>;
+  planWorkflows: Record<string, PlanWorkflow>;
   settings: Record<string, string>;
 }
 
@@ -25,7 +26,7 @@ export class JsonFileStore {
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir || imDataDir;
-    this.state = { bindings: {}, sessions: {}, settings: {} };
+    this.state = { bindings: {}, sessions: {}, planWorkflows: {}, settings: {} };
     this.ensureDirs();
     this.load();
   }
@@ -39,6 +40,7 @@ export class JsonFileStore {
     try {
       const bindingsPath = join(this.dataDir, 'bindings.json');
       const sessionsPath = join(this.dataDir, 'sessions.json');
+      const planWorkflowsPath = join(this.dataDir, 'plan-workflows.json');
       const settingsPath = join(this.dataDir, 'settings.json');
 
       if (existsSync(bindingsPath)) {
@@ -47,11 +49,19 @@ export class JsonFileStore {
       if (existsSync(sessionsPath)) {
         this.state.sessions = JSON.parse(readFileSync(sessionsPath, 'utf8'));
       }
+      if (existsSync(planWorkflowsPath)) {
+        this.state.planWorkflows = JSON.parse(readFileSync(planWorkflowsPath, 'utf8'));
+      }
       if (existsSync(settingsPath)) {
         this.state.settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
       }
 
-      info('store', `Loaded ${Object.keys(this.state.bindings).length} bindings, ${Object.keys(this.state.sessions).length} sessions`);
+      info(
+        'store',
+        `Loaded ${Object.keys(this.state.bindings).length} bindings, ` +
+          `${Object.keys(this.state.sessions).length} sessions, ` +
+          `${Object.keys(this.state.planWorkflows).length} plan workflows`,
+      );
     } catch (e) {
       error('store', `Failed to load state: ${e}`);
     }
@@ -72,6 +82,11 @@ export class JsonFileStore {
       writeFileSync(
         join(this.dataDir, 'settings.json'),
         JSON.stringify(this.state.settings, null, 2),
+        'utf8'
+      );
+      writeFileSync(
+        join(this.dataDir, 'plan-workflows.json'),
+        JSON.stringify(this.state.planWorkflows, null, 2),
         'utf8'
       );
     } catch (e) {
@@ -123,6 +138,40 @@ export class JsonFileStore {
   deleteSession(id: string): void {
     delete this.state.sessions[id];
     this.save();
+  }
+
+  // ── Plan Workflows ───────────────────────────────────────
+
+  getPlanWorkflow(id: string): PlanWorkflow | undefined {
+    return this.state.planWorkflows[id];
+  }
+
+  getActivePlanWorkflowByBinding(bindingId: string): PlanWorkflow | undefined {
+    return Object.values(this.state.planWorkflows)
+      .filter(workflow =>
+        workflow.bindingId === bindingId &&
+        (
+          workflow.status === 'drafting' ||
+          workflow.status === 'awaiting_decision' ||
+          workflow.status === 'revising' ||
+          workflow.status === 'executing'
+        ),
+      )
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0];
+  }
+
+  savePlanWorkflow(workflow: PlanWorkflow): void {
+    this.state.planWorkflows[workflow.id] = workflow;
+    this.save();
+  }
+
+  deletePlanWorkflow(id: string): void {
+    delete this.state.planWorkflows[id];
+    this.save();
+  }
+
+  listPlanWorkflows(): PlanWorkflow[] {
+    return Object.values(this.state.planWorkflows);
   }
 
   // ── Settings ──────────────────────────────────────────────

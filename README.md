@@ -77,9 +77,11 @@ npm run start:im
 
 - Telegram can be configured from the web UI: open Settings → Telegram, paste the BotFather token, optionally set a default tmux window, then restart `agentmobile-im`
 - Manual Telegram setup still uses `TELEGRAM_BOT_TOKEN`
-- Telegram cards use native inline buttons and in-place message edits; set `TELEGRAM_SHOW_TOOL_CALL_CARDS=true` to show tool / activity cards.
-- Telegram Codex sessions created with `/new:codex` use one long-running interactive Codex terminal per binding. Use `/screen` for the raw terminal snapshot, key commands like `/ctrlc` and `/up` for terminal control, and `//model` to send Codex slash commands.
-- `agentmobile-im` runs Telegram polling and clears old webhooks at startup. The legacy `server.js` Telegram webhook is not the canonical IM bridge path.
+- Telegram cards use native inline buttons and in-place message edits; `/start`, `/help`, and chats without an active binding show a Command Center card for new/resume/status/mode/cwd/stop/reset/Codex controls.
+- Telegram new-session buttons cover Claude Code, Claude Plan, Codex Code, Codex Plan, and Codex Ask. Slash commands such as `/new:codex` remain fallback shortcuts.
+- Telegram Plan sessions use a persistent Plan workflow: send a task, review the Plan Ready card, then tap Execute Plan, Revise Plan, or Cancel. State is stored in `im-data/plan-workflows.json`.
+- Telegram Codex sessions created with `/new:codex` use one long-running interactive Codex terminal per binding. Use the Codex Controls card or fallback commands such as `/screen`, `/ctrlc`, and `/up`; use `//model` to send Codex slash commands.
+- `agentmobile-im` runs Telegram polling and clears old webhooks at startup. The legacy `server.js` Telegram webhook is compatibility-only and does not implement the new cards or Plan workflow state machine.
 - Feishu / Lark can be initialized from the web UI: open Settings → Feishu, generate a QR code, and scan it in Feishu / Lark. This writes `CTI_FEISHU_APP_ID`, `CTI_FEISHU_APP_SECRET`, and enables the IM bridge in `.env`.
 - Manual Feishu / Lark setup still uses `CTI_FEISHU_APP_ID` and `CTI_FEISHU_APP_SECRET`
 - Feishu message events use long connection mode; card buttons need an HTTP callback at `/api/webhooks/feishu/card-action` on `CTI_FEISHU_CALLBACK_PORT`

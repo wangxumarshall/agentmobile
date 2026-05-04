@@ -12,6 +12,7 @@ import type {
   CardMessage,
   ChannelAddress,
   ClaudePermissionMode,
+  PlanWorkflow,
 } from './types.js';
 import type { ActivityEventInfo } from './context.js';
 import type { LLMProvider } from './context.js';
@@ -27,8 +28,20 @@ import {
 } from '../runtime/codex-terminal-session.js';
 import {
   buildClaudeModeCard,
+  buildCodexControlCard,
+  buildCommandCenterCard,
+  buildCommandStatusCard,
+  buildCallbackErrorCard,
+  buildDirectoryCard,
+  buildModeSelectionCard,
   buildHandledPermissionCard,
   buildNewSessionCard,
+  buildPlanCancelledCard,
+  buildPlanCompletedCard,
+  buildPlanDraftingCard,
+  buildPlanExecutingCard,
+  buildPlanReadyCard,
+  buildPlanRevisionRequestedCard,
   buildResetConfirmationCard,
   buildResumeCard,
   buildSessionCreatedCard,
@@ -58,6 +71,13 @@ interface TerminalPreviewState {
   address: ChannelAddress;
   draftId: number;
   active: boolean;
+}
+
+interface PreviewRunResult {
+  ok: boolean;
+  text: string;
+  sdkSessionId?: string;
+  previewMessageId?: string;
 }
 
 export class BridgeManager {
@@ -263,7 +283,7 @@ export class BridgeManager {
     if (!binding) {
       // No binding exists — send instructions to create one
       if (message.address.channelType === 'telegram') {
-        const card = buildNewSessionCard();
+        const card = buildCommandCenterCard();
         await adapter.send({
           address: message.address,
           text: card.text,
@@ -282,125 +302,43 @@ export class BridgeManager {
 
     // Process with session lock (serialize messages to same session)
     await this.processWithSessionLock(binding.id, async () => {
-      if (this.isTelegramCodexTerminalBinding(binding, message)) {
-        await this.processTelegramCodexInput(
+      const currentBinding = this.store.getBinding(binding.id) || binding;
+      const activeWorkflow = this.store.getActivePlanWorkflowByBinding(currentBinding.id);
+      if (
+        message.address.channelType === 'telegram' &&
+        (currentBinding.mode === 'plan' || activeWorkflow?.status === 'revising')
+      ) {
+        await this.processTelegramPlanWorkflowMessage(
           adapter,
           message,
-          binding,
+          currentBinding,
           this.renderInboundPrompt(message, escapedCodexText ?? undefined),
         );
         return;
       }
 
-      const abortController = new AbortController();
-      this.state.activeTasks.set(binding.id, abortController);
+      if (this.isTelegramCodexTerminalBinding(binding, message)) {
+        await this.processTelegramCodexInput(
+          adapter,
+          message,
+          currentBinding,
+          this.renderInboundPrompt(message, escapedCodexText ?? undefined),
+        );
+        return;
+      }
 
-      const previewCaps = adapter.getPreviewCapabilities?.(message.address) || null;
-      const canPreview = Boolean(
-        previewCaps?.supported &&
-        adapter.primePreview &&
-        adapter.sendPreview,
+      const result = await this.runConversationWithPreview(
+        adapter,
+        message,
+        currentBinding,
+        this.renderInboundPrompt(message),
       );
-      const draftId = canPreview ? Math.floor(Math.random() * 0x7fffffff) + 1 : null;
-      let previewUpdates = Promise.resolve();
-      let previewActive = false;
 
-      if (canPreview && draftId !== null) {
-        try {
-          const primed = await adapter.primePreview!(message.address, draftId);
-          previewActive = primed === 'sent' || primed === 'skip';
-        } catch (e) {
-          debug('bridge-manager', `Preview prime failed: ${e}`);
-        }
+      if (result.sdkSessionId) {
+        currentBinding.sdkSessionId = result.sdkSessionId;
       }
-
-      const onPartialText = canPreview && draftId !== null
-        ? (text: string) => {
-            previewUpdates = previewUpdates
-              .then(async () => {
-                const outcome = await adapter.sendPreview!(message.address, text, draftId);
-                if (outcome === 'sent') previewActive = true;
-              })
-              .catch(e => debug('bridge-manager', `Preview update failed: ${e}`));
-          }
-        : undefined;
-
-      const onActivityEvent = adapter.upsertActivityEvent && adapter.shouldProjectActivityEvent
-        ? (event: {
-            type: 'command' | 'file_change' | 'tool_use' | 'progress';
-            title: string;
-            description?: string;
-            metadata?: Record<string, unknown>;
-          }) => {
-            const activityEvent = {
-              ...event,
-              timestamp: Date.now(),
-            };
-            if (!adapter.shouldProjectActivityEvent?.(activityEvent)) return;
-            void adapter.upsertActivityEvent?.(message.address, activityEvent, message.messageId);
-          }
-        : undefined;
-
-      try {
-        const result = await this.engine.processMessage(binding, adapter, this.renderInboundPrompt(message), {
-          permissionBroker: this.permissionBroker,
-          onPartialText,
-          onActivityEvent,
-          abortSignal: abortController.signal,
-        });
-
-        await previewUpdates;
-
-        if (!result.ok) {
-          error('bridge-manager', `Conversation failed: ${result.error}`);
-        } else if (result.sdkSessionId) {
-          binding.sdkSessionId = result.sdkSessionId;
-        }
-
-        binding.updatedAt = new Date().toISOString();
-        this.store.saveBinding(binding);
-
-        if (canPreview && draftId !== null) {
-          const finalText = result.ok
-            ? result.text || 'No response text was returned.'
-            : `❌ ${result.error || 'Conversation failed'}`;
-
-          if (finalText) {
-            if (previewActive) {
-              const finalized = await adapter.finalizePreview?.(message.address, finalText, draftId);
-              if (!finalized?.ok) {
-                await adapter.send({
-                  address: message.address,
-                  text: finalText,
-                  parseMode: 'Markdown',
-                });
-              }
-            } else {
-              await adapter.send({
-                address: message.address,
-                text: finalText,
-                parseMode: 'Markdown',
-              });
-            }
-          }
-          adapter.endPreview?.(message.address, draftId);
-        } else if (!result.ok) {
-          await adapter.send({
-            address: message.address,
-            text: `❌ ${result.error || 'Conversation failed'}`,
-            parseMode: 'Markdown',
-          });
-        } else if (!result.text) {
-          await adapter.send({
-            address: message.address,
-            text: 'No response text was returned.',
-            parseMode: 'Markdown',
-          });
-        }
-      } finally {
-        this.state.activeTasks.delete(binding.id);
-        abortController.abort();
-      }
+      currentBinding.updatedAt = new Date().toISOString();
+      this.store.saveBinding(currentBinding);
     });
   }
 
@@ -571,6 +509,143 @@ export class BridgeManager {
     return prefix + marker + body.slice(body.length - maxChars + marker.length);
   }
 
+  private async runConversationWithPreview(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    binding: ChannelBinding,
+    promptText: string,
+    options: {
+      finalCard?: (resultText: string) => CardMessage;
+      keepPreviewOpen?: boolean;
+    } = {},
+  ): Promise<PreviewRunResult> {
+    const abortController = new AbortController();
+    this.state.activeTasks.set(binding.id, abortController);
+
+    const previewCaps = adapter.getPreviewCapabilities?.(message.address) || null;
+    const canPreview = Boolean(
+      previewCaps?.supported &&
+      adapter.primePreview &&
+      adapter.sendPreview,
+    );
+    const draftId = canPreview ? Math.floor(Math.random() * 0x7fffffff) + 1 : null;
+    let previewUpdates = Promise.resolve();
+    let previewActive = false;
+    let previewMessageId: string | undefined;
+
+    if (canPreview && draftId !== null) {
+      try {
+        const primed = await adapter.primePreview!(message.address, draftId);
+        previewActive = primed === 'sent' || primed === 'skip';
+      } catch (e) {
+        debug('bridge-manager', `Preview prime failed: ${e}`);
+      }
+    }
+
+    const onPartialText = canPreview && draftId !== null
+      ? (text: string) => {
+          previewUpdates = previewUpdates
+            .then(async () => {
+              const outcome = await adapter.sendPreview!(message.address, text, draftId);
+              if (outcome === 'sent') previewActive = true;
+            })
+            .catch(e => debug('bridge-manager', `Preview update failed: ${e}`));
+        }
+      : undefined;
+
+    const onActivityEvent = adapter.upsertActivityEvent && adapter.shouldProjectActivityEvent
+      ? (event: {
+          type: 'command' | 'file_change' | 'tool_use' | 'progress';
+          title: string;
+          description?: string;
+          metadata?: Record<string, unknown>;
+        }) => {
+          const activityEvent = {
+            ...event,
+            timestamp: Date.now(),
+          };
+          if (!adapter.shouldProjectActivityEvent?.(activityEvent)) return;
+          void adapter.upsertActivityEvent?.(message.address, activityEvent, message.messageId);
+        }
+      : undefined;
+
+    try {
+      const result = await this.engine.processMessage(binding, adapter, promptText, {
+        permissionBroker: this.permissionBroker,
+        onPartialText,
+        onActivityEvent,
+        abortSignal: abortController.signal,
+      });
+
+      await previewUpdates;
+
+      if (!result.ok) {
+        error('bridge-manager', `Conversation failed: ${result.error}`);
+      }
+
+      const finalText = result.ok
+        ? result.text || 'No response text was returned.'
+        : `❌ ${result.error || 'Conversation failed'}`;
+
+      if (canPreview && draftId !== null) {
+        if (previewActive) {
+          const finalized = options.finalCard && adapter.patchCard
+            ? await this.patchActivePreviewWithCard(adapter, message.address, draftId, options.finalCard(finalText))
+            : await adapter.finalizePreview?.(message.address, finalText, draftId);
+          previewMessageId = finalized?.messageId;
+          if (!finalized?.ok) {
+            await adapter.send({
+              address: message.address,
+              text: finalText,
+              parseMode: 'Markdown',
+            });
+          }
+        } else {
+          const sent = await adapter.send({
+            address: message.address,
+            text: finalText,
+            parseMode: 'Markdown',
+          });
+          previewMessageId = sent.messageId;
+        }
+        if (!options.keepPreviewOpen) {
+          adapter.endPreview?.(message.address, draftId);
+        }
+      } else if (options.finalCard || !result.ok || !result.text) {
+        const card = options.finalCard?.(finalText);
+        const sent = await adapter.send({
+          address: message.address,
+          text: card?.text || finalText,
+          parseMode: card?.parseMode || 'Markdown',
+          inlineButtons: card?.inlineButtons,
+        });
+        previewMessageId = sent.messageId;
+      }
+
+      return {
+        ok: result.ok,
+        text: finalText,
+        sdkSessionId: result.sdkSessionId,
+        previewMessageId,
+      };
+    } finally {
+      this.state.activeTasks.delete(binding.id);
+      abortController.abort();
+    }
+  }
+
+  private async patchActivePreviewWithCard(
+    adapter: BaseChannelAdapter,
+    address: ChannelAddress,
+    draftId: number,
+    card: CardMessage,
+  ): Promise<{ ok: boolean; messageId?: string; error?: string } | undefined> {
+    const patched = await adapter.finalizePreview?.(address, card.text, draftId);
+    if (!patched?.ok || !patched.messageId || !adapter.patchCard) return patched;
+    const patchedCard = await adapter.patchCard(address, patched.messageId, card);
+    return patchedCard.ok ? patchedCard : patched;
+  }
+
   private async waitForTerminalOutput(
     bindingId: string,
     getTranscript: () => string,
@@ -634,6 +709,102 @@ export class BridgeManager {
     });
   }
 
+  private async sendCodexScreenSnapshot(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    patchMessageId?: string,
+  ): Promise<void> {
+    const binding = this.router.resolve(message.address);
+    if (!binding) {
+      await this.sendNoActiveSessionMessage(adapter, message.address);
+      return;
+    }
+    if (!this.isTelegramCodexTerminalBinding(binding, message)) {
+      const card = buildCallbackErrorCard('/screen is available for Telegram Codex terminal sessions.');
+      await this.sendOrPatchTelegramCard(adapter, message.address, card, patchMessageId);
+      return;
+    }
+
+    const snapshot = this.codexTerminalRuntime.getScreenSnapshot(binding.id);
+    const card: CardMessage = {
+      text: this.renderScreenSnapshot(snapshot),
+      parseMode: 'plain',
+    };
+    await this.sendOrPatchTelegramCard(adapter, message.address, card, patchMessageId);
+  }
+
+  private async resetActiveBinding(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    patchMessageId?: string,
+  ): Promise<void> {
+    const binding = this.router.resolve(message.address);
+    if (!binding) {
+      await this.sendNoActiveSessionMessage(adapter, message.address);
+      return;
+    }
+
+    this.codexTerminalRuntime.stopSession(binding.id);
+    this.endTerminalPreview(adapter, binding.id);
+    binding.terminalSessionId = undefined;
+    binding.updatedAt = new Date().toISOString();
+    this.store.saveBinding(binding);
+    this.router.deactivateBinding(binding.id);
+    this.cancelActivePlanWorkflow(binding.id);
+
+    if (message.address.channelType === 'telegram') {
+      const card = buildResetConfirmationCard(binding.id, binding.runtime);
+      await this.sendOrPatchTelegramCard(adapter, message.address, card, patchMessageId);
+      return;
+    }
+
+    await adapter.send({
+      address: message.address,
+      text: '🔄 Session reset. Send `/new` to start fresh.',
+      parseMode: 'Markdown',
+    });
+  }
+
+  private stopActiveTask(adapter: BaseChannelAdapter, message: InboundMessage): string {
+    const binding = this.router.resolve(message.address);
+    if (!binding) return '❌ No active session found.';
+
+    if (this.isTelegramCodexTerminalBinding(binding, message) && this.codexTerminalRuntime.hasSession(binding.id)) {
+      this.codexTerminalRuntime.sendKey(binding, 'ctrlc', {
+        onActivityEvent: this.buildActivityProjector(adapter, message),
+      });
+    } else {
+      const task = this.state.activeTasks.get(binding.id);
+      if (task) {
+        task.abort();
+        this.state.activeTasks.delete(binding.id);
+      }
+    }
+    return '🛑 Active task stopped.';
+  }
+
+  private setBindingMode(
+    binding: ChannelBinding,
+    mode: ChannelBinding['mode'],
+  ): void {
+    binding.mode = mode;
+    binding.updatedAt = new Date().toISOString();
+    if (binding.runtime === 'claude' && mode === 'plan') {
+      binding.claudePermissionMode = 'plan';
+    } else if (binding.runtime === 'claude' && binding.claudePermissionMode === 'plan') {
+      binding.claudePermissionMode = 'default';
+    }
+    this.store.saveBinding(binding);
+  }
+
+  private cancelActivePlanWorkflow(bindingId: string): void {
+    const workflow = this.store.getActivePlanWorkflowByBinding(bindingId);
+    if (!workflow) return;
+    workflow.status = 'cancelled';
+    workflow.updatedAt = new Date().toISOString();
+    this.store.savePlanWorkflow(workflow);
+  }
+
   private async handleCommand(
     adapter: BaseChannelAdapter,
     message: InboundMessage,
@@ -642,11 +813,21 @@ export class BridgeManager {
     switch (cmd.name) {
       case 'start':
       case 'help': {
-        await adapter.send({
-          address: message.address,
-          text: this.renderHelpMessage(),
-          parseMode: 'Markdown',
-        });
+        if (message.address.channelType === 'telegram') {
+          const card = buildCommandCenterCard(this.router.resolve(message.address));
+          await adapter.send({
+            address: message.address,
+            text: card.text,
+            parseMode: card.parseMode,
+            inlineButtons: card.inlineButtons,
+          });
+        } else {
+          await adapter.send({
+            address: message.address,
+            text: this.renderHelpMessage(),
+            parseMode: 'Markdown',
+          });
+        }
         break;
       }
 
@@ -664,6 +845,7 @@ export class BridgeManager {
         }
 
         const runtime: 'claude' | 'codex' = arg === 'codex' ? 'codex' : 'claude';
+        const requestedMode = this.normalizeMode(cmd.args[1] || 'code');
         const binding = this.router.createBinding({
           channelType: message.address.channelType,
           channelInstanceId: message.address.channelInstanceId || 'default',
@@ -672,40 +854,33 @@ export class BridgeManager {
           workingDirectory: process.env.CTI_DEFAULT_WORKDIR || process.cwd(),
           runtime,
           model: 'default',
-          mode: 'code',
+          mode: requestedMode,
         });
-        await adapter.send({
-          address: message.address,
-          text: `✅ Created new ${runtime} session: \`${binding.agentSessionId}\``,
-          parseMode: 'Markdown',
-        });
+        if (runtime === 'claude' && requestedMode === 'plan') {
+          binding.claudePermissionMode = 'plan';
+          this.store.saveBinding(binding);
+        }
+        if (message.address.channelType === 'telegram') {
+          const card = buildSessionCreatedCard(runtime, requestedMode, binding);
+          await adapter.send({
+            address: message.address,
+            text: card.text,
+            parseMode: card.parseMode,
+            inlineButtons: card.inlineButtons,
+          });
+        } else {
+          await adapter.send({
+            address: message.address,
+            text: `✅ Created new ${runtime} session: \`${binding.agentSessionId}\``,
+            parseMode: 'Markdown',
+          });
+        }
         break;
       }
 
       case 'reset': {
-        const binding = this.router.resolve(message.address);
-        if (binding) {
-          this.codexTerminalRuntime.stopSession(binding.id);
-          this.endTerminalPreview(adapter, binding.id);
-          binding.terminalSessionId = undefined;
-          binding.updatedAt = new Date().toISOString();
-          this.store.saveBinding(binding);
-          this.router.deactivateBinding(binding.id);
-          if (message.address.channelType === 'telegram') {
-            const card = buildResetConfirmationCard(binding.id, binding.runtime);
-            await adapter.send({
-              address: message.address,
-              text: card.text,
-              parseMode: card.parseMode,
-              inlineButtons: card.inlineButtons,
-            });
-          } else {
-            await adapter.send({
-              address: message.address,
-              text: '🔄 Session reset. Send `/new` to start fresh.',
-              parseMode: 'Markdown',
-            });
-          }
+        if (this.router.resolve(message.address)) {
+          await this.resetActiveBinding(adapter, message);
         } else {
           await this.sendNoActiveSessionMessage(adapter, message.address);
         }
@@ -713,22 +888,11 @@ export class BridgeManager {
       }
 
       case 'stop': {
-        const binding = this.router.resolve(message.address);
-        if (binding) {
-          if (this.isTelegramCodexTerminalBinding(binding, message) && this.codexTerminalRuntime.hasSession(binding.id)) {
-            this.codexTerminalRuntime.sendKey(binding, 'ctrlc', {
-              onActivityEvent: this.buildActivityProjector(adapter, message),
-            });
-          } else {
-            const task = this.state.activeTasks.get(binding.id);
-            if (task) {
-              task.abort();
-              this.state.activeTasks.delete(binding.id);
-            }
-          }
+        if (this.router.resolve(message.address)) {
+          const text = this.stopActiveTask(adapter, message);
           await adapter.send({
             address: message.address,
-            text: '🛑 Active task stopped.',
+            text,
             parseMode: 'Markdown',
           });
         } else {
@@ -738,26 +902,7 @@ export class BridgeManager {
       }
 
       case 'screen': {
-        const binding = this.router.resolve(message.address);
-        if (!binding) {
-          await this.sendNoActiveSessionMessage(adapter, message.address);
-          break;
-        }
-        if (!this.isTelegramCodexTerminalBinding(binding, message)) {
-          await adapter.send({
-            address: message.address,
-            text: '❌ `/screen` is available for Telegram Codex terminal sessions.',
-            parseMode: 'Markdown',
-          });
-          break;
-        }
-
-        const snapshot = this.codexTerminalRuntime.getScreenSnapshot(binding.id);
-        await adapter.send({
-          address: message.address,
-          text: this.renderScreenSnapshot(snapshot),
-          parseMode: 'plain',
-        });
+        await this.sendCodexScreenSnapshot(adapter, message);
         break;
       }
 
@@ -785,8 +930,8 @@ export class BridgeManager {
         }
 
         const mode = cmd.args[0];
-        if (!mode && message.address.channelType === 'telegram' && binding.runtime === 'claude') {
-          const card = buildClaudeModeCard(binding.claudePermissionMode || 'default', binding.id);
+        if (!mode && message.address.channelType === 'telegram') {
+          const card = buildModeSelectionCard(binding);
           await adapter.send({
             address: message.address,
             text: card.text,
@@ -806,9 +951,7 @@ export class BridgeManager {
         }
 
         if (mode === 'code' || mode === 'plan' || mode === 'ask') {
-          binding.mode = mode;
-          binding.updatedAt = new Date().toISOString();
-          this.store.saveBinding(binding);
+          this.setBindingMode(binding, mode);
           await adapter.send({
             address: message.address,
             text: `✅ Mode changed to: \`${mode}\``,
@@ -828,13 +971,23 @@ export class BridgeManager {
       case 'binding': {
         const binding = this.router.resolve(message.address);
         if (binding) {
-          await adapter.send({
-            address: message.address,
-            text: this.renderBindingStatus(binding),
-            parseMode: 'Markdown',
-          });
+          if (message.address.channelType === 'telegram') {
+            const card = buildCommandCenterCard(binding);
+            await adapter.send({
+              address: message.address,
+              text: card.text,
+              parseMode: card.parseMode,
+              inlineButtons: card.inlineButtons,
+            });
+          } else {
+            await adapter.send({
+              address: message.address,
+              text: this.renderBindingStatus(binding),
+              parseMode: 'Markdown',
+            });
+          }
         } else if (message.address.channelType === 'telegram') {
-          const card = buildNewSessionCard();
+          const card = buildCommandCenterCard();
           await adapter.send({
             address: message.address,
             text: card.text,
@@ -851,6 +1004,16 @@ export class BridgeManager {
       case 'pwd': {
         const binding = this.router.resolve(message.address);
         if (binding) {
+          if (message.address.channelType === 'telegram') {
+            const card = buildDirectoryCard(binding.workingDirectory);
+            await adapter.send({
+              address: message.address,
+              text: card.text,
+              parseMode: card.parseMode,
+              inlineButtons: card.inlineButtons,
+            });
+            break;
+          }
           await adapter.send({
             address: message.address,
             text: `📂 Current working directory:\n\`${binding.workingDirectory}\``,
@@ -864,11 +1027,22 @@ export class BridgeManager {
 
       case 'status': {
         const binding = this.router.resolve(message.address);
-        await adapter.send({
-          address: message.address,
-          text: this.renderStatusMessage(binding),
-          parseMode: 'Markdown',
-        });
+        const text = this.renderStatusMessage(binding);
+        if (message.address.channelType === 'telegram') {
+          const card = buildCommandStatusCard(text);
+          await adapter.send({
+            address: message.address,
+            text: card.text,
+            parseMode: card.parseMode,
+            inlineButtons: card.inlineButtons,
+          });
+        } else {
+          await adapter.send({
+            address: message.address,
+            text,
+            parseMode: 'Markdown',
+          });
+        }
         break;
       }
 
@@ -938,6 +1112,17 @@ After creating a session, send any text to continue the conversation. Use \`//mo
     adapter: BaseChannelAdapter,
     address: ChannelAddress,
   ): Promise<void> {
+    if (address.channelType === 'telegram') {
+      const card = buildCommandCenterCard();
+      await adapter.send({
+        address,
+        text: card.text,
+        parseMode: card.parseMode,
+        inlineButtons: card.inlineButtons,
+      });
+      return;
+    }
+
     await adapter.send({
       address,
       text: '❌ No active session found. Send `/new:claude` or `/new:codex` first.',
@@ -1021,8 +1206,20 @@ Updated: \`${binding.updatedAt}\``;
     if (!callbackData) return;
 
     try {
+      if (callbackData.startsWith('cmd:')) {
+        await this.handleCommandCallback(adapter, message, callbackData);
+        return;
+      }
       if (callbackData.startsWith('new-session:')) {
         await this.handleNewSessionCallback(adapter, message, callbackData);
+        return;
+      }
+      if (callbackData.startsWith('mode:')) {
+        await this.handleModeCallback(adapter, message, callbackData);
+        return;
+      }
+      if (callbackData.startsWith('terminal-key:')) {
+        await this.handleTerminalKeyCallback(adapter, message, callbackData);
         return;
       }
       if (callbackData.startsWith('resume:')) {
@@ -1037,7 +1234,11 @@ Updated: \`${binding.updatedAt}\``;
         await adapter.answerCallback(message.messageId, 'Input recorded');
         return;
       }
-      if (callbackData.startsWith('plan:') || callbackData.startsWith('planexit:')) {
+      if (callbackData.startsWith('plan:')) {
+        await this.handlePlanCallback(adapter, message, callbackData);
+        return;
+      }
+      if (callbackData.startsWith('planexit:')) {
         await adapter.answerCallback(message.messageId, 'Action recorded');
         return;
       }
@@ -1072,10 +1273,156 @@ Updated: \`${binding.updatedAt}\``;
       model: 'default',
       mode,
     });
+    if (runtime === 'claude' && mode === 'plan') {
+      binding.claudePermissionMode = 'plan';
+      this.store.saveBinding(binding);
+    }
 
     const card = buildSessionCreatedCard(runtime, mode, binding);
     await this.patchOrSendCard(adapter, message, card);
     await adapter.answerCallback(message.messageId, 'Session created');
+  }
+
+  private async handleCommandCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const action = callbackData.split(':')[1] || 'help';
+    const binding = this.router.resolve(message.address);
+    const patchMessageId = message.callbackMessageId;
+
+    switch (action) {
+      case 'help': {
+        const card = buildCommandCenterCard(binding);
+        await this.patchOrSendCard(adapter, message, card);
+        await adapter.answerCallback(message.messageId, 'Command center');
+        return;
+      }
+      case 'new': {
+        const card = buildNewSessionCard();
+        await this.patchOrSendCard(adapter, message, card);
+        await adapter.answerCallback(message.messageId, 'Choose a session');
+        return;
+      }
+      case 'resume': {
+        await this.sendTelegramResumeCard(adapter, message.address, patchMessageId);
+        await adapter.answerCallback(message.messageId, 'Choose a session');
+        return;
+      }
+      case 'status': {
+        const card = buildCommandStatusCard(this.renderStatusMessage(binding));
+        await this.patchOrSendCard(adapter, message, card);
+        await adapter.answerCallback(message.messageId, 'Status updated');
+        return;
+      }
+      case 'mode': {
+        if (!binding) {
+          const card = buildCommandCenterCard();
+          await this.patchOrSendCard(adapter, message, card);
+          await adapter.answerCallback(message.messageId, 'No active session');
+          return;
+        }
+        const card = buildModeSelectionCard(binding);
+        await this.patchOrSendCard(adapter, message, card);
+        await adapter.answerCallback(message.messageId, 'Choose a mode');
+        return;
+      }
+      case 'cwd': {
+        if (!binding) {
+          const card = buildCommandCenterCard();
+          await this.patchOrSendCard(adapter, message, card);
+          await adapter.answerCallback(message.messageId, 'No active session');
+          return;
+        }
+        const card = buildDirectoryCard(binding.workingDirectory);
+        await this.patchOrSendCard(adapter, message, card);
+        await adapter.answerCallback(message.messageId, 'Directory');
+        return;
+      }
+      case 'stop': {
+        const card = buildCommandStatusCard(this.stopActiveTask(adapter, message));
+        await this.patchOrSendCard(adapter, message, card);
+        await adapter.answerCallback(message.messageId, 'Stop sent');
+        return;
+      }
+      case 'reset': {
+        await this.resetActiveBinding(adapter, message, patchMessageId);
+        await adapter.answerCallback(message.messageId, 'Session reset');
+        return;
+      }
+      case 'codex-controls': {
+        const card = buildCodexControlCard(binding);
+        await this.patchOrSendCard(adapter, message, card);
+        await adapter.answerCallback(message.messageId, 'Codex controls');
+        return;
+      }
+      case 'screen': {
+        await this.sendCodexScreenSnapshot(adapter, message, patchMessageId);
+        await adapter.answerCallback(message.messageId, 'Screen');
+        return;
+      }
+      default:
+        await adapter.answerCallback(message.messageId, 'Unsupported command');
+    }
+  }
+
+  private async handleModeCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const parts = callbackData.split(':');
+    if (parts.length < 3) {
+      await adapter.answerCallback(message.messageId, 'Invalid mode action');
+      return;
+    }
+
+    const bindingId = parts[1];
+    const mode = this.normalizeMode(parts[2]);
+    const binding = this.store.getBinding(bindingId);
+    if (!binding) {
+      await adapter.answerCallback(message.messageId, 'Session not found');
+      return;
+    }
+
+    this.setBindingMode(binding, mode);
+    const card = buildModeSelectionCard(binding);
+    await this.patchOrSendCard(adapter, message, card);
+    await adapter.answerCallback(message.messageId, 'Mode updated');
+  }
+
+  private async handleTerminalKeyCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const name = callbackData.split(':')[1] || '';
+    const binding = this.router.resolve(message.address);
+    if (!binding) {
+      await adapter.answerCallback(message.messageId, 'No active session');
+      return;
+    }
+    if (!this.isTelegramCodexTerminalBinding(binding, message)) {
+      await adapter.answerCallback(message.messageId, 'Codex only');
+      return;
+    }
+    if (!isCodexTerminalKey(name)) {
+      await adapter.answerCallback(message.messageId, 'Unsupported key');
+      return;
+    }
+
+    const session = this.codexTerminalRuntime.sendKey(binding, name as CodexTerminalKey, {
+      onActivityEvent: this.buildActivityProjector(adapter, message),
+    });
+    if (!session) {
+      await adapter.answerCallback(message.messageId, 'No active Codex terminal');
+      return;
+    }
+
+    binding.updatedAt = new Date().toISOString();
+    this.store.saveBinding(binding);
+    await adapter.answerCallback(message.messageId, `Sent ${name}`);
   }
 
   private async handleResumeCallback(
@@ -1150,9 +1497,297 @@ Updated: \`${binding.updatedAt}\``;
     await adapter.answerCallback(message.messageId, 'Mode updated');
   }
 
+  private async handlePlanCallback(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    callbackData: string,
+  ): Promise<void> {
+    const parts = callbackData.split(':');
+    const action = parts[1];
+    const workflowId = parts[2];
+    if (!action || !workflowId) {
+      await adapter.answerCallback(message.messageId, 'Invalid plan action');
+      return;
+    }
+
+    const workflow = this.store.getPlanWorkflow(workflowId);
+    if (!workflow) {
+      await adapter.answerCallback(message.messageId, 'Plan not found');
+      return;
+    }
+
+    switch (action) {
+      case 'exec':
+        await this.executePlanWorkflow(adapter, message, workflow);
+        return;
+      case 'revise':
+        workflow.status = 'revising';
+        workflow.updatedAt = new Date().toISOString();
+        this.store.savePlanWorkflow(workflow);
+        await this.patchOrSendCard(adapter, message, buildPlanRevisionRequestedCard(workflow));
+        await adapter.answerCallback(message.messageId, 'Send revision');
+        return;
+      case 'cancel':
+        workflow.status = 'cancelled';
+        workflow.updatedAt = new Date().toISOString();
+        this.store.savePlanWorkflow(workflow);
+        await this.patchOrSendCard(adapter, message, buildPlanCancelledCard(workflow));
+        await adapter.answerCallback(message.messageId, 'Plan cancelled');
+        return;
+      default:
+        await adapter.answerCallback(message.messageId, 'Unsupported plan action');
+    }
+  }
+
+  private async processTelegramPlanWorkflowMessage(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    binding: ChannelBinding,
+    promptText: string,
+  ): Promise<void> {
+    const existing = this.store.getActivePlanWorkflowByBinding(binding.id);
+    const isRevision = existing?.status === 'revising';
+    const workflow = isRevision && existing
+      ? existing
+      : this.createPlanWorkflow(binding, message, promptText);
+
+    if (isRevision) {
+      workflow.status = 'revising';
+      workflow.updatedAt = new Date().toISOString();
+      this.store.savePlanWorkflow(workflow);
+    }
+
+    const draftCard = buildPlanDraftingCard(workflow);
+    const draftResult = workflow.previewMessageId && adapter.patchCard
+      ? await adapter.patchCard(message.address, workflow.previewMessageId, draftCard)
+      : await adapter.send({
+          address: message.address,
+          text: draftCard.text,
+          parseMode: draftCard.parseMode,
+          inlineButtons: draftCard.inlineButtons,
+        });
+    if (draftResult.ok && draftResult.messageId) {
+      workflow.previewMessageId = draftResult.messageId;
+      this.store.savePlanWorkflow(workflow);
+    }
+
+    const planBinding = { ...binding, mode: 'plan' as const };
+    if (planBinding.runtime === 'claude') {
+      planBinding.claudePermissionMode = 'plan';
+    }
+
+    const planPrompt = isRevision
+      ? this.renderPlanRevisionPrompt(workflow, promptText)
+      : promptText;
+
+    const result = await this.runConversationWithoutDelivery(
+      adapter,
+      message,
+      planBinding,
+      planPrompt,
+    );
+
+    if (result.sdkSessionId) {
+      binding.sdkSessionId = result.sdkSessionId;
+    }
+    binding.updatedAt = new Date().toISOString();
+    this.store.saveBinding(binding);
+
+    workflow.planText = result.text;
+    workflow.status = result.ok ? 'awaiting_decision' : 'drafting';
+    workflow.updatedAt = new Date().toISOString();
+    this.store.savePlanWorkflow(workflow);
+
+    const card = result.ok
+      ? buildPlanReadyCard(workflow)
+      : buildCallbackErrorCard(result.text);
+    if (workflow.previewMessageId && adapter.patchCard) {
+      const patched = await adapter.patchCard(message.address, workflow.previewMessageId, card);
+      if (!patched.ok) {
+        await adapter.send({
+          address: message.address,
+          text: card.text,
+          parseMode: card.parseMode,
+          inlineButtons: card.inlineButtons,
+        });
+      }
+      return;
+    }
+
+    await adapter.send({
+      address: message.address,
+      text: card.text,
+      parseMode: card.parseMode,
+      inlineButtons: card.inlineButtons,
+    });
+  }
+
+  private createPlanWorkflow(
+    binding: ChannelBinding,
+    message: InboundMessage,
+    promptText: string,
+  ): PlanWorkflow {
+    const now = new Date().toISOString();
+    const workflow: PlanWorkflow = {
+      id: `pw_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      bindingId: binding.id,
+      channelType: message.address.channelType,
+      channelInstanceId: message.address.channelInstanceId || binding.channelInstanceId || 'default',
+      chatId: message.address.chatId,
+      userId: message.address.userId,
+      promptText,
+      planText: '',
+      status: 'drafting',
+      returnMode: binding.mode,
+      returnClaudePermissionMode: binding.claudePermissionMode,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.savePlanWorkflow(workflow);
+    return workflow;
+  }
+
+  private renderPlanRevisionPrompt(workflow: PlanWorkflow, revisionText: string): string {
+    return `Revise the existing plan using the user's requested changes. Produce the full updated plan only.
+
+Original task:
+${workflow.promptText}
+
+Current plan:
+${workflow.planText || '(no current plan text)'}
+
+Requested changes:
+${revisionText}`;
+  }
+
+  private async executePlanWorkflow(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    workflow: PlanWorkflow,
+  ): Promise<void> {
+    const binding = this.store.getBinding(workflow.bindingId);
+    if (!binding) {
+      await adapter.answerCallback(message.messageId, 'Session not found');
+      return;
+    }
+
+    workflow.status = 'executing';
+    workflow.updatedAt = new Date().toISOString();
+    this.store.savePlanWorkflow(workflow);
+    await this.patchOrSendCard(adapter, message, buildPlanExecutingCard(workflow));
+    await adapter.answerCallback(message.messageId, 'Executing');
+
+    const originalMode = workflow.returnMode || binding.mode;
+    const originalClaudeMode = workflow.returnClaudePermissionMode || binding.claudePermissionMode;
+    binding.mode = 'code';
+    if (binding.runtime === 'claude' && binding.claudePermissionMode === 'plan') {
+      binding.claudePermissionMode = 'default';
+    }
+    binding.updatedAt = new Date().toISOString();
+    this.store.saveBinding(binding);
+
+    const executionPrompt = this.renderPlanExecutionPrompt(workflow);
+    const syntheticMessage: InboundMessage = {
+      ...message,
+      text: executionPrompt,
+      callbackData: undefined,
+      callbackMessageId: undefined,
+      messageId: `${message.messageId}_plan_exec`,
+    };
+
+    const result = binding.runtime === 'codex' && message.address.channelType === 'telegram'
+      ? await this.executeCodexPlanInTerminal(adapter, syntheticMessage, binding, executionPrompt)
+      : await this.runConversationWithPreview(
+          adapter,
+          syntheticMessage,
+          binding,
+          executionPrompt,
+          {
+            finalCard: finalText => buildPlanCompletedCard(workflow, finalText),
+          },
+        );
+
+    if (result.sdkSessionId) {
+      binding.sdkSessionId = result.sdkSessionId;
+    }
+
+    workflow.status = result.ok ? 'completed' : 'awaiting_decision';
+    workflow.updatedAt = new Date().toISOString();
+    this.store.savePlanWorkflow(workflow);
+
+    if (binding.runtime === 'claude') {
+      binding.mode = originalMode === 'plan' ? 'plan' : originalMode;
+      binding.claudePermissionMode = originalClaudeMode || (binding.mode === 'plan' ? 'plan' : 'default');
+    } else {
+      binding.mode = originalMode;
+    }
+    binding.updatedAt = new Date().toISOString();
+    this.store.saveBinding(binding);
+  }
+
+  private renderPlanExecutionPrompt(workflow: PlanWorkflow): string {
+    return `Execute the approved plan for the original task.
+
+Original task:
+${workflow.promptText}
+
+Approved plan:
+${workflow.planText}`;
+  }
+
+  private async executeCodexPlanInTerminal(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    binding: ChannelBinding,
+    executionPrompt: string,
+  ): Promise<PreviewRunResult> {
+    const before = this.codexTerminalRuntime.getTranscriptSnapshot(binding.id);
+    await this.processTelegramCodexInput(adapter, message, binding, executionPrompt);
+    const transcript = this.codexTerminalRuntime.getTranscriptSnapshot(binding.id);
+    return {
+      ok: true,
+      text: transcript || before || 'Plan execution started in Codex terminal.',
+    };
+  }
+
+  private async runConversationWithoutDelivery(
+    adapter: BaseChannelAdapter,
+    message: InboundMessage,
+    binding: ChannelBinding,
+    promptText: string,
+  ): Promise<PreviewRunResult> {
+    const abortController = new AbortController();
+    this.state.activeTasks.set(binding.id, abortController);
+    let latestText = '';
+
+    try {
+      const result = await this.engine.processMessage(binding, adapter, promptText, {
+        permissionBroker: this.permissionBroker,
+        onPartialText: text => {
+          latestText = text;
+        },
+        onActivityEvent: this.buildActivityProjector(adapter, message),
+        abortSignal: abortController.signal,
+      });
+
+      const finalText = result.ok
+        ? result.text || latestText || 'No response text was returned.'
+        : `❌ ${result.error || 'Conversation failed'}`;
+      return {
+        ok: result.ok,
+        text: finalText,
+        sdkSessionId: result.sdkSessionId,
+      };
+    } finally {
+      this.state.activeTasks.delete(binding.id);
+      abortController.abort();
+    }
+  }
+
   private async sendTelegramResumeCard(
     adapter: BaseChannelAdapter,
     address: ChannelAddress,
+    patchMessageId?: string,
   ): Promise<void> {
     const sessions = this.store.listBindings()
       .sort((a, b) => {
@@ -1177,12 +1812,7 @@ Updated: \`${binding.updatedAt}\``;
       }));
 
     const card = buildResumeCard(sessions);
-    await adapter.send({
-      address,
-      text: card.text,
-      parseMode: card.parseMode,
-      inlineButtons: card.inlineButtons,
-    });
+    await this.sendOrPatchTelegramCard(adapter, address, card, patchMessageId);
   }
 
   private async patchOrSendCard(
@@ -1197,6 +1827,25 @@ Updated: \`${binding.updatedAt}\``;
 
     await adapter.send({
       address: message.address,
+      text: card.text,
+      parseMode: card.parseMode,
+      inlineButtons: card.inlineButtons,
+    });
+  }
+
+  private async sendOrPatchTelegramCard(
+    adapter: BaseChannelAdapter,
+    address: ChannelAddress,
+    card: CardMessage,
+    patchMessageId?: string,
+  ): Promise<void> {
+    if (patchMessageId && adapter.patchCard) {
+      const result = await adapter.patchCard(address, patchMessageId, card);
+      if (result.ok) return;
+    }
+
+    await adapter.send({
+      address,
       text: card.text,
       parseMode: card.parseMode,
       inlineButtons: card.inlineButtons,

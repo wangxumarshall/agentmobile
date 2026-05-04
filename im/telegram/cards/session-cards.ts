@@ -33,7 +33,12 @@ Tap a button below to create your session.`;
     inlineButtons: [
       [
         { text: `${claude.symbol} Claude Code`, callbackData: 'new-session:claude:code' },
-        { text: `${codex.symbol} Codex`, callbackData: 'new-session:codex:code' },
+        { text: `${claude.symbol} Claude Plan`, callbackData: 'new-session:claude:plan' },
+      ],
+      [
+        { text: `${codex.symbol} Codex Code`, callbackData: 'new-session:codex:code' },
+        { text: `${codex.symbol} Codex Plan`, callbackData: 'new-session:codex:plan' },
+        { text: `${codex.symbol} Codex Ask`, callbackData: 'new-session:codex:ask' },
       ],
     ],
   };

@@ -176,10 +176,14 @@ function runTask(prompt, cwd, opts) {
 - Feishu 卡片交互：HTTP callback `/api/webhooks/feishu/card-action`，用于权限按钮和 session/mode 卡片操作
 - Claude runtime 使用 `@anthropic-ai/claude-agent-sdk`
 - Telegram Codex runtime 使用长期运行的交互式 Codex PTY（`--no-alt-screen` + 全自动无审批），每个 binding 维护一个 terminal session；普通文本写入同一 PTY，`//<text>` 转义发送 Codex slash 命令。
-- Telegram Codex 命令：`/screen` 发送原始终端快照；`/enter`、`/esc`、`/tab`、`/backspace`、`/ctrlc`、`/ctrld`、`/up`、`/down`、`/left`、`/right`、`/pgup`、`/pgdn` 映射终端按键；`/stop` 发送 Ctrl+C 并保留会话，`/reset` 终止 PTY 并停用 binding。
+- Telegram Command Center：`/start`、`/help`、无 active binding 时发送 inline button 卡片；callback dispatcher 统一处理 `cmd:*`、`new-session:*`、`mode:*`、`terminal-key:*`、`plan:*`、`resume:*`、`claude-mode:*`。
+- Telegram 新建 session 卡片：Claude Code、Claude Plan、Codex Code、Codex Plan、Codex Ask；旧 slash commands 保留 fallback。
+- Telegram 模式卡片：`/mode` 无参数返回当前 runtime 可用模式；Claude 保留 Plan / Auto-Edits / Default permission mode，Codex 提供 code / plan / ask。
+- Telegram Codex 控制卡：`/screen` 发送原始终端快照；`/enter`、`/esc`、`/tab`、`/backspace`、`/ctrlc`、`/ctrld`、`/up`、`/down`、`/left`、`/right`、`/pgup`、`/pgdn` 映射终端按键；`/stop` 发送 Ctrl+C 并保留会话，`/reset` 终止 PTY 并停用 binding。卡片按钮与 slash command 行为等价。
+- Telegram Plan workflow：状态保存在 `im-data/plan-workflows.json`，结构为 `PlanWorkflow { id, bindingId, channel route, promptText, planText, status, previewMessageId?, createdAt, updatedAt }`；状态机为 `drafting -> awaiting_decision -> revising -> executing -> completed | cancelled`。Plan Ready 卡片提供 Execute Plan、Revise Plan、Cancel；Execute 阶段临时切换到 code 执行并持续用 streaming preview / activity card 反馈，完成后按 runtime 恢复原 mode。
 - 非 Telegram Codex runtime 仍使用 `codex exec` 非交互 provider；Web TaskPanel 的 `codex exec` 异步任务能力不变。
-- 运行时状态持久化到 `im-data/`（bindings / sessions / cache）
-- v1 边界：普通对话、`/new`、`/reset`、`/mode`、streaming preview fallback、权限卡片、图片附件上下文可用；Plan confirmation workflow 与 structured input cards 保持文本降级，后续补全。
+- 运行时状态持久化到 `im-data/`（bindings / sessions / plan-workflows / cache）
+- v1 边界：普通对话、`/new`、`/reset`、`/mode`、streaming preview fallback、权限卡片、图片附件上下文、Telegram 卡片化入口与 Telegram Plan workflow 可用；Feishu Plan confirmation workflow 与 structured input cards 保持文本降级，后续补全。
 - 可选 systemd unit：`agentmobile-im.service`
 
 ---
@@ -315,7 +319,7 @@ agentmobile/
 | `TELEGRAM_SHOW_TOOL_CALL_CARDS` | | `false` | 是否在 Telegram 显示 tool / activity cards |
 | `IM_BRIDGE_ENABLED` | | `false` | 是否启用 IM bridge 进程 |
 | `FEISHU_ENABLED` | | `false` | 是否启用 Feishu / Lark adapter |
-| `CTI_HOME` | | `./im-data` | IM bridge 持久化目录 |
+| `CTI_HOME` | | `./im-data` | IM bridge 持久化目录（bindings / sessions / plan-workflows） |
 | `CTI_DEFAULT_WORKDIR` | | `WORKSPACE_ROOT` | IM 默认工作目录 |
 | `CTI_FEISHU_APP_ID` | | — | Feishu / Lark app id |
 | `CTI_FEISHU_APP_SECRET` | | — | Feishu / Lark app secret |

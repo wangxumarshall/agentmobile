@@ -57,7 +57,9 @@
 | F-16 | IM 频道（Telegram / Feishu） | 外出时在 Telegram 或飞书给 AI 下任务或继续对话，结果回传聊天 |
 | F-17 | 多输入渠道统一路由 | 任意渠道（Web/IM/CLI）的 prompt 统一进入 task 队列，结果同步回发起方 |
 
-F-16 v1 边界：飞书支持私聊/群聊收消息、`/new:claude`、`/new:codex`、普通对话、streaming preview fallback、权限卡片、`/reset`、`/mode`、图片作为附件上下文。Plan confirmation workflow 与 structured input cards 暂保留文本降级提示。
+F-16 v1 边界：飞书支持私聊/群聊收消息、`/new:claude`、`/new:codex`、普通对话、streaming preview fallback、权限卡片、`/reset`、`/mode`、图片作为附件上下文。Telegram 正式入口为 `agentmobile-im` polling bridge，`/start`、`/help`、无 active binding 时展示 Command Center 卡片，常用操作通过 inline button 完成。
+
+F-16 Telegram Plan workflow：Telegram Plan session 收到任务后先进入 `drafting`，生成完成后展示 Plan Ready 卡片；用户可点击 Execute Plan、Revise Plan、Cancel。状态持久化到 `im-data/plan-workflows.json`，状态机为 `drafting -> awaiting_decision -> revising -> executing -> completed | cancelled`。Legacy `server.js` Telegram webhook 不覆盖该卡片与状态机能力。
 
 F-16 配置体验：Telegram 支持在 Web Settings 中填写 BotFather token 并保存到 `.env`；飞书 / Lark 支持在 Web Settings 中生成二维码，用户用飞书扫码后自动写入 app id / secret 并开启 IM bridge；卡片按钮 callback URL 仍需按部署域名在飞书后台配置。
 
@@ -90,10 +92,14 @@ POST /api/webhooks/telegram
 
 npm run start:im
   → Telegram adapter 使用 polling（启动时 deleteWebhook）
+  → /start、/help、无 active binding 时发送 Command Center 卡片
+  → 新建 session 卡片提供 Claude Code / Claude Plan / Codex Code / Codex Plan / Codex Ask
+  → /mode 无参数发送模式卡片；按钮持久化 binding.mode / Claude permission mode
   → /new:codex 绑定长期运行的交互式 Codex PTY
   → 普通 Telegram 文本写入同一 Codex 进程
   → 默认编辑一条 Telegram preview 展示终端转写
-  → /screen 返回原始终端快照，/ctrlc 等命令映射终端按键
+  → Codex Controls 卡片与 /screen、/ctrlc 等命令等价
+  → Plan workflow 持久化并通过 Plan Ready 卡片执行 / 修改 / 取消
 ```
 
 **设计原则**：任务派发与交互终端解耦——交互 PTY 继续用于实时 claude 对话，tasks API 用于异步一次性任务，两者共存，各司其职。
