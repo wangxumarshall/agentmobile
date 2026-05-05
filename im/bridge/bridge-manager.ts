@@ -432,6 +432,7 @@ export class BridgeManager {
     let previewUpdates = Promise.resolve();
     let previewActive = Boolean(terminalPreview?.active);
     let latestTranscript = this.codexTerminalRuntime.getTranscriptSnapshot(binding.id);
+    let latestStatus = '';
 
     const sendPreviewText = async (projected: string): Promise<boolean> => {
       if (!canPreview || draftId === null || !adapter.sendPreview) return false;
@@ -446,7 +447,7 @@ export class BridgeManager {
     const onTranscriptUpdate = (transcript: string) => {
       latestTranscript = transcript;
       if (!canPreview || draftId === null) return;
-      const projected = this.renderCodexTranscript(transcript);
+      const projected = this.renderCodexLiveProgress(transcript, latestStatus);
       previewUpdates = previewUpdates
         .then(async () => {
           await sendPreviewText(projected);
@@ -454,10 +455,22 @@ export class BridgeManager {
         .catch(e => debug('bridge-manager', `Codex terminal preview update failed: ${e}`));
     };
 
+    const activityProjector = this.buildActivityProjector(adapter, message);
+    const onActivityEvent = (event: ActivityEventInfo) => {
+      activityProjector?.(event);
+      latestStatus = this.describeLiveActivity(binding, event);
+      if (!canPreview || draftId === null) return;
+      previewUpdates = previewUpdates
+        .then(async () => {
+          await sendPreviewText(this.renderCodexLiveProgress(latestTranscript, latestStatus));
+        })
+        .catch(e => debug('bridge-manager', `Codex terminal activity preview update failed: ${e}`));
+    };
+
     return {
       callbacks: {
         onTranscriptUpdate,
-        onActivityEvent: this.buildActivityProjector(adapter, message),
+        onActivityEvent,
       },
       primePreview: async () => {
         if (!canPreview || draftId === null || previewActive || !adapter.primePreview) return;
@@ -501,6 +514,44 @@ export class BridgeManager {
     return trimmed.length <= maxChars
       ? trimmed
       : `...[transcript truncated]\n${trimmed.slice(trimmed.length - maxChars)}`;
+  }
+
+  private renderCodexLiveProgress(transcript: string, status: string): string {
+    const body = this.renderCodexTranscript(transcript);
+    if (!status) return body;
+    return body
+      ? `Codex live progress\n\n${status}\n\nTerminal:\n${body}`
+      : `Codex live progress\n\n${status}`;
+  }
+
+  private renderAgentLiveProgress(binding: ChannelBinding, status: string, text: string): string {
+    const runtimeLabel = binding.runtime === 'codex' ? 'Codex' : 'Claude';
+    const body = text.trim();
+    return body
+      ? `${runtimeLabel} live progress\n\n${status}\n\nResponse:\n${body}`
+      : `${runtimeLabel} live progress\n\n${status}\n\nWaiting for public output...`;
+  }
+
+  private describeInitialLiveStatus(binding: ChannelBinding): string {
+    const runtimeLabel = binding.runtime === 'codex' ? 'Codex' : 'Claude';
+    const mode = binding.mode === 'plan' ? 'plan mode' : binding.mode === 'ask' ? 'ask mode' : 'code mode';
+    return `${runtimeLabel} is working in ${mode}. Hidden chain-of-thought is not shown.`;
+  }
+
+  private describeLiveActivity(binding: ChannelBinding, event: ActivityEventInfo): string {
+    const runtimeLabel = binding.runtime === 'codex' ? 'Codex' : 'Claude';
+    const description = event.description?.trim();
+    switch (event.type) {
+      case 'tool_use':
+        return `${runtimeLabel} is using tool: ${event.title}${description ? `\n${description}` : ''}`;
+      case 'command':
+        return `${runtimeLabel} is running command: ${event.title}${description ? `\n${description}` : ''}`;
+      case 'file_change':
+        return `${runtimeLabel} is updating files${description ? `\n${description}` : ''}`;
+      case 'progress':
+      default:
+        return `${event.title}${description ? `\n${description}` : ''}`;
+    }
   }
 
   private getOrCreateTerminalPreview(bindingId: string, address: ChannelAddress): TerminalPreviewState {
@@ -561,11 +612,27 @@ export class BridgeManager {
     let previewUpdates = Promise.resolve();
     let previewActive = false;
     let previewMessageId: string | undefined;
+    let latestText = '';
+    let latestStatus = this.describeInitialLiveStatus(binding);
+    const useLiveProgressPreview = message.address.channelType === 'telegram';
+
+    const queuePreviewUpdate = (projected: string) => {
+      if (!canPreview || draftId === null || !adapter.sendPreview) return;
+      previewUpdates = previewUpdates
+        .then(async () => {
+          const outcome = await adapter.sendPreview!(message.address, projected, draftId);
+          if (outcome === 'sent' || outcome === 'skip') previewActive = true;
+        })
+        .catch(e => debug('bridge-manager', `Preview update failed: ${e}`));
+    };
 
     if (canPreview && draftId !== null) {
       try {
         const primed = await adapter.primePreview!(message.address, draftId);
         previewActive = primed === 'sent' || primed === 'skip';
+        if (useLiveProgressPreview) {
+          queuePreviewUpdate(this.renderAgentLiveProgress(binding, latestStatus, latestText));
+        }
       } catch (e) {
         debug('bridge-manager', `Preview prime failed: ${e}`);
       }
@@ -573,30 +640,27 @@ export class BridgeManager {
 
     const onPartialText = canPreview && draftId !== null
       ? (text: string) => {
-          previewUpdates = previewUpdates
-            .then(async () => {
-              const outcome = await adapter.sendPreview!(message.address, text, draftId);
-              if (outcome === 'sent') previewActive = true;
-            })
-            .catch(e => debug('bridge-manager', `Preview update failed: ${e}`));
+          latestText = text;
+          latestStatus = `${binding.runtime === 'codex' ? 'Codex' : 'Claude'} is streaming a public response.`;
+          queuePreviewUpdate(useLiveProgressPreview
+            ? this.renderAgentLiveProgress(binding, latestStatus, latestText)
+            : latestText);
         }
       : undefined;
 
-    const onActivityEvent = adapter.upsertActivityEvent && adapter.shouldProjectActivityEvent
-      ? (event: {
-          type: 'command' | 'file_change' | 'tool_use' | 'progress';
-          title: string;
-          description?: string;
-          metadata?: Record<string, unknown>;
-        }) => {
-          const activityEvent = {
-            ...event,
-            timestamp: Date.now(),
-          };
-          if (!adapter.shouldProjectActivityEvent?.(activityEvent)) return;
-          void adapter.upsertActivityEvent?.(message.address, activityEvent, message.messageId);
-        }
-      : undefined;
+    const activityProjector = this.buildActivityProjector(adapter, message);
+    const onActivityEvent = (event: {
+      type: 'command' | 'file_change' | 'tool_use' | 'progress';
+      title: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+    }) => {
+      latestStatus = this.describeLiveActivity(binding, event);
+      if (useLiveProgressPreview) {
+        queuePreviewUpdate(this.renderAgentLiveProgress(binding, latestStatus, latestText));
+      }
+      activityProjector?.(event);
+    };
 
     try {
       const result = await this.engine.processMessage(binding, adapter, promptText, {

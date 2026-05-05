@@ -21,6 +21,7 @@ import { mkdirSync, rmSync, existsSync, readdirSync, writeFileSync, readFileSync
 import { join } from 'path';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { PassThrough } from 'node:stream';
 
 // ── Mocks ───────────────────────────────────────────────────
 import { MockLarkClient } from './mocks/mock-lark-client.js';
@@ -62,6 +63,7 @@ import { TelegramPreviewService, TelegramActivityService } from '../im/telegram/
 import { loadConfig } from '../im/config/config.js';
 import { JsonFileStore } from '../im/infra/store.js';
 import { ClaudeSDKProvider, classifyAuthError, isAuthError } from '../im/providers/claude-sdk.js';
+import { CodexSDKProvider } from '../im/providers/codex-sdk.js';
 import type {
   CodexTerminalCallbacks,
   CodexTerminalKey,
@@ -290,6 +292,46 @@ class FakeCodexTerminalRuntime implements CodexTerminalRuntime {
     this.stoppedAll = true;
     this.sessions.clear();
   }
+}
+
+function createCodexJsonSpawn(lines: string[], delayMs = 5): any {
+  return () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const listeners = new Map<string, Array<(...args: any[]) => void>>();
+    const proc: any = {
+      stdout,
+      stderr,
+      killed: false,
+      kill: () => {
+        proc.killed = true;
+        return true;
+      },
+      once: (event: string, cb: (...args: any[]) => void) => {
+        const existing = listeners.get(event) || [];
+        existing.push(cb);
+        listeners.set(event, existing);
+        return proc;
+      },
+    };
+    const emitOnce = (event: string, ...args: any[]) => {
+      const callbacks = listeners.get(event) || [];
+      listeners.delete(event);
+      for (const cb of callbacks) cb(...args);
+    };
+
+    void (async () => {
+      for (const line of lines) {
+        stdout.write(line + '\n');
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+      stdout.end();
+      stderr.end();
+      emitOnce('close', 0);
+    })();
+
+    return proc;
+  };
 }
 
 async function postJson(port: number, path: string, payload: Record<string, unknown>) {
@@ -793,6 +835,50 @@ async function main() {
     });
   });
 
+  // ── 6b. Codex SDK Provider ───────────────────────────────
+  await suite('6b. Codex SDK Provider', async () => {
+    await test('Codex exec JSON emits safe live progress and public text', async () => {
+      const provider = new CodexSDKProvider(createCodexJsonSpawn([
+        JSON.stringify({ type: 'session.created', session_id: 'codex_session_live' }),
+        JSON.stringify({ type: 'response.reasoning.delta', delta: 'secret hidden thought' }),
+        JSON.stringify({ type: 'exec_command', command: 'pwd', status: 'running' }),
+        JSON.stringify({ type: 'assistant_message_delta', delta: 'Public ' }),
+        JSON.stringify({ type: 'assistant_message_delta', delta: 'answer' }),
+      ]));
+      const binding = makeTestBinding({
+        runtime: 'codex',
+        workingDirectory: '/tmp/project-codex',
+      }) as any;
+      const activities: string[] = [];
+      let text = '';
+      let sessionId = '';
+
+      for await (const event of provider.streamChat(binding, [{ role: 'user', content: 'hello' }], {
+        onActivityEvent: activity => {
+          activities.push(`${activity.title}\n${activity.description || ''}`);
+        },
+      })) {
+        if (event.type === 'text') text += event.text || '';
+        if (event.type === 'result') sessionId = event.data?.sessionId as string || '';
+      }
+
+      assertEquals(text, 'Public answer', 'Should stream public assistant text deltas');
+      assertEquals(sessionId, 'codex_session_live', 'Should capture session id from JSON');
+      assert(
+        activities.some(activity => activity.includes('Hidden chain-of-thought is not shown')),
+        'Should replace hidden reasoning with safe status',
+      );
+      assert(
+        activities.some(activity => activity.includes('pwd')),
+        'Should project public command activity',
+      );
+      assert(
+        !activities.join('\n').includes('secret hidden thought') && !text.includes('secret hidden thought'),
+        'Should not leak hidden reasoning text',
+      );
+    });
+  });
+
   // ── 7. Permission Broker ────────────────────────────────
   await suite('7. Permission Broker', async () => {
     await test('handleCallback resolves permission callbacks', () => {
@@ -1089,6 +1175,119 @@ async function main() {
       assertEquals(status.running, true, 'Should be running');
       await manager.stop();
       assertEquals(manager.getStatus().running, false, 'Should be stopped');
+    });
+
+    await test('Telegram Claude previews live progress before final text', async () => {
+      const llm = new MockLLMProvider();
+      llm.responseConfig = {
+        activities: [
+          {
+            type: 'progress',
+            title: 'Claude status',
+            description: 'Claude is reasoning internally. Hidden chain-of-thought is not shown.',
+            metadata: { status: 'running', source: 'mock' },
+          },
+        ],
+        text: 'Final Claude answer',
+      };
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new PreviewQueueAdapter() as any;
+      adapter.channelType = 'telegram';
+      adapter.adapterId = 'telegram';
+      adapter.profileId = 'default';
+      adapter.label = 'Telegram';
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_claude_live_progress',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_claude_live_progress',
+        workingDirectory: '/tmp/project-claude',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_claude_live_progress_msg', address, text: 'work live' }));
+
+        await waitFor(() => adapter.previewUpdates.some((update: any) => update.text.includes('Claude live progress')));
+        assert(
+          adapter.previewUpdates.some((update: any) => update.text.includes('Hidden chain-of-thought is not shown')),
+          'Should show safe internal reasoning status',
+        );
+        assert(
+          adapter.previewUpdates.some((update: any) => update.text.includes('Final Claude answer')),
+          'Should update preview with final public text before finalization',
+        );
+        const draftIds = new Set(adapter.previewUpdates.map((update: any) => update.draftId));
+        assertEquals(draftIds.size, 1, 'Claude live progress should use one preview draft');
+        await waitFor(() => adapter.finalizedPreviews.some((preview: any) => preview.text.includes('Final Claude answer')));
+        assert(
+          !adapter.previewUpdates.some((update: any) => update.text.includes('secret hidden thought')),
+          'Should not expose hidden reasoning text',
+        );
+      } finally {
+        await manager.stop();
+      }
+    });
+
+    await test('Telegram Claude tool events update the same preview', async () => {
+      const llm = new MockLLMProvider();
+      llm.responseConfig = {
+        toolUses: [
+          { id: 'tool_live_1', name: 'Bash', input: { command: 'pwd' } },
+        ],
+        text: 'Tool finished',
+      };
+      const store = new MockStore();
+      const router = new ChannelRouter(store as any);
+      const manager = new BridgeManager(store as any, llm as any, {
+        router,
+        permissionBroker: new PermissionBroker(),
+      });
+      const adapter = new PreviewQueueAdapter() as any;
+      adapter.channelType = 'telegram';
+      adapter.adapterId = 'telegram';
+      adapter.profileId = 'default';
+      adapter.label = 'Telegram';
+      const address = {
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: 'tg_claude_tool_preview',
+        userId: 'tg_user',
+      };
+      router.createBinding({
+        channelType: 'telegram',
+        channelInstanceId: 'default',
+        chatId: address.chatId,
+        agentSessionId: 'session_tg_claude_tool_preview',
+        workingDirectory: '/tmp/project-claude',
+        runtime: 'claude',
+      });
+
+      manager.registerAdapter(adapter as any);
+      await manager.start();
+      try {
+        adapter.push(makeInboundMessage({ messageId: 'tg_claude_tool_preview_msg', address, text: 'run pwd' }));
+
+        await waitFor(() => adapter.previewUpdates.some((update: any) => update.text.includes('Claude is using tool: Bash')));
+        await waitFor(() => adapter.previewUpdates.some((update: any) => update.text.includes('Tool finished')));
+        const draftIds = new Set(adapter.previewUpdates.map((update: any) => update.draftId));
+        assertEquals(draftIds.size, 1, 'Tool progress and text should use the same preview draft');
+      } finally {
+        await manager.stop();
+      }
     });
   });
 

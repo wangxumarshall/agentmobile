@@ -14,6 +14,12 @@ export interface MockLLMResponseConfig {
     name: string;
     input: Record<string, unknown>;
   }>;
+  activities?: Array<{
+    type: 'command' | 'file_change' | 'tool_use' | 'progress';
+    title: string;
+    description?: string;
+    metadata?: Record<string, unknown>;
+  }>;
   error?: string;
   delayMs?: number;
 }
@@ -69,6 +75,12 @@ export class MockLLMProvider implements LLMProvider {
       return;
     }
 
+    if (this._config.activities) {
+      for (const activity of this._config.activities) {
+        options?.onActivityEvent?.(activity);
+      }
+    }
+
     // Emit tool use events first (if configured)
     if (this._config.toolUses) {
       for (const tool of this._config.toolUses) {
@@ -90,6 +102,12 @@ export class MockLLMProvider implements LLMProvider {
           type: 'tool_use',
           data: { id: tool.id, name: tool.name, input: tool.input },
         };
+        options?.onActivityEvent?.({
+          type: 'tool_use',
+          title: tool.name,
+          description: JSON.stringify(tool.input),
+          metadata: { toolId: tool.id, source: 'mock' },
+        });
       }
     }
 
