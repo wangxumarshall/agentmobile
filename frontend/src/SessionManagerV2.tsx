@@ -133,10 +133,17 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   const [renameValue, setRenameValue] = useState('')
   const [renaming, setRenaming] = useState(false)
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const currentProjectRef = useRef(currentProject)
+  const channelsRequestRef = useRef(0)
+  const renamingRef = useRef(false)
 
   const headers = { Authorization: `Bearer ${token}` }
 
   // --- Data fetching ---
+
+  useEffect(() => {
+    currentProjectRef.current = currentProject
+  }, [currentProject])
 
   const fetchProjects = useCallback(async () => {
     setLoadingProjects(true)
@@ -152,20 +159,24 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   }, [token])
 
   const fetchChannels = useCallback(async (projectName: string, opts?: { silent?: boolean }) => {
+    const requestId = ++channelsRequestRef.current
     if (!opts?.silent) setLoadingChannels(true)
     try {
       const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/channels`, { headers })
       if (!r.ok) {
+        if (requestId !== channelsRequestRef.current || projectName !== currentProjectRef.current) return
         setError(await parseApiError(r, t('sessionMgr.loadFailed')))
         return
       }
       const data = await r.json()
+      if (requestId !== channelsRequestRef.current || projectName !== currentProjectRef.current) return
       setChannels((data as any).channels || [])
     } catch (e: unknown) {
+      if (requestId !== channelsRequestRef.current || projectName !== currentProjectRef.current) return
       console.error('Load channels failed:', e)
       setError(parseNetworkError(e))
     } finally {
-      if (!opts?.silent) setLoadingChannels(false)
+      if (!opts?.silent && requestId === channelsRequestRef.current) setLoadingChannels(false)
     }
   }, [t, token])
 
@@ -249,19 +260,20 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   }
 
   const cancelRename = () => {
-    if (renaming) return
+    if (renamingRef.current) return
     setRenameTarget(null)
     setRenameValue('')
   }
 
   const submitRename = async () => {
-    if (!renameTarget || renaming) return
+    if (!renameTarget || renamingRef.current) return
     const newName = renameValue.trim()
     const currentName = renameTarget.type === 'channel' ? renameTarget.channel.name : renameTarget.project.name
     if (!newName || newName === currentName) {
       cancelRename()
       return
     }
+    renamingRef.current = true
     setRenaming(true)
     try {
       const r = renameTarget.type === 'channel'
@@ -276,17 +288,28 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
           body: JSON.stringify({ name: newName }),
         })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.renameFailed'))); return }
+      const data = await r.json()
+      const actualName = typeof data?.newName === 'string'
+        ? data.newName
+        : typeof data?.name === 'string'
+          ? data.name
+          : newName
       if (renameTarget.type === 'channel') {
         fetchChannels(currentProject)
       } else {
         fetchProjects()
-        if (renameTarget.project.name === currentProject) onSwitchProject(newName)
+        if (renameTarget.project.name === currentProject) {
+          currentProjectRef.current = actualName
+          onSwitchProject(actualName)
+          fetchChannels(actualName)
+        }
       }
       setRenameTarget(null)
       setRenameValue('')
     } catch (e: unknown) {
       setError(parseNetworkError(e))
     } finally {
+      renamingRef.current = false
       setRenaming(false)
     }
   }
@@ -515,7 +538,6 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                         onChange={(e) => setRenameValue(e.target.value)}
                         onKeyDown={handleRenameInputKeyDown}
                         onPointerDown={(e) => e.stopPropagation()}
-                        onBlur={cancelRename}
                         className={renameInputClass}
                         disabled={renaming}
                       />
@@ -598,7 +620,6 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                       onChange={(e) => setRenameValue(e.target.value)}
                       onKeyDown={handleRenameInputKeyDown}
                       onPointerDown={(e) => e.stopPropagation()}
-                      onBlur={cancelRename}
                       className={`${renameInputClass} flex-1 min-w-0`}
                       disabled={renaming}
                     />
@@ -715,7 +736,6 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                         onChange={(e) => setRenameValue(e.target.value)}
                         onKeyDown={handleRenameInputKeyDown}
                         onPointerDown={(e) => e.stopPropagation()}
-                        onBlur={cancelRename}
                         className={renameInputClass}
                         disabled={renaming}
                       />
@@ -781,7 +801,6 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                       onChange={(e) => setRenameValue(e.target.value)}
                       onKeyDown={handleRenameInputKeyDown}
                       onPointerDown={(e) => e.stopPropagation()}
-                      onBlur={cancelRename}
                       className={`${renameInputClass} flex-1 min-w-0`}
                       disabled={renaming}
                     />

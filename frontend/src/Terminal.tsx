@@ -116,6 +116,8 @@ const FONT_SIZE_KEY = 'agentmobile_font_size'
 const THEME_KEY = 'agentmobile_theme'
 const WINDOW_KEY = 'agentmobile_window'
 const TAP_THRESHOLD = 8
+const SCROLLBACK_PREFETCH_THRESHOLD_PX = 10
+const SCROLLBACK_OPEN_THRESHOLD_PX = 40
 const MAX_UPLOAD_NOTIFICATIONS = 5
 
 export type ThemeMode = 'dark' | 'light'
@@ -262,11 +264,14 @@ export default function Terminal({ token }: Props) {
   const [scrollbackLoading, setScrollbackLoading] = useState(false)
   const [scrollbackHintVisible, setScrollbackHintVisible] = useState(true)
   const showScrollbackRef = useRef(false)
-  const swipeUpAccumRef = useRef(0)
   const scrollbackOverlayRef = useRef<HTMLDivElement>(null)
-  const triggerScrollbackRef = useRef<() => void>(() => {})
   const scrollbackPrefetchRef = useRef<Promise<{ content: string }> | null>(null)
   const scrollbackCacheRef = useRef<string | null>(null)
+  const triggerScrollbackRef = useRef<() => void>(() => {})
+  const scrollbackOpenOffsetRef = useRef(0)
+  const scrollbackPendingDeltaRef = useRef(0)
+  const scrollbackAppliedInitialOffsetRef = useRef(false)
+  const swipeHistoryAccumRef = useRef(0)
   const pausePollingRef = useRef(false)
   const activeWindowIndexRef = useRef(0)
   const windowsInitializedRef = useRef(false)
@@ -970,6 +975,7 @@ export default function Terminal({ token }: Props) {
     if (viewport) {
       viewport.style.pointerEvents = 'auto'
       viewport.style.userSelect = 'text'
+      viewport.style.touchAction = 'none'
     }
 
     // Enable text selection in the terminal screen element
@@ -1172,7 +1178,8 @@ export default function Terminal({ token }: Props) {
         touchStartX = e.touches[0].clientX
         touchStartY = e.touches[0].clientY
         touchLastY = e.touches[0].clientY
-        swipeUpAccumRef.current = 0
+        swipeHistoryAccumRef.current = 0
+        scrollbackPendingDeltaRef.current = 0
         swipeAxis = null
       }
     }
@@ -1199,15 +1206,27 @@ export default function Terminal({ token }: Props) {
           if (dx > 8 || dy > 8) swipeAxis = dx > dy ? 'horizontal' : 'vertical'
         }
         if (swipeAxis === 'horizontal') { e.preventDefault(); return }
-        if (swipeAxis === 'vertical' && !showScrollbackRef.current) {
+        if (swipeAxis === 'vertical') {
           e.preventDefault()
           const y = e.touches[0].clientY
-          const deltaY = touchLastY - y  // positive = finger UP = want older content
+          const deltaY = touchLastY - y
           touchLastY = y
-          if (deltaY < 0) {  // finger DOWN = swipe down = view history
-            swipeUpAccumRef.current += -deltaY
-            if (swipeUpAccumRef.current > 10 && !scrollbackPrefetchRef.current && scrollbackCacheRef.current === null) {
-              // Pre-fetch while gesture is still building up
+
+          if (showScrollbackRef.current) {
+            const overlay = scrollbackOverlayRef.current
+            if (overlay) overlay.scrollTop += deltaY
+            else scrollbackPendingDeltaRef.current += deltaY
+            return
+          }
+
+          if (deltaY < 0) {
+            const olderDelta = -deltaY
+            swipeHistoryAccumRef.current += olderDelta
+            if (
+              swipeHistoryAccumRef.current > SCROLLBACK_PREFETCH_THRESHOLD_PX &&
+              !scrollbackPrefetchRef.current &&
+              scrollbackCacheRef.current === null
+            ) {
               const wi = activeWindowIndexRef.current
               const s = activeTmuxSessionRef.current
               scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
@@ -1220,11 +1239,12 @@ export default function Terminal({ token }: Props) {
                 })
                 .catch(() => { scrollbackPrefetchRef.current = null; return { content: '' } })
             }
-            if (swipeUpAccumRef.current > 40) {
+            if (swipeHistoryAccumRef.current > SCROLLBACK_OPEN_THRESHOLD_PX) {
+              scrollbackOpenOffsetRef.current = swipeHistoryAccumRef.current
               triggerScrollbackRef.current()
             }
           } else {
-            swipeUpAccumRef.current = 0
+            swipeHistoryAccumRef.current = 0
           }
         }
       }
@@ -1601,6 +1621,9 @@ export default function Terminal({ token }: Props) {
     setScrollbackContent('')
     scrollbackCacheRef.current = null
     scrollbackPrefetchRef.current = null
+    scrollbackOpenOffsetRef.current = 0
+    scrollbackPendingDeltaRef.current = 0
+    scrollbackAppliedInitialOffsetRef.current = false
   }
 
   function handleOverlayScroll(e: React.UIEvent<HTMLDivElement>) {
@@ -1614,7 +1637,8 @@ export default function Terminal({ token }: Props) {
   function fetchScrollback() {
     if (showScrollbackRef.current) return // already showing
     showScrollbackRef.current = true
-    swipeUpAccumRef.current = 0
+    swipeHistoryAccumRef.current = 0
+    scrollbackAppliedInitialOffsetRef.current = false
     setShowScrollback(true)
     setScrollbackHintVisible(true) // 显示提示
     // 2秒后自动隐藏提示
@@ -1648,11 +1672,14 @@ export default function Terminal({ token }: Props) {
   }
 
   useEffect(() => {
-    if (scrollbackContent && scrollbackOverlayRef.current) {
-      // 初始滚动到距离底部 50px，避免立即触发 atBottom 检测
-      const el = scrollbackOverlayRef.current
-      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 50)
-    }
+    if (scrollbackAppliedInitialOffsetRef.current) return
+    if (!scrollbackContent || !scrollbackOverlayRef.current) return
+    const el = scrollbackOverlayRef.current
+    const bottom = Math.max(0, el.scrollHeight - el.clientHeight)
+    const offset = Math.max(1, scrollbackOpenOffsetRef.current - scrollbackPendingDeltaRef.current)
+    scrollbackAppliedInitialOffsetRef.current = true
+    scrollbackPendingDeltaRef.current = 0
+    el.scrollTop = Math.max(0, bottom - offset)
   }, [scrollbackContent])
 
   triggerScrollbackRef.current = fetchScrollback
@@ -2258,7 +2285,6 @@ export default function Terminal({ token }: Props) {
           </div>
         )
       })()}
-
       {/* 上传文件通知条 */}
       {uploadNotifications.length > 0 && (
         <div

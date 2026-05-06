@@ -5,7 +5,7 @@ import * as pty from 'node-pty';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { createServer } from 'node:http';
-import { exec, spawn, execSync, execFileSync } from 'child_process';
+import { exec, execFile, spawn, execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, normalize, isAbsolute, basename } from 'path';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, statSync, rmdirSync, renameSync, cpSync, rmSync } from 'fs';
@@ -1499,9 +1499,10 @@ app.post('/api/sessions/:id/rename', authMiddleware, (req, res) => {
   const index = req.params.id
   const session = req.query.session || TMUX_SESSION
   const { name } = req.body || {}
-  if (!name) return res.status(400).json({ error: 'name required' })
-  const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '-').substring(0, 50)
-  exec(`tmux rename-window -t ${session}:${index} "${safeName}"`, (err) => {
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name required' })
+  const safeName = name.trim().replace(/[^a-zA-Z0-9._-]/g, '-').substring(0, 50)
+  if (!safeName) return res.status(400).json({ error: 'invalid name format' })
+  execFile('tmux', ['rename-window', '-t', `${session}:${index}`, safeName], (err) => {
     if (err) return res.status(500).json({ error: err.message })
     res.json({ ok: true, name: safeName })
   })
@@ -1821,28 +1822,31 @@ app.post('/api/projects/:name/activate', authMiddleware, (req, res) => {
 app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
   const oldName = req.params.name
   const { name: newName } = req.body || {}
-  if (!newName || !newName.trim()) {
+  if (typeof newName !== 'string' || !newName.trim()) {
     return res.status(400).json({ error: 'new name required' })
   }
   const sanitizedNewName = newName.trim().replace(/[^a-zA-Z0-9_\-]/g, '')
   if (!sanitizedNewName) {
     return res.status(400).json({ error: 'invalid name format' })
   }
+  if (sanitizedNewName === oldName) {
+    return res.json({ ok: true, oldName, newName: oldName })
+  }
   // 验证旧 session 存在
   try {
-    execSync(`tmux has-session -t ${oldName}`)
+    execFileSync('tmux', ['has-session', '-t', oldName])
   } catch {
     return res.status(404).json({ error: 'project not found' })
   }
   // 检查新名称是否已存在
   try {
-    execSync(`tmux has-session -t ${sanitizedNewName}`)
+    execFileSync('tmux', ['has-session', '-t', sanitizedNewName])
     return res.status(409).json({ error: 'project name already exists' })
   } catch {
     // 不存在，可以重命名
   }
   // 执行重命名
-  exec(`tmux rename-session -t ${oldName} ${sanitizedNewName}`, (err) => {
+  execFile('tmux', ['rename-session', '-t', oldName, sanitizedNewName], (err) => {
     if (err) return res.status(500).json({ error: err.message })
     refreshProjectsSnapshot('rename_project')
     res.json({ ok: true, oldName, newName: sanitizedNewName })
