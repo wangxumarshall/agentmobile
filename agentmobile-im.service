@@ -1,5 +1,6 @@
 [Unit]
 Description=agentmobile IM bridge service
+Documentation=file:/home/ubuntu/code/idea0019-agent-mobile/docs/SERVICES.md
 After=network.target
 
 [Service]
@@ -10,6 +11,7 @@ WorkingDirectory=/home/ubuntu/code/idea0019-agent-mobile
 ExecStart=/usr/bin/npm run start:im
 Restart=on-failure
 RestartSec=10
+KillMode=control-group
 StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production

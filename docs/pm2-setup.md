@@ -1,5 +1,7 @@
 # PM2 配置与启动指南 (agentmobile)
 
+> 说明：PM2 是 systemd 不可用时的 fallback。推荐生产/WSL2 宿主机使用 `node scripts/setup.js` 安装 systemd 双运行域：`agentmobile.service`（Web bridge）+ `agentmobile-tmux.service`（持久 tmux runtime）。服务拉取、部署、重启、日志、回滚以 [`docs/SERVICES.md`](SERVICES.md) 为准。
+
 ## ecosystem.config.js 内容
 ```js
 module.exports = {
@@ -50,5 +52,6 @@ pm2 startup
 - `pm2 env agentmobile | grep CLAUDE_CONFIG_DIR`：应为空（清理成功）。
 - `pm2 logs agentmobile`：查看日志。
 - **回滚**：`pm2 delete agentmobile && rm ecosystem.config.js pm2-setup.md logs/agentmobile*.log`。
+- systemd 部署不要参考本文件重启服务；使用 `npm run service:pull:web` / `npm run service:verify`。
 
 **日期**：2026-04-05

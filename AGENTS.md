@@ -19,13 +19,14 @@ Project: **agentmobile** — WebSocket tmux 桥接，AI 终端移动端面板
 | Backend | Node.js (ESM) + Express + ws + node-pty |
 | Frontend | React 18 + TypeScript + xterm.js + Vite |
 | Auth | JWT (30d) + bcrypt password hash |
-| Runtime | 宿主机（WSL2）直接运行，Node.js + systemd 管理（PM2 fallback） |
+| Runtime | 宿主机（WSL2）直接运行，Node.js + systemd 管理（PM2 fallback）；systemd 下 Web bridge 与 tmux runtime 分离 |
 | Config | `.env` → `server.js` 顶部解构，无 dotenv 依赖 |
 | Persist | `./data/`（toolbar config、session configs） |
 
 ## Architecture Constraints
 
 - **多 PTY 架构**（F-11）：每个 `tmux session:window` 独立 PTY 实例，`ptyMap` 管理
+- **systemd 双运行域**：`agentmobile.service` 只承载 Web/PTY bridge，`agentmobile-tmux.service` 承载持久 tmux/Agent；普通 Web 发布只重启 `agentmobile`
 - **前端 dist 由 Vite 构建**，server.js 静态伺服 `frontend/dist/` + `public/`
 - **no database**：会话状态从 tmux 实时读取，持久化只用 JSON 文件
 - `WORKSPACE_ROOT` 指向宿主机工作区根目录，server.js 直接访问
@@ -53,6 +54,7 @@ docs/
   PRD.md                   # 功能规格
   ROADMAP.md               # 迭代路线图
   ARCHITECTURE.md          # 架构现状
+  SERVICES.md              # 服务拉取、部署、重启、日志、回滚操作手册
 ```
 
 ---
@@ -142,8 +144,11 @@ Rules: English subject, imperative mood, no trailing period, blank line before b
 
 ## Deployment Constraints
 
-- Deployments require a service restart: restart the **agentmobile** service after deploying code changes.
-- After restart, verify the service is accessible. If the service becomes unreachable after deployment, **rollback** the deployed code to the previous version immediately.
+- Service operations source of truth: [`docs/SERVICES.md`](docs/SERVICES.md) and `scripts/service-control.sh`.
+- Normal Web/API/frontend deploy: `npm run service:pull:web` or `npm run service:deploy:web`; this restarts **only** `agentmobile.service`.
+- IM bridge deploy: `npm run service:deploy:im` or `npm run service:restart:im`; this targets **only** `agentmobile-im.service`.
+- `agentmobile-tmux.service` owns persistent tmux sessions and Agent descendants. Do **not** restart it during normal deploys; only use `scripts/service-control.sh restart-tmux --force` in a controlled maintenance window.
+- After any restart, run `npm run service:verify`. If the affected service becomes unreachable after deployment, **rollback** the deployed code to the previous version immediately and restart only that affected service.
 
 ## Skills
 
@@ -159,5 +164,6 @@ Rules: English subject, imperative mood, no trailing period, blank line before b
 | Roadmap / scope change | `docs/ROADMAP.md` |
 | Architecture change | `docs/ARCHITECTURE.md` |
 | Process / convention | `AGENTS.md` (this file) |
+| Service operation change | `docs/SERVICES.md` + `scripts/service-control.sh` |
 | Env var added | `.env.example` + commit body |
 | Bug fix | commit body (root cause) |

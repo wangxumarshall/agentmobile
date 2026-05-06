@@ -2832,11 +2832,6 @@ wss.on('connection', (ws, req) => {
   entry.clients.add(ws);
   console.log(`Client connected to ${key} (clients: ${entry.clients.size})`);
 
-  // Send recent output so the screen isn't blank while waiting for the first repaint.
-  if (entry.lastOutput) {
-    ws.send(entry.lastOutput.slice(-2000));
-  }
-
   ws.on('message', (msg) => {
     const ent = ptyMap.get(key);
     if (!ent) return;

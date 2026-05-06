@@ -118,6 +118,7 @@ const WINDOW_KEY = 'agentmobile_window'
 const TAP_THRESHOLD = 8
 const SCROLLBACK_PREFETCH_THRESHOLD_PX = 10
 const SCROLLBACK_OPEN_THRESHOLD_PX = 40
+const RESIZE_REPAINT_ROW_NUDGE_THRESHOLD = 3
 const MAX_UPLOAD_NOTIFICATIONS = 5
 
 export type ThemeMode = 'dark' | 'light'
@@ -271,6 +272,7 @@ export default function Terminal({ token }: Props) {
   const scrollbackOpenOffsetRef = useRef(0)
   const scrollbackPendingDeltaRef = useRef(0)
   const scrollbackAppliedInitialOffsetRef = useRef(false)
+  const suppressHistorySwipeUntilRef = useRef(0)
   const swipeHistoryAccumRef = useRef(0)
   const pausePollingRef = useRef(false)
   const activeWindowIndexRef = useRef(0)
@@ -291,6 +293,7 @@ export default function Terminal({ token }: Props) {
   const toolbarHeightRef = useRef(0)
   const keyboardVisibleRef = useRef(false)
   const [mobileKeyboardVisible, setMobileKeyboardVisible] = useState(false)
+  const [mobileInputValue, setMobileInputValue] = useState('')
   // Viewport height is handled by CSS 100dvh, not JS
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
   const [drawerRenameIndex, setDrawerRenameIndex] = useState<number | null>(null)
@@ -359,6 +362,7 @@ export default function Terminal({ token }: Props) {
 
   const focusMobileInput = useCallback(() => {
     syncMobileKeyboard(true)
+    suppressHistorySwipeUntilRef.current = Date.now() + 800
     const xtermTa = termRef.current?.textarea
     if (xtermTa) {
       xtermTa.inputMode = 'none'
@@ -367,6 +371,7 @@ export default function Terminal({ token }: Props) {
     const input = inputRef.current
     if (!input) return
     input.inputMode = 'text'
+    input.readOnly = false
     input.focus()
     keepMobileInputCaretVisible(input)
   }, [keepMobileInputCaretVisible, syncMobileKeyboard])
@@ -376,6 +381,7 @@ export default function Terminal({ token }: Props) {
     const input = inputRef.current
     if (input) {
       input.inputMode = 'none'
+      input.readOnly = true
       input.blur()
     }
     const xtermTa = termRef.current?.textarea
@@ -548,6 +554,33 @@ export default function Terminal({ token }: Props) {
     setIsScrolledUp(false)
   }, [])
 
+  const fitAndNotifyPty = useCallback((options: { followBottom?: boolean; forceRepaint?: boolean } = {}) => {
+    const term = termRef.current
+    const fitAddon = fitAddonRef.current
+    if (!term || !fitAddon) return
+
+    const followBottom = options.followBottom ?? false
+    const wasAtBottom = !userScrolledRef.current
+    fitAddon.fit()
+    refreshTerminalViewport(term)
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      if (options.forceRepaint) {
+        const nudgedRows = Math.max(term.rows - RESIZE_REPAINT_ROW_NUDGE_THRESHOLD, 5)
+        if (nudgedRows !== term.rows) {
+          wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: nudgedRows }))
+          return
+        }
+      }
+      wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+    }
+
+    if (followBottom && wasAtBottom) {
+      userScrolledRef.current = false
+      term.scrollToBottom()
+    }
+  }, [])
+
   const fitTerminal = useCallback(() => {
     const term = termRef.current
     const fitAddon = fitAddonRef.current
@@ -561,16 +594,10 @@ export default function Terminal({ token }: Props) {
     // 走和 ResizeObserver 完全相同的路径：debounce + rAF
     setTimeout(() => {
       requestAnimationFrame(() => {
-        const wasAtBottom = !userScrolledRef.current
-        fitAddon.fit()
-        refreshTerminalViewport(term)
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-        }
-        if (wasAtBottom) { userScrolledRef.current = false; term.scrollToBottom() }
+        fitAndNotifyPty({ followBottom: true })
       })
     }, 150)
-  }, [])
+  }, [fitAndNotifyPty])
 
   // 简化的 resize 处理：只在必要时执行，避免过度工程化
   useEffect(() => {
@@ -603,13 +630,7 @@ export default function Terminal({ token }: Props) {
       // Debounce: 延迟执行，确保布局稳定（特别是工具栏动画结束后）
       debounceTimer = window.setTimeout(() => {
         rafId = requestAnimationFrame(() => {
-          const wasAtBottom = !userScrolledRef.current
-          fitAddon.fit()
-          refreshTerminalViewport(term)
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-          }
-          if (wasAtBottom) { userScrolledRef.current = false; term.scrollToBottom() }
+          fitAndNotifyPty({ followBottom: !keyboardVisibleRef.current })
           rafId = null
         })
       }, 150) // 150ms debounce 覆盖 CSS transition
@@ -636,7 +657,7 @@ export default function Terminal({ token }: Props) {
       if (rafId) cancelAnimationFrame(rafId)
       if (debounceTimer) window.clearTimeout(debounceTimer)
     }
-  }, [])
+  }, [fitAndNotifyPty])
 
   async function fetchWindows() {
     try {
@@ -680,6 +701,7 @@ export default function Terminal({ token }: Props) {
   attachWindowFnRef.current = (index: number) => { attachToWindow(index) }
 
   async function attachToWindow(index: number) {
+    suppressHistorySwipeUntilRef.current = Date.now() + 1200
     // 保存当前窗口的滚动位置
     if (termRef.current && activeWindowIndex !== index) {
       const buffer = (termRef.current as any).buffer
@@ -892,6 +914,14 @@ export default function Terminal({ token }: Props) {
       }
     }
   }
+
+  const inputContainerClass = mobileKeyboardVisible
+    ? 'fixed left-3 right-3 bottom-[calc(env(safe-area-inset-bottom)+72px)] z-[260] flex items-center rounded-md border border-agentmobile-accent/70 bg-agentmobile-bg-2 shadow-[0_8px_30px_rgba(0,0,0,0.45)]'
+    : 'fixed w-px h-px opacity-0 pointer-events-none -z-10'
+
+  const inputContainerStyle = mobileKeyboardVisible
+    ? undefined
+    : { left: '-10000px', top: '0' }
 
   function handleOverwriteConfirm() {
     if (uploadConflict.file) {
@@ -1219,6 +1249,11 @@ export default function Terminal({ token }: Props) {
             return
           }
 
+          if (Date.now() < suppressHistorySwipeUntilRef.current) {
+            swipeHistoryAccumRef.current = 0
+            return
+          }
+
           if (deltaY < 0) {
             const olderDelta = -deltaY
             swipeHistoryAccumRef.current += olderDelta
@@ -1332,13 +1367,7 @@ export default function Terminal({ token }: Props) {
     }
 
     function sendResize() {
-      const wasAtBottom = !userScrolledRef.current
-      fitAddonRef.current?.fit()
-      refreshTerminalViewport(term)
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
-      if (wasAtBottom) { userScrolledRef.current = false; term.scrollToBottom() }
+      fitAndNotifyPty()
     }
 
     function onOrientationChange() {
@@ -1371,7 +1400,7 @@ export default function Terminal({ token }: Props) {
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, [blurMobileInput, focusMobileInput, token])
+  }, [blurMobileInput, fitAndNotifyPty, focusMobileInput, token])
 
   // Effect B: WebSocket connection (reconnects on window switch, xterm persists)
   useEffect(() => {
@@ -1419,25 +1448,9 @@ export default function Terminal({ token }: Props) {
         reconnectAttempts = 0
         hasConnectedRef.current = true
         setIsConnecting(false)
-        fitAddonRef.current?.fit()
-        const term = termRef.current
-        if (term) {
-          refreshTerminalViewport(term)
-          // Send rows-1 first: tmux only repaints on an *actual* dimension change.
-          // If the PTY already has the same cols/rows (same device, same viewport),
-          // a same-size resize is a no-op in tmux and no repaint is sent.
-          // The rows-1 nudge guarantees a size change → SIGWINCH → tmux pushes a
-          // full repaint. The rAF below immediately corrects to the real dimensions.
-          newWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: Math.max(term.rows - 1, 5) }))
-        }
-        // Follow-up fit: re-measures layout and sends correct final dimensions,
-        // triggering a second SIGWINCH repaint at the right size.
+        fitAndNotifyPty({ forceRepaint: true })
         requestAnimationFrame(() => {
-          fitAddonRef.current?.fit()
-          if (wsRef.current?.readyState === WebSocket.OPEN && termRef.current) {
-            refreshTerminalViewport(termRef.current)
-            wsRef.current.send(JSON.stringify({ type: 'resize', cols: termRef.current.cols, rows: termRef.current.rows }))
-          }
+          fitAndNotifyPty()
         })
       }
 
@@ -1476,15 +1489,21 @@ export default function Terminal({ token }: Props) {
 
   const isComposingRef = useRef(false)
 
+  function resetMobileInput(input: HTMLInputElement) {
+    setMobileInputValue('')
+    input.value = ''
+    keepMobileInputCaretVisible(input)
+  }
+
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (isComposingRef.current) return // handled by compositionEnd
     // Mobile fallback: some keyboards emit text via input/change instead of keydown.
     const val = e.target.value
+    setMobileInputValue(val)
     if (val) {
       sendToWs(val)
       requestAnimationFrame(() => {
-        e.target.value = ''
-        keepMobileInputCaretVisible(e.target)
+        resetMobileInput(e.target)
       })
     }
   }
@@ -1522,8 +1541,7 @@ export default function Terminal({ token }: Props) {
     isComposingRef.current = false
     const text = e.data
     if (text) sendToWs(text)
-    ;(e.currentTarget as HTMLInputElement).value = ''
-    keepMobileInputCaretVisible(e.currentTarget)
+    resetMobileInput(e.currentTarget)
   }
 
   // Track keyboard visibility and adjust layout height on mobile
@@ -1545,6 +1563,7 @@ export default function Terminal({ token }: Props) {
       setVvHeight(Math.round(vv.height))
       if (!visible && inputRef.current) {
         inputRef.current.inputMode = 'none'
+        inputRef.current.readOnly = true
       }
     }
     handleResize()
@@ -1706,35 +1725,60 @@ export default function Terminal({ token }: Props) {
 
   return (
     <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
-      <input
-        ref={inputRef}
-        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
-        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
-        autoComplete="off"
-        autoCorrect="off"
-        autoCapitalize="off"
-        spellCheck={false}
-        tabIndex={-1}
-        onChange={handleInputChange}
-        onKeyDown={handleKeyDown}
-        onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
-        onFocus={(e) => {
-          if (!isWidePC) syncMobileKeyboard(true)
-          keepMobileInputCaretVisible(e.currentTarget)
-        }}
-        onBlur={() => {
-          if (isWidePC) return
-          window.setTimeout(() => {
-            if (document.activeElement !== inputRef.current) {
-              syncMobileKeyboard(false)
-            }
-          }, 0)
-        }}
-        onCompositionStart={() => { isComposingRef.current = true; syncMobileKeyboard(true) }}
-        onCompositionUpdate={(e) => keepMobileInputCaretVisible(e.currentTarget)}
-        onCompositionEnd={handleCompositionEnd}
-        aria-hidden="true"
-      />
+      <div className={inputContainerClass} style={inputContainerStyle}>
+        {mobileKeyboardVisible && (
+          <div className="pl-2.5 pr-1 text-[11px] font-medium text-agentmobile-text-2 select-none">输入</div>
+        )}
+        <input
+          ref={inputRef}
+          className={mobileKeyboardVisible
+            ? 'min-w-0 flex-1 bg-transparent text-agentmobile-text caret-agentmobile-accent text-base leading-6 px-2.5 py-2.5 outline-none border-none'
+            : 'w-px h-px opacity-0 pointer-events-none'
+          }
+          style={mobileKeyboardVisible ? undefined : { border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+          value={mobileInputValue}
+          readOnly={!mobileKeyboardVisible}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          tabIndex={mobileKeyboardVisible ? 0 : -1}
+          onChange={handleInputChange}
+          onKeyDown={handleKeyDown}
+          onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
+          onFocus={(e) => {
+            if (!isWidePC) syncMobileKeyboard(true)
+            keepMobileInputCaretVisible(e.currentTarget)
+          }}
+          onBlur={() => {
+            if (isWidePC) return
+            window.setTimeout(() => {
+              if (document.activeElement !== inputRef.current) {
+                syncMobileKeyboard(false)
+              }
+            }, 0)
+          }}
+          onCompositionStart={() => { isComposingRef.current = true; syncMobileKeyboard(true) }}
+          onCompositionUpdate={(e) => {
+            setMobileInputValue(e.currentTarget.value)
+            keepMobileInputCaretVisible(e.currentTarget)
+          }}
+          onCompositionEnd={handleCompositionEnd}
+          aria-label="终端输入"
+        />
+        {mobileKeyboardVisible && (
+          <button
+            type="button"
+            className="self-stretch px-3 bg-transparent border-none border-l border-agentmobile-border text-agentmobile-text-2 text-xs cursor-pointer"
+            onPointerDown={(e) => {
+              e.preventDefault()
+              blurMobileInput()
+            }}
+          >
+            收起
+          </button>
+        )}
+      </div>
       <input
         ref={fileInputRef}
         type="file"

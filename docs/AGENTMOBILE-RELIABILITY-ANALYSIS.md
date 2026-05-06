@@ -3,6 +3,8 @@
 **日期**: 2026-04-02
 **分析范围**: agentmobile 服务防挂/自恢复机制 + agentmobile 目录下 Claude profile 启动链路
 
+> 历史说明：本文记录 2026-04-02 的 PM2 部署状态分析。当前长期设计已改为 systemd 双运行域：`agentmobile.service` 负责 Web bridge，`agentmobile-tmux.service` 负责持久 tmux / Agent runtime，`agentmobile-im.service` 负责可选 IM bridge。当前服务操作以 [`SERVICES.md`](SERVICES.md) 和 `scripts/service-control.sh` 为准。
+
 ---
 
 ## 1. 执行摘要

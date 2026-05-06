@@ -835,7 +835,17 @@ services:
     restart: unless-stopped
 ```
 
-### PM2 部署
+### 服务部署
+
+当前长期部署入口是 systemd 双运行域：`agentmobile.service` 承载 Web/API/WebSocket bridge，`agentmobile-tmux.service` 承载持久 tmux/Agent runtime，`agentmobile-im.service` 承载可选 IM bridge。普通拉代码发布使用：
+
+```bash
+npm run service:pull:web
+```
+
+所有服务拉取、部署、重启、日志、回滚以 [`SERVICES.md`](SERVICES.md) 和 `scripts/service-control.sh` 为准。下面的 PM2 配置只作为 systemd 不可用时的 fallback 参考。
+
+### PM2 部署（fallback）
 
 ```javascript
 // ecosystem.config.cjs

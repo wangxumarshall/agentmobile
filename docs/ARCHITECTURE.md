@@ -15,6 +15,7 @@ Browser (任意设备)
 agentmobile Server（Node.js，server.js）
     ↕  node-pty (ptyMap)           ← PTY 桥（每个 session:window 独立实例）
 tmux attach-session -t <session>:<window>
+agentmobile-tmux.service（systemd，持久 tmux runtime）
     ├── window 0: vault (⚡ Claude)
     ├── window 1: projects-blog (🔷 Codex)
     └── window N: ... (⚡/🔷/bash)
@@ -286,9 +287,14 @@ data/
 agentmobile/
 ├── server.js              # 唯一后端（ESM，Node 20）
 ├── package.json           # 依赖：express ws node-pty bcrypt
-├── agentmobile.service    # systemd unit 模板（默认部署方式）
+├── agentmobile.service    # Web/PTY bridge systemd unit（可安全重启）
+├── agentmobile-tmux.service # 持久 tmux runtime systemd unit
+├── agentmobile-im.service # 可选 IM bridge systemd unit
 ├── ecosystem.config.cjs   # PM2 fallback 配置（systemd 不可用时生成/使用）
 ├── start.sh               # 手动启动脚本
+├── scripts/service-control.sh # 服务拉取/部署/重启/验证统一入口
+├── scripts/tmux-runtime.sh # tmux runtime keepalive
+├── scripts/migrate-tmux-runtime.sh # 既有安装迁移到 runtime cgroup
 ├── agentmobile-run-claude.sh    # claude 会话启动脚本（server.js 调用）
 ├── frontend/
 │   ├── src/               # React + TypeScript 源码
@@ -299,6 +305,23 @@ agentmobile/
 │   └── sw.js              # Service Worker（cache-first 静态资源，跳过导航请求）
 └── data/                  # 持久化数据目录
 ```
+
+### systemd 运行域
+
+默认 systemd 部署拆成两个 unit：
+
+| Unit | 职责 | 重启影响 |
+|---|---|---|
+| `agentmobile-tmux.service` | 持有 tmux server 和 Agent 后代进程 | 不随 Web 部署重启 |
+| `agentmobile.service` | Express / WebSocket / node-pty bridge | 可重启；只清理临时 `tmux attach-session` 客户端 |
+
+这样满足“浏览器或 Web 服务重启后 Agent 继续运行”的核心约束。`agentmobile.service`
+保留正常 `KillMode=control-group`，用于清理 node-pty 派生的短生命周期 attach client；
+真实会话进程由 `agentmobile-tmux.service` 承载。
+
+PM2 fallback 仍是单进程管理路径，适用于 systemd 不可用的环境；生产部署优先使用 systemd 双运行域。
+
+服务操作以 [`docs/SERVICES.md`](SERVICES.md) 和 `scripts/service-control.sh` 为准。普通拉代码发布只重启 `agentmobile.service`；IM bridge 变更只重启 `agentmobile-im.service`；`agentmobile-tmux.service` 只在受控维护窗口处理。
 
 ### 环境变量
 

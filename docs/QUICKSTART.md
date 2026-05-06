@@ -211,9 +211,6 @@ cd frontend && npm run dev
 ### 生产模式
 
 ```bash
-# 直接启动
-npm start
-
 # 推荐：自动安装并配置服务（优先 systemd，失败时回退到 PM2）
 node scripts/setup.js
 
@@ -226,6 +223,24 @@ npm start
 ```
 http://localhost:5000
 ```
+
+### 服务操作
+
+安装后优先使用统一服务脚本：
+
+```bash
+npm run service:status
+npm run service:verify
+npm run service:logs
+```
+
+普通拉代码部署：
+
+```bash
+npm run service:pull:web
+```
+
+systemd 部署下，`agentmobile.service` 是 Web / API / WebSocket bridge，可随发布重启；`agentmobile-tmux.service` 持有 tmux session 和正在运行的 Agent，不要作为普通发布的一部分重启；`agentmobile-im.service` 只在 IM bridge 变更后重启。完整操作矩阵见 [SERVICES.md](SERVICES.md)。
 
 ---
 

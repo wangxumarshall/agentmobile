@@ -1,6 +1,8 @@
 [Unit]
 Description=agentmobile WebSocket tmux bridge service
-After=network.target
+Documentation=file:/home/ubuntu/code/idea0019-agent-mobile/docs/SERVICES.md
+After=network.target agentmobile-tmux.service
+Requires=agentmobile-tmux.service
 
 [Service]
 Type=simple
@@ -10,6 +12,7 @@ WorkingDirectory=/home/ubuntu/code/idea0019-agent-mobile
 ExecStart=/usr/bin/node /home/ubuntu/code/idea0019-agent-mobile/server.js
 Restart=on-failure
 RestartSec=10
+KillMode=control-group
 StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production

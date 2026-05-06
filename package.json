@@ -8,7 +8,21 @@
     "dev": "node --watch server.js",
     "dev:im": "tsx watch im/server-im.ts",
     "setup": "node scripts/setup.js",
-    "build:im": "tsc --noEmit"
+    "build:im": "tsc --noEmit",
+    "service:help": "scripts/service-control.sh help",
+    "service:status": "scripts/service-control.sh status",
+    "service:logs": "scripts/service-control.sh logs",
+    "service:verify": "scripts/service-control.sh verify",
+    "service:install-units": "scripts/service-control.sh install-units",
+    "service:pull:web": "scripts/service-control.sh pull-web",
+    "service:deploy:web": "scripts/service-control.sh deploy-web",
+    "service:restart:web": "scripts/service-control.sh restart-web",
+    "service:pull:all": "scripts/service-control.sh pull-all",
+    "service:deploy:all": "scripts/service-control.sh deploy-all",
+    "service:deploy:im": "scripts/service-control.sh deploy-im",
+    "service:restart:im": "scripts/service-control.sh restart-im",
+    "service:migrate-tmux": "scripts/service-control.sh migrate-tmux",
+    "service:restart:tmux": "scripts/service-control.sh restart-tmux"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.81",

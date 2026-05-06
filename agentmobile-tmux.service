@@ -1,16 +1,15 @@
 [Unit]
-Description=agentmobile WebSocket tmux bridge service (5001)
+Description=agentmobile persistent tmux runtime
 Documentation=file:/home/ubuntu/code/idea0019-agent-mobile/docs/SERVICES.md
-After=network.target agentmobile-tmux.service
-Requires=agentmobile-tmux.service
+After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/code/idea0019-agent-mobile
-ExecStart=/usr/bin/node /home/ubuntu/code/idea0019-agent-mobile/server.js
-Restart=on-failure
+ExecStart=/home/ubuntu/code/idea0019-agent-mobile/scripts/tmux-runtime.sh
+Restart=always
 RestartSec=10
 KillMode=control-group
 StandardOutput=journal

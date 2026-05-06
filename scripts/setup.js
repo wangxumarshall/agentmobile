@@ -12,6 +12,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ENV_PATH = resolve(ROOT, '.env');
 const ENV_EXAMPLE_PATH = resolve(ROOT, '.env.example');
 const SYSTEMD_UNIT_PATH = resolve(ROOT, 'agentmobile.service');
+const SYSTEMD_TMUX_UNIT_PATH = resolve(ROOT, 'agentmobile-tmux.service');
 const PM2_CONFIG_PATH = resolve(ROOT, 'ecosystem.config.cjs');
 
 function run(cmd, opts = {}) {
@@ -54,6 +55,10 @@ function readEnvValue(key) {
   if (!existsSync(envFile)) return '';
   const line = capture(`awk -F= '/^${key}=/{print substr($0, index($0,$2))}' ${JSON.stringify(envFile)}`);
   return (line.stdout || '').trim();
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 function resolveNodeBinary() {
@@ -181,7 +186,9 @@ function createSystemdService(nodeBinary) {
   const runtimePath = buildRuntimePath();
   const systemdContent = `[Unit]
 Description=agentmobile WebSocket tmux bridge service
-After=network.target
+Documentation=file:${ROOT}/docs/SERVICES.md
+After=network.target agentmobile-tmux.service
+Requires=agentmobile-tmux.service
 
 [Service]
 Type=simple
@@ -191,6 +198,7 @@ ExecStart=${nodeBinary} ${ROOT}/server.js
 WorkingDirectory=${ROOT}
 Restart=on-failure
 RestartSec=10
+KillMode=control-group
 StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production
@@ -203,14 +211,47 @@ WantedBy=multi-user.target
   ok('agentmobile.service created');
 }
 
+function createSystemdTmuxService() {
+  step('Creating systemd tmux runtime service file');
+  const runtimePath = buildRuntimePath();
+  const systemdContent = `[Unit]
+Description=agentmobile persistent tmux runtime
+Documentation=file:${ROOT}/docs/SERVICES.md
+After=network.target
+
+[Service]
+Type=simple
+User=${process.env.USER || 'ubuntu'}
+Group=${process.env.USER || 'ubuntu'}
+ExecStart=${ROOT}/scripts/tmux-runtime.sh
+WorkingDirectory=${ROOT}
+Restart=always
+RestartSec=10
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=PATH=${runtimePath}
+
+[Install]
+WantedBy=multi-user.target
+`;
+  writeFileSync(SYSTEMD_TMUX_UNIT_PATH, systemdContent);
+  ok('agentmobile-tmux.service created');
+}
+
 function installSystemdService() {
   step('Installing systemd service');
+  if (run('sudo cp agentmobile-tmux.service /etc/systemd/system/').status !== 0) fail('Failed to copy agentmobile-tmux.service into /etc/systemd/system');
   if (run('sudo cp agentmobile.service /etc/systemd/system/').status !== 0) fail('Failed to copy agentmobile.service into /etc/systemd/system');
   if (run('sudo systemctl daemon-reload').status !== 0) fail('systemd daemon-reload failed');
+  if (run('sudo systemctl enable agentmobile-tmux').status !== 0) fail('systemd enable failed — check: sudo systemctl status agentmobile-tmux');
   if (run('sudo systemctl enable agentmobile').status !== 0) fail('systemd enable failed — check: sudo systemctl status agentmobile');
+  const tmuxStartResult = run('sudo systemctl restart agentmobile-tmux');
+  if (tmuxStartResult.status !== 0) fail('systemd tmux runtime start failed — check: sudo systemctl status agentmobile-tmux');
   const startResult = run('sudo systemctl restart agentmobile');
   if (startResult.status !== 0) fail('systemd start failed — check: sudo systemctl status agentmobile');
-  ok('agentmobile service started');
+  ok('agentmobile services started');
   return { manager: 'systemd', autostartConfigured: true, manualCommand: '' };
 }
 
@@ -291,6 +332,7 @@ if (serviceManager.useSystemd) {
 
 let serviceStatus;
 if (serviceManager.useSystemd) {
+  createSystemdTmuxService();
   createSystemdService(nodeBinary);
   serviceStatus = installSystemdService();
 } else {
@@ -298,12 +340,13 @@ if (serviceManager.useSystemd) {
 }
 
 // ── 7. tmux session ──────────────────────────────────────────────────────────
-step('Ensuring tmux session "main" exists');
-if (!check('tmux has-session -t main 2>/dev/null')) {
-  run('tmux new-session -d -s main');
-  ok('tmux session "main" created');
+const tmuxSession = readEnvValue('TMUX_SESSION') || 'main';
+step(`Ensuring tmux session "${tmuxSession}" exists`);
+if (!check(`tmux has-session -t ${shellQuote(tmuxSession)} 2>/dev/null`)) {
+  run(`tmux new-session -d -s ${shellQuote(tmuxSession)}`);
+  ok(`tmux session "${tmuxSession}" created`);
 } else {
-  ok('tmux session "main" already exists');
+  ok(`tmux session "${tmuxSession}" already exists`);
 }
 
 // ── Done ─────────────────────────────────────────────────────────────────────
@@ -318,10 +361,11 @@ const successBanner = `
 ║  Password: ${password}  (change in .env)
 ║  Manager:  ${serviceStatus.manager}
 ║
-║  systemd:
-║  sudo systemctl status agentmobile
-║  sudo systemctl restart agentmobile
-║  journalctl -u agentmobile -f
+║  Service operations:
+║  npm run service:status
+║  npm run service:deploy:web
+║  npm run service:logs
+║  See docs/SERVICES.md before restarting tmux runtime.
 ║
 ║  PM2 fallback:
 ║  pm2 start ecosystem.config.cjs

@@ -64,7 +64,7 @@ npm start
 # Open http://localhost:5000 on any device 🚀
 ```
 
-> Full setup guide including Claude profile config, service install, and mobile access: **[QUICKSTART.md →](docs/QUICKSTART.md)**
+> Full setup guide including Claude profile config, service install, mobile access, and service operations: **[QUICKSTART.md →](docs/QUICKSTART.md)** / **[SERVICES.md →](docs/SERVICES.md)**
 
 ## IM Channels
 
@@ -97,11 +97,12 @@ If you're an AI assistant helping a user install agentmobile, follow this path:
 1. Clone this repo and `cd` into it
 2. Run `node scripts/setup.js` — handles deps, frontend build, service install, and first tmux session
 3. Verify:
-   - `systemctl status agentmobile` for the default systemd path
+   - `npm run service:status` for the default systemd path
+   - `npm run service:verify` for Web reachability and persistent tmux runtime
    - `pm2 status` if setup fell back to PM2
    - then open `http://localhost:5000`
 
-Prerequisites: Node.js 20+, tmux. Setup prefers `systemd` and automatically falls back to PM2 when `systemd` is unavailable.  
+Prerequisites: Node.js 20+, tmux. Setup prefers `systemd` and automatically falls back to PM2 when `systemd` is unavailable. In systemd deployments, `agentmobile.service` can be restarted for web code updates while `agentmobile-tmux.service` keeps tmux sessions and agents alive. Use `npm run service:pull:web` for normal pulls; see [SERVICES.md](docs/SERVICES.md) before restarting the tmux runtime.
 Default login password: `agentmobile` (user can change it in `.env` after setup).
 ---
 
@@ -150,6 +151,7 @@ Both backends share the same tmux bridge, file browser, project management, and 
 | Doc | |
 |---|---|
 | [QUICKSTART.md](docs/QUICKSTART.md) | Step-by-step setup guide |
+| [SERVICES.md](docs/SERVICES.md) | Pull, deploy, restart, logs, and rollback commands for each service |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design |
 | [ROADMAP.md](docs/ROADMAP.md) | What's next |
 | [📖 The story behind agentmobile](docs/story.md) | Why this was built |

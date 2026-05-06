@@ -4,6 +4,8 @@
 
 在一台新机器或现有主机上完成 agentmobile 的安装、构建、部署、服务重启、健康检查和失败回滚。
 
+服务操作以仓库根目录的 `docs/SERVICES.md` 和 `scripts/service-control.sh` 为准。
+
 ## 安装前检查
 
 ```bash
@@ -29,7 +31,9 @@ node scripts/setup.js
 
 `setup.js` 的预期行为：
 
-- 优先安装并启用 `agentmobile.service`
+- 优先安装并启用 `agentmobile-tmux.service` + `agentmobile.service`
+- `agentmobile-tmux.service` 承载持久 tmux / Agent runtime
+- `agentmobile.service` 承载 Web / PTY bridge，可随部署重启
 - 若 systemd 不可用，则自动 fallback 到 PM2
 - 自动创建首个 `tmux` session
 
@@ -59,11 +63,25 @@ export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 
 ## 部署流程
 
+普通 Web / API / 前端发布：
+
 ```bash
-npm install
-cd frontend && npm install && npm run build && cd ..
-sudo systemctl restart agentmobile
+npm run service:pull:web
 ```
+
+如果代码已经拉好，只构建并重启 Web：
+
+```bash
+npm run service:deploy:web
+```
+
+IM bridge 发布：
+
+```bash
+npm run service:deploy:im
+```
+
+systemd 部署下不要把 `agentmobile-tmux` 作为普通代码发布的一部分重启；它是持久 tmux / Agent 运行域。只在修改 runtime unit、`scripts/tmux-runtime.sh` 或需要受控维护窗口时处理它。
 
 如果当前机器是 PM2 fallback 部署，则改用：
 
@@ -76,16 +94,29 @@ pm2 restart agentmobile
 服务重启后必须验证：
 
 ```bash
-systemctl status agentmobile --no-pager
-ss -ltnp | grep ':5000'
-curl -I http://127.0.0.1:5000/
+npm run service:status
+npm run service:verify
 ```
 
 预期结果：
 
 - `agentmobile` 为 `active (running)`
-- 5000 端口在监听
+- `agentmobile-tmux` 为 `active (running)`（systemd 部署）
+- `.env` 中配置的 `PORT` 在监听
 - 首页返回 `HTTP/1.1 200 OK`
+
+## 既有 systemd 安装迁移
+
+如果旧安装中 `systemctl status agentmobile` 显示 tmux / Agent 进程也在 `agentmobile.service` cgroup 内，先迁移运行域，再重启 Web 服务：
+
+```bash
+npm run service:install-units
+sudo systemctl enable --now agentmobile-tmux
+npm run service:migrate-tmux
+npm run service:restart:web
+```
+
+迁移脚本会拒绝在 tmux / Agent 进程仍留在 `agentmobile.service` cgroup 时继续，避免重启 Web 服务误杀正在运行的 Agent。
 
 ## 失败回滚
 
@@ -97,8 +128,7 @@ curl -I http://127.0.0.1:5000/
 git log --oneline -n 5
 git checkout <previous-good-commit>
 cd frontend && npm run build && cd ..
-sudo systemctl restart agentmobile
-curl -I http://127.0.0.1:5000/
+npm run service:restart:web
 ```
 
 如果当前机器是 PM2 fallback 部署：
@@ -124,3 +154,4 @@ pm2 restart agentmobile
 
 - 看 `journalctl -u agentmobile -n 100 --no-pager`
 - 检查 `frontend/dist` 是否已重新构建
+- 或直接用 `npm run service:logs` / `npm run service:verify`

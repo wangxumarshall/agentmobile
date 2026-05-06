@@ -37,6 +37,9 @@ const KEY_MAP = Object.fromEntries(ALL_KEYS.map(k => [k.id, k]))
 const CONFIG_KEY = 'agentmobile_toolbar_v2'
 const USER_DEFAULT_KEY = 'agentmobile_toolbar_default'
 const COLLAPSED_KEY = 'agentmobile_toolbar_collapsed'
+const REPEATING_ARROW_KEY_IDS = new Set(['up', 'down', 'left', 'right'])
+const ARROW_REPEAT_DELAY_MS = 3000
+const ARROW_REPEAT_INTERVAL_MS = 80
 
 // PC 端断点
 const PC_BREAKPOINT = 768
@@ -71,6 +74,12 @@ interface DragState {
 }
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
+
+interface KeyRepeatState {
+  timeoutId: number | null
+  intervalId: number | null
+  pointerId: number | null
+}
 
 export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
@@ -111,6 +120,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   const rootRef = useRef<HTMLDivElement>(null)
   const editScrollRef = useRef<HTMLDivElement>(null)
   const isDraggingMouse = useRef(false)
+  const keyRepeatRef = useRef<KeyRepeatState>({ timeoutId: null, intervalId: null, pointerId: null })
 
   // Guard xterm textarea when editing panel is open (prevents keyboard popup)
   useOverlayGuard(_termRef, editing)
@@ -177,6 +187,62 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   useEffect(() => {
     if (showPasteBox) setTimeout(() => pasteBoxRef.current?.focus(), 50)
   }, [showPasteBox])
+
+  useEffect(() => () => stopKeyRepeat(), [])
+
+  function stopKeyRepeat() {
+    const repeat = keyRepeatRef.current
+    if (repeat.timeoutId !== null) window.clearTimeout(repeat.timeoutId)
+    if (repeat.intervalId !== null) window.clearInterval(repeat.intervalId)
+    repeat.timeoutId = null
+    repeat.intervalId = null
+    repeat.pointerId = null
+  }
+
+  function startKeyRepeat(key: KeyDef, pointerId: number) {
+    stopKeyRepeat()
+    if (!REPEATING_ARROW_KEY_IDS.has(key.id)) return
+
+    const repeat = keyRepeatRef.current
+    repeat.pointerId = pointerId
+    repeat.timeoutId = window.setTimeout(() => {
+      if (repeat.pointerId !== pointerId) return
+      sendToWs(key.seq)
+      repeat.timeoutId = null
+      repeat.intervalId = window.setInterval(() => {
+        if (keyRepeatRef.current.pointerId === pointerId) sendToWs(key.seq)
+      }, ARROW_REPEAT_INTERVAL_MS)
+    }, ARROW_REPEAT_DELAY_MS)
+  }
+
+  function handleKeyPointerDown(e: React.PointerEvent<HTMLButtonElement>, key: KeyDef) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.button !== 0) return
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // Some browsers reject pointer capture for synthetic or already-cancelled events.
+    }
+    handleKey(key)
+    startKeyRepeat(key, e.pointerId)
+  }
+
+  function handleKeyPointerEnd(e: React.PointerEvent<HTMLButtonElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    stopKeyRepeat()
+  }
+
+  function getKeyPointerProps(key: KeyDef) {
+    return {
+      onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => handleKeyPointerDown(e, key),
+      onPointerUp: handleKeyPointerEnd,
+      onPointerCancel: handleKeyPointerEnd,
+      onLostPointerCapture: handleKeyPointerEnd,
+      onContextMenu: (e: React.MouseEvent<HTMLButtonElement>) => e.preventDefault(),
+    }
+  }
 
   function saveConfig(c: ToolbarConfig) {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(c))
@@ -306,7 +372,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             <button
               key={id}
               className={isPC ? keyPCClass : keyClass}
-              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+              {...getKeyPointerProps(key)}
             >
               {key.label}
             </button>
@@ -545,7 +611,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               <button
                 key={id}
                 className={keyEmbeddedClass}
-                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                {...getKeyPointerProps(key)}
                 title={t(key.desc)}
               >{key.label}</button>
             )
@@ -617,7 +683,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 <button
                   key={id}
                   className={keyPCClass}
-                  onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                  {...getKeyPointerProps(key)}
                 >
                   {key.label}
                 </button>
@@ -690,7 +756,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                     <button
                       key={id}
                       className={keyPCClass}
-                      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                      {...getKeyPointerProps(key)}
                     >
                       {key.label}
                     </button>
@@ -819,7 +885,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                   <button
                     key={id}
                     className={keyClass}
-                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                    {...getKeyPointerProps(key)}
                   >
                     {key.label}
                   </button>

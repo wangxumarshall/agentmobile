@@ -76,7 +76,7 @@ npm start
 # 在任意设备打开 http://localhost:59000 🚀
 ```
 
-> 完整配置指南（AI Profile、systemd 服务、移动端访问、故障排查）：**[QUICKSTART.md →](docs/QUICKSTART.md)**
+> 完整配置指南（AI Profile、systemd 服务、移动端访问、故障排查）：**[QUICKSTART.md →](docs/QUICKSTART.md)** / **[SERVICES.md →](docs/SERVICES.md)**
 
 ## IM 渠道
 
@@ -223,9 +223,10 @@ npm run start:im
 
 1. 克隆本仓库并 `cd` 进入目录
 2. 运行 `node scripts/setup.js` — 自动处理依赖安装、前端构建、systemd 服务安装和 tmux 会话创建；systemd 不可用时会 fallback 到 PM2
-3. 验证：优先用 `systemctl status agentmobile`；如果脚本 fallback 到 PM2，则用 `pm2 status` → 打开 `http://localhost:59000`
+3. 验证：优先用 `npm run service:status` 和 `npm run service:verify`；如果脚本 fallback 到 PM2，则用 `pm2 status` → 打开 `http://localhost:59000`
 
 前置要求：Node.js 20+、tmux。默认使用 systemd；systemd 不可用时脚本会自动安装/使用 PM2 fallback。
+systemd 部署下，`agentmobile.service` 可随 Web 代码发布重启，`agentmobile-tmux.service` 持续保留 tmux 会话和 Agent 进程。普通拉代码发布用 `npm run service:pull:web`；重启 tmux runtime 前先看 [SERVICES.md](docs/SERVICES.md)。
 默认登录密码：`agentmobile`（安装完成后可在 `.env` 中修改）。
 
 ---
