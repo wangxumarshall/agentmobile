@@ -108,6 +108,16 @@ interface TmuxWindow {
   active: boolean
 }
 
+interface CreateProjectResponse {
+  name: string
+  initialChannelIndex?: number | null
+}
+
+interface CreateChannelResponse {
+  name: string
+  index?: number | null
+}
+
 interface Props {
   token: string
 }
@@ -118,6 +128,7 @@ const WINDOW_KEY = 'agentmobile_window'
 const TAP_THRESHOLD = 8
 const SCROLLBACK_PREFETCH_THRESHOLD_PX = 10
 const SCROLLBACK_OPEN_THRESHOLD_PX = 40
+const KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS = 1400
 const RESIZE_REPAINT_ROW_NUDGE_THRESHOLD = 3
 const MAX_UPLOAD_NOTIFICATIONS = 5
 
@@ -199,6 +210,10 @@ function parseNetworkError(e: unknown, fallback: string): string {
   if (e instanceof TypeError) return '无法连接服务器，请检查服务是否已启动'
   if (e instanceof Error && e.message) return e.message
   return fallback
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function refreshTerminalViewport(term: XTerm) {
@@ -327,6 +342,7 @@ export default function Terminal({ token }: Props) {
     path: string
     active: boolean
     channelCount: number
+    lastChannel?: number | null
   }
   const [projects, setProjects] = useState<ProjectInfo[]>([])
 
@@ -343,10 +359,17 @@ export default function Terminal({ token }: Props) {
       .catch(() => {})
   }, [token])
 
+  const suppressHistorySwipe = useCallback((duration = KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS) => {
+    suppressHistorySwipeUntilRef.current = Math.max(suppressHistorySwipeUntilRef.current, Date.now() + duration)
+    swipeHistoryAccumRef.current = 0
+    scrollbackPendingDeltaRef.current = 0
+  }, [])
+
   const syncMobileKeyboard = useCallback((visible: boolean) => {
     keyboardVisibleRef.current = visible
     setMobileKeyboardVisible(visible)
-  }, [])
+    suppressHistorySwipe()
+  }, [suppressHistorySwipe])
 
   const keepMobileInputCaretVisible = useCallback((input: HTMLInputElement) => {
     requestAnimationFrame(() => {
@@ -362,7 +385,6 @@ export default function Terminal({ token }: Props) {
 
   const focusMobileInput = useCallback(() => {
     syncMobileKeyboard(true)
-    suppressHistorySwipeUntilRef.current = Date.now() + 800
     const xtermTa = termRef.current?.textarea
     if (xtermTa) {
       xtermTa.inputMode = 'none'
@@ -372,11 +394,16 @@ export default function Terminal({ token }: Props) {
     if (!input) return
     input.inputMode = 'text'
     input.readOnly = false
-    input.focus()
+    try {
+      input.focus({ preventScroll: true })
+    } catch {
+      input.focus()
+    }
     keepMobileInputCaretVisible(input)
   }, [keepMobileInputCaretVisible, syncMobileKeyboard])
 
   const blurMobileInput = useCallback(() => {
+    suppressHistorySwipe()
     syncMobileKeyboard(false)
     const input = inputRef.current
     if (input) {
@@ -411,6 +438,20 @@ export default function Terminal({ token }: Props) {
       }
     } catch {
       // ignore passive refresh failures
+    }
+  }, [token])
+
+  const confirmActiveWindow = useCallback(async (session: string, index: number) => {
+    try {
+      const r = await fetch(`/api/sessions/${index}/attach?session=${encodeURIComponent(session)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) {
+        setSessionActionError(await parseApiError(r, '切换窗口失败'))
+      }
+    } catch (e: unknown) {
+      setSessionActionError(parseNetworkError(e, '切换窗口失败'))
     }
   }, [token])
 
@@ -630,7 +671,7 @@ export default function Terminal({ token }: Props) {
       // Debounce: 延迟执行，确保布局稳定（特别是工具栏动画结束后）
       debounceTimer = window.setTimeout(() => {
         rafId = requestAnimationFrame(() => {
-          fitAndNotifyPty({ followBottom: !keyboardVisibleRef.current })
+          fitAndNotifyPty({ followBottom: true })
           rafId = null
         })
       }, 150) // 150ms debounce 覆盖 CSS transition
@@ -710,29 +751,22 @@ export default function Terminal({ token }: Props) {
       }
     }
 
-    try {
-      const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions/${index}/attach?session=${encodeURIComponent(session)}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      if (r.ok) {
-        setActiveWindowIndex(index)
-        localStorage.setItem(WINDOW_KEY, String(index))
-        // 暂停轮询 3 秒，避免 optimistic 状态被覆盖
-        pausePollingRef.current = true
-        setTimeout(() => { pausePollingRef.current = false }, 3000)
-        // 恢复目标窗口的滚动位置（延迟等待 WebSocket 连接和数据渲染）
-        setTimeout(() => {
-          const savedY = scrollPositionsRef.current[index]
-          if (savedY !== undefined && termRef.current) {
-            termRef.current.scrollLines(savedY - (termRef.current as any).buffer.active.viewportY)
-          }
-        }, 500)
+    const session = activeTmuxSessionRef.current
+    activeWindowIndexRef.current = index
+    setActiveWindowIndex(index)
+    localStorage.setItem(WINDOW_KEY, String(index))
+    setSessionActionError(null)
+    // 暂停轮询 3 秒，避免 optimistic 状态被覆盖
+    pausePollingRef.current = true
+    setTimeout(() => { pausePollingRef.current = false }, 3000)
+    // 恢复目标窗口的滚动位置（延迟等待 WebSocket 连接和数据渲染）
+    setTimeout(() => {
+      const savedY = scrollPositionsRef.current[index]
+      if (savedY !== undefined && termRef.current) {
+        termRef.current.scrollLines(savedY - (termRef.current as any).buffer.active.viewportY)
       }
-    } catch {
-      // ignore
-    }
+    }, 500)
+    void confirmActiveWindow(session, index)
   }
 
   async function closeWindow(index: number) {
@@ -778,8 +812,8 @@ export default function Terminal({ token }: Props) {
         setSessionActionError(await parseApiError(r, '创建项目失败'))
         return
       }
-      const { name: newProjectName } = await r.json()
-      handleSwitchSession(newProjectName, 0)
+      const { name: newProjectName, initialChannelIndex }: CreateProjectResponse = await r.json()
+      handleSwitchSession(newProjectName, initialChannelIndex ?? 0)
       await fetchProjectsList()
       await fetchTmuxSessions()
       sessionManagerRef.current?.refresh()
@@ -805,8 +839,15 @@ export default function Terminal({ token }: Props) {
         setSessionActionError(await parseApiError(r, '创建窗口失败'))
         return
       }
-      const { name: newWindowName } = await r.json()
-      await new Promise(resolve => setTimeout(resolve, 300))
+      const { name: newWindowName, index: newWindowIndex }: CreateChannelResponse = await r.json()
+      const resolvedWindowIndex = asFiniteNumber(newWindowIndex)
+      if (resolvedWindowIndex !== null) {
+        setWindows(prev => {
+          if (prev.some(win => win.index === resolvedWindowIndex)) return prev
+          return [...prev, { index: resolvedWindowIndex, name: newWindowName, active: false }]
+        })
+        attachToWindow(resolvedWindowIndex)
+      }
       const sessionNow = activeTmuxSessionRef.current
       const listRes = await fetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -818,8 +859,8 @@ export default function Terminal({ token }: Props) {
       const d = await listRes.json()
       const wins: TmuxWindow[] = d.windows ?? []
       setWindows(wins)
-      const newWin = wins.find(w => w.name === newWindowName)
-      if (newWin) {
+      const newWin = resolvedWindowIndex === null ? wins.find(w => w.name === newWindowName) : null
+      if (newWin && newWin.index !== activeWindowIndexRef.current) {
         attachToWindow(newWin.index)
       }
       await fetchProjectsList()
@@ -860,11 +901,20 @@ export default function Terminal({ token }: Props) {
     setWsSessionKey(newSession)
     // 保留上一次窗口快照，直到新 session 成功返回，避免断线时把 UI 清空
     if (lastChannel !== undefined && lastChannel !== null) {
+      activeWindowIndexRef.current = lastChannel
       setActiveWindowIndex(lastChannel)
       localStorage.setItem(WINDOW_KEY, String(lastChannel))
     } else {
-      setActiveWindowIndex(0)
-      localStorage.removeItem(WINDOW_KEY)
+      const cachedProject = projects.find(p => p.name === newSession)
+      const cachedLastChannel = asFiniteNumber(cachedProject?.lastChannel)
+      const nextWindowIndex = cachedLastChannel ?? 0
+      activeWindowIndexRef.current = nextWindowIndex
+      setActiveWindowIndex(nextWindowIndex)
+      if (cachedLastChannel !== null) {
+        localStorage.setItem(WINDOW_KEY, String(nextWindowIndex))
+      } else {
+        localStorage.removeItem(WINDOW_KEY)
+      }
     }
     windowsInitializedRef.current = false
     windowsLoadedRef.current = false
@@ -914,14 +964,6 @@ export default function Terminal({ token }: Props) {
       }
     }
   }
-
-  const inputContainerClass = mobileKeyboardVisible
-    ? 'fixed left-3 right-3 bottom-[calc(env(safe-area-inset-bottom)+72px)] z-[260] flex items-center rounded-md border border-agentmobile-accent/70 bg-agentmobile-bg-2 shadow-[0_8px_30px_rgba(0,0,0,0.45)]'
-    : 'fixed w-px h-px opacity-0 pointer-events-none -z-10'
-
-  const inputContainerStyle = mobileKeyboardVisible
-    ? undefined
-    : { left: '-10000px', top: '0' }
 
   function handleOverwriteConfirm() {
     if (uploadConflict.file) {
@@ -1249,7 +1291,7 @@ export default function Terminal({ token }: Props) {
             return
           }
 
-          if (Date.now() < suppressHistorySwipeUntilRef.current) {
+          if (keyboardVisibleRef.current || Date.now() < suppressHistorySwipeUntilRef.current) {
             swipeHistoryAccumRef.current = 0
             return
           }
@@ -1359,6 +1401,7 @@ export default function Terminal({ token }: Props) {
 
     // Layer 4: Prevent any touch on the hidden input itself from showing keyboard
     function onInputTouchStart(e: TouchEvent) {
+      e.stopPropagation()
       if (!keyboardVisibleRef.current) e.preventDefault()
     }
     const inp = inputRef.current
@@ -1558,8 +1601,7 @@ export default function Terminal({ token }: Props) {
     if (!vv) return
     const handleResize = () => {
       const visible = vv.height < window.innerHeight * 0.8
-      keyboardVisibleRef.current = visible
-      setMobileKeyboardVisible(visible)
+      syncMobileKeyboard(visible)
       setVvHeight(Math.round(vv.height))
       if (!visible && inputRef.current) {
         inputRef.current.inputMode = 'none'
@@ -1569,7 +1611,7 @@ export default function Terminal({ token }: Props) {
     handleResize()
     vv.addEventListener('resize', handleResize)
     return () => vv.removeEventListener('resize', handleResize)
-  }, [isWidePC])
+  }, [isWidePC, syncMobileKeyboard])
 
   // Layer 2: Global focusin guard — blur any input that triggers keyboard when it should be hidden
   // This covers both our custom hidden input AND xterm's internal textarea
@@ -1725,60 +1767,40 @@ export default function Terminal({ token }: Props) {
 
   return (
     <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
-      <div className={inputContainerClass} style={inputContainerStyle}>
-        {mobileKeyboardVisible && (
-          <div className="pl-2.5 pr-1 text-[11px] font-medium text-agentmobile-text-2 select-none">输入</div>
-        )}
-        <input
-          ref={inputRef}
-          className={mobileKeyboardVisible
-            ? 'min-w-0 flex-1 bg-transparent text-agentmobile-text caret-agentmobile-accent text-base leading-6 px-2.5 py-2.5 outline-none border-none'
-            : 'w-px h-px opacity-0 pointer-events-none'
-          }
-          style={mobileKeyboardVisible ? undefined : { border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
-          value={mobileInputValue}
-          readOnly={!mobileKeyboardVisible}
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          tabIndex={mobileKeyboardVisible ? 0 : -1}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
-          onFocus={(e) => {
-            if (!isWidePC) syncMobileKeyboard(true)
-            keepMobileInputCaretVisible(e.currentTarget)
-          }}
-          onBlur={() => {
-            if (isWidePC) return
-            window.setTimeout(() => {
-              if (document.activeElement !== inputRef.current) {
-                syncMobileKeyboard(false)
-              }
-            }, 0)
-          }}
-          onCompositionStart={() => { isComposingRef.current = true; syncMobileKeyboard(true) }}
-          onCompositionUpdate={(e) => {
-            setMobileInputValue(e.currentTarget.value)
-            keepMobileInputCaretVisible(e.currentTarget)
-          }}
-          onCompositionEnd={handleCompositionEnd}
-          aria-label="终端输入"
-        />
-        {mobileKeyboardVisible && (
-          <button
-            type="button"
-            className="self-stretch px-3 bg-transparent border-none border-l border-agentmobile-border text-agentmobile-text-2 text-xs cursor-pointer"
-            onPointerDown={(e) => {
-              e.preventDefault()
-              blurMobileInput()
-            }}
-          >
-            收起
-          </button>
-        )}
-      </div>
+      <input
+        ref={inputRef}
+        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
+        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        value={mobileInputValue}
+        readOnly={!mobileKeyboardVisible}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        tabIndex={-1}
+        onChange={handleInputChange}
+        onKeyDown={handleKeyDown}
+        onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
+        onFocus={(e) => {
+          if (!isWidePC) syncMobileKeyboard(true)
+          keepMobileInputCaretVisible(e.currentTarget)
+        }}
+        onBlur={() => {
+          if (isWidePC) return
+          window.setTimeout(() => {
+            if (document.activeElement !== inputRef.current) {
+              syncMobileKeyboard(false)
+            }
+          }, 0)
+        }}
+        onCompositionStart={() => { isComposingRef.current = true; syncMobileKeyboard(true) }}
+        onCompositionUpdate={(e) => {
+          setMobileInputValue(e.currentTarget.value)
+          keepMobileInputCaretVisible(e.currentTarget)
+        }}
+        onCompositionEnd={handleCompositionEnd}
+        aria-label="终端输入"
+      />
       <input
         ref={fileInputRef}
         type="file"

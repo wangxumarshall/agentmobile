@@ -343,6 +343,27 @@ function proxyVarsToShellPrefix(proxyVars) {
   return exports ? `${exports}; ` : ''
 }
 
+function getTmuxSessionLastChannel(sessionName) {
+  let lastChannel = null
+  try {
+    const envOutput = execFileSync('tmux', ['show-environment', '-t', sessionName, 'NEXUS_LAST_CHANNEL'], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const match = envOutput.match(/^NEXUS_LAST_CHANNEL=(\d+)$/)
+    if (match) lastChannel = Number(match[1])
+  } catch {}
+
+  try {
+    const stdout = execFileSync('tmux', ['list-windows', '-t', sessionName, '-F', '#{window_index}|#{window_active}'], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const windows = stdout.split('\n').filter(Boolean).map(line => {
+      const [index, active] = line.split('|')
+      return { index: Number(index), active: active?.trim() === '1' }
+    }).filter(win => Number.isFinite(win.index))
+    if (lastChannel !== null && windows.some(win => win.index === lastChannel)) return lastChannel
+    return windows.find(win => win.active)?.index ?? windows[0]?.index ?? null
+  } catch {}
+
+  return lastChannel
+}
+
 function listProjects() {
   try {
     const stdout = execSync('tmux list-sessions -F "#{session_name}|#{session_windows}|#{session_attached}" 2>/dev/null').toString().trim()
@@ -367,6 +388,7 @@ function listProjects() {
         path: path || WORKSPACE_ROOT,
         active: name === TMUX_SESSION,
         channelCount: Number(windows) || 0,
+        lastChannel: getTmuxSessionLastChannel(name),
       }
     })
     projects.reverse()
@@ -381,6 +403,7 @@ function getProjectsSnapshot() {
     name: project.name,
     path: project.path,
     channelCount: project.channelCount,
+    lastChannel: project.lastChannel,
   })))
 }
 
@@ -1710,6 +1733,7 @@ app.post('/api/projects', authMiddleware, (req, res) => {
     execSync(`tmux new-session -d -s ${finalName} -n "${initialWindowName}" -c "${cwd}" "${shellCmd}"`)
     // 设置 NEXUS_CWD
     execSync(`tmux set-environment -t ${finalName} NEXUS_CWD "${cwd}"`)
+    execSync(`tmux set-environment -t ${finalName} NEXUS_LAST_CHANNEL 0`)
     // 设置代理变量
     for (const [key, value] of Object.entries(proxyVars)) {
       try { execSync(`tmux set-environment -t ${finalName} ${key} "${value}" 2>/dev/null`) } catch {}
@@ -1719,7 +1743,7 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   }
 
   refreshProjectsSnapshot('create_project')
-  res.json({ name: finalName, path: cwd, agent_type: agentType, profile: resolvedProfile, profile_mismatch: !!profile && !resolvedProfile })
+  res.json({ name: finalName, path: cwd, initialChannelIndex: 0, agent_type: agentType, profile: resolvedProfile, profile_mismatch: !!profile && !resolvedProfile })
 })
 
 // POST /api/projects/:name/channels — 在指定 Project 中新建 Channel（window）
@@ -1779,11 +1803,18 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
   } catch {}
 
   // 创建新 window
-  const cmd = `tmux new-window -t ${sessionName} -c "${cwd}" -n "${channelName}" "${shellCmd}"`
-  exec(cmd, (err) => {
+  const cmd = `tmux new-window -P -F "#{window_index}" -t ${shellQuote(sessionName)} -c ${shellQuote(cwd)} -n ${shellQuote(channelName)} ${shellQuote(shellCmd)}`
+  exec(cmd, (err, stdout) => {
     if (err) return res.status(500).json({ error: err.message })
+    const windowIndex = Number(stdout.trim())
+    if (Number.isFinite(windowIndex)) {
+      try {
+        execFileSync('tmux', ['select-window', '-t', `${sessionName}:${windowIndex}`], { stdio: 'pipe' })
+        execFileSync('tmux', ['set-environment', '-t', sessionName, 'NEXUS_LAST_CHANNEL', String(windowIndex)], { stdio: 'pipe' })
+      } catch {}
+    }
     refreshProjectsSnapshot('create_channel')
-    res.json({ name: channelName, cwd, agent_type: agentType, profile: resolvedProfile, profile_mismatch: !!profile && !resolvedProfile, project: sessionName })
+    res.json({ name: channelName, index: Number.isFinite(windowIndex) ? windowIndex : null, cwd, agent_type: agentType, profile: resolvedProfile, profile_mismatch: !!profile && !resolvedProfile, project: sessionName })
   })
 })
 
@@ -1797,23 +1828,7 @@ app.post('/api/projects/:name/activate', authMiddleware, (req, res) => {
     return res.status(404).json({ error: 'project not found' })
   }
   // 读取该 session 最后激活的 channel
-  let lastChannel = null
-  try {
-    const envOutput = execSync(`tmux show-environment -t ${sessionName} NEXUS_LAST_CHANNEL 2>/dev/null`).toString().trim()
-    const match = envOutput.match(/^NEXUS_LAST_CHANNEL=(\d+)$/)
-    if (match) lastChannel = parseInt(match[1], 10)
-  } catch {}
-  // 验证 channel 是否存在，不存在则返回 null（前端会用第一个）
-  if (lastChannel !== null) {
-    try {
-      const windows = execSync(`tmux list-windows -t ${sessionName} -F "#I"`).toString().trim().split('\n')
-      if (!windows.includes(String(lastChannel))) {
-        lastChannel = null
-      }
-    } catch {
-      lastChannel = null
-    }
-  }
+  const lastChannel = getTmuxSessionLastChannel(sessionName)
   // 返回 session 信息，前端据此切换 WebSocket 连接
   res.json({ active: true, project: sessionName, lastChannel })
 })
