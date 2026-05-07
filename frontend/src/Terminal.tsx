@@ -324,6 +324,7 @@ export default function Terminal({ token }: Props) {
   const keyboardVisibleRef = useRef(false)
   const mobileKeyboardLayoutUntilRef = useRef(0)
   const [mobileKeyboardVisible, setMobileKeyboardVisible] = useState(false)
+  const [keyboardLift, setKeyboardLift] = useState(0)
   const [mobileInputValue, setMobileInputValue] = useState('')
   // Viewport height is handled by CSS 100dvh, not JS
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
@@ -1665,6 +1666,7 @@ export default function Terminal({ token }: Props) {
   useEffect(() => {
     if (isWidePC) {
       setMobileKeyboardVisible(false)
+      setKeyboardLift(0)
       return
     }
     const vv = window.visualViewport
@@ -1672,6 +1674,7 @@ export default function Terminal({ token }: Props) {
     const handleResize = () => {
       const visible = vv.height < window.innerHeight * 0.8
       syncMobileKeyboard(visible)
+      setKeyboardLift(Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)))
       if (!visible && inputRef.current) {
         inputRef.current.inputMode = 'none'
         inputRef.current.readOnly = true
@@ -1679,7 +1682,11 @@ export default function Terminal({ token }: Props) {
     }
     handleResize()
     vv.addEventListener('resize', handleResize)
-    return () => vv.removeEventListener('resize', handleResize)
+    vv.addEventListener('scroll', handleResize)
+    return () => {
+      vv.removeEventListener('resize', handleResize)
+      vv.removeEventListener('scroll', handleResize)
+    }
   }, [isWidePC, syncMobileKeyboard])
 
   // Layer 2: Global focusin guard — blur any input that triggers keyboard when it should be hidden
@@ -1831,6 +1838,9 @@ export default function Terminal({ token }: Props) {
     onUploadFile: (file: File) => enqueueUploadFiles([file]),
     onUploadFiles: (files: FileList) => enqueueUploadFiles(files),
     onShowCopySheet: (text: string) => setCopySheetText(text),
+    onTerminalInputRequest: () => {
+      if (keyboardVisibleRef.current) focusMobileInput()
+    },
     collapsed: toolbarCollapsed,
     onCollapsedChange: setToolbarCollapsed,
   }
@@ -2072,7 +2082,14 @@ export default function Terminal({ token }: Props) {
         </div>
       ) : (
         <div className="flex flex-col flex-1 overflow-hidden min-h-0">
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+          <div
+            className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
+            style={{
+              transform: keyboardLift ? `translateY(-${keyboardLift}px)` : 'translateY(0)',
+              transition: 'transform 0.18s ease',
+              willChange: keyboardLift ? 'transform' : undefined,
+            }}
+          >
             <div ref={containerRef} className="flex-1 overflow-hidden relative" />
             {isConnecting && (
               <div className="absolute inset-0 bg-agentmobile-bg flex flex-col items-center justify-center gap-3 z-10">
@@ -2085,7 +2102,15 @@ export default function Terminal({ token }: Props) {
             )}
           </div>
           <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={toolbarHeightRef.current} />
-          <div ref={toolbarWrapRef}><Toolbar {...toolbarProps} /></div>
+          <div
+            ref={toolbarWrapRef}
+            className="shrink-0"
+            style={{
+              transform: keyboardLift ? `translateY(-${keyboardLift}px)` : 'translateY(0)',
+              transition: 'transform 0.18s ease',
+              willChange: keyboardLift ? 'transform' : undefined,
+            }}
+          ><Toolbar {...toolbarProps} /></div>
         </div>
       )}
 

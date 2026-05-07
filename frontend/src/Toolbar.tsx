@@ -25,6 +25,7 @@ interface Props {
   onOpenTasks?: () => void
   onFitTerminal?: () => void
   onShowCopySheet?: (text: string) => void
+  onTerminalInputRequest?: () => void
   /** When true: renders as a compact sidebar section (no theme/settings, flex-wrap key grid) */
   embedded?: boolean
   /** Controlled collapsed state (optional). If provided, component acts as controlled. */
@@ -88,7 +89,7 @@ interface KeyRepeatState {
   pointerId: number | null
 }
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, onTerminalInputRequest, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [customKeyLabel, setCustomKeyLabel] = useState('')
@@ -319,6 +320,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     } else {
       sendToWs(key.seq)
     }
+    if (!isPC && !key.action) onTerminalInputRequest?.()
   }
 
   function removeKey(section: 'pinned' | 'expanded', id: string) {
