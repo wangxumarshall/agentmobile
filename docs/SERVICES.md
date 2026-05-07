@@ -49,8 +49,8 @@ npm run service:pull:web
 
 ```bash
 git pull --ff-only
-npm install
-cd frontend && npm install && npm run build && cd ..
+npm install --include=dev
+cd frontend && npm install --include=dev && npm run build && cd ..
 sudo systemctl restart agentmobile
 npm run service:verify
 ```
@@ -59,8 +59,8 @@ PM2 fallback：
 
 ```bash
 git pull --ff-only
-npm install
-cd frontend && npm install && npm run build && cd ..
+npm install --include=dev
+cd frontend && npm install --include=dev && npm run build && cd ..
 pm2 restart agentmobile
 curl -I http://127.0.0.1:${PORT:-5000}/
 ```
@@ -106,6 +106,10 @@ scripts/service-control.sh restart-tmux --force
 ```bash
 npm run service:install-units
 ```
+
+仓库内的 `.service` 文件是模板，不再写死 `/home/ubuntu/...` 这类机器路径。
+`npm run service:install-units` 会按当前仓库绝对路径、当前用户以及当前 `node` / `npm` / `PATH` 渲染后安装到 `/etc/systemd/system/`，
+所以新用户只要 clone 到任意目录即可，不需要先手改 unit 文件。
 
 然后只重启受影响的服务：
 

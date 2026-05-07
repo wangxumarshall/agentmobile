@@ -48,6 +48,7 @@ interface Project {
   path: string
   active: boolean
   channelCount: number
+  lastChannel?: number | null
 }
 
 type RenameTarget =
@@ -88,6 +89,10 @@ const STATUS_DOT = {
 function getChannelStatus(channel: Channel, isActive: boolean): keyof typeof STATUS_DOT {
   if (channel.name === 'shell' || channel.name.endsWith('-shell')) return 'shell'
   return isActive ? 'running' : 'idle'
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 export interface SessionManagerV2Handle {
@@ -209,28 +214,36 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   const handleProjectClick = async (project: Project) => {
     if (project.name === currentProject) return
+    const previousProject = currentProjectRef.current
+    const previousChannel = currentChannelIndex
+    const optimisticChannel = asFiniteNumber(project.lastChannel)
+    currentProjectRef.current = project.name
+    onSwitchProject(project.name, optimisticChannel ?? undefined)
     try {
       const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}/activate`, { method: 'POST', headers })
-      if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.switchFailed'))); return }
+      if (!r.ok) {
+        currentProjectRef.current = previousProject
+        onSwitchProject(previousProject, previousChannel)
+        setError(await parseApiError(r, t('sessionMgr.switchFailed')))
+        fetchProjects()
+        return
+      }
       const data = await r.json()
-      onSwitchProject(project.name, data.lastChannel)
+      const confirmedChannel = asFiniteNumber(data.lastChannel)
+      if (confirmedChannel !== null && confirmedChannel !== optimisticChannel) {
+        onSwitchProject(project.name, confirmedChannel)
+      }
     } catch (e: unknown) {
+      currentProjectRef.current = previousProject
+      onSwitchProject(previousProject, previousChannel)
       setError(parseNetworkError(e))
+      fetchProjects()
     }
   }
 
   const doSwitchChannel = async (channel: Channel, shouldClose: boolean) => {
-    try {
-      const r = await fetch(`/api/sessions/${channel.index}/attach?session=${encodeURIComponent(currentProject)}`, {
-        method: 'POST',
-        headers,
-      })
-      if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.switchFailed'))); return }
-      onSwitchChannel(channel.index)
-      if (shouldClose) onClose()
-    } catch (e: unknown) {
-      setError(parseNetworkError(e))
-    }
+    onSwitchChannel(channel.index)
+    if (shouldClose) onClose()
   }
 
   useEffect(() => {
