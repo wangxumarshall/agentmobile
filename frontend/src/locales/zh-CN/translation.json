@@ -114,7 +114,11 @@
     "resetToFactory": "将恢复到出厂配置",
     "reset": "重置",
     "saveAsDefault": "存为默认",
-    "done": "完成"
+    "done": "完成",
+    "customKeys": "自定义按键",
+    "customKeyPlaceholder": "^X, M-b, Esc, \\u001b[1;5D",
+    "addCustom": "新增",
+    "customKeyHelp": "支持 Ctrl/Alt、方向键、单字符和 JSON 转义"
   },
   "toolbarKeys": {
     "prevHistory": "上一条历史",
@@ -151,7 +155,17 @@
     "togglePermission": "切换权限模式",
     "scrollBottom": "滚动到底部",
     "copyTerminal": "复制终端内容",
-    "fitTerminal": "适配终端大小"
+    "fitTerminal": "适配终端大小",
+    "customKey": "自定义按键"
+  },
+  "upload": {
+    "queueTitle": "上传队列",
+    "done": "完成",
+    "error": "失败",
+    "conflict": "冲突",
+    "cancel": "取消",
+    "conflictTitle": "文件已存在",
+    "conflictMessage": "文件 \"{{filename}}\" 已存在。是否覆盖？"
   },
   "settings": {
     "title": "设置",

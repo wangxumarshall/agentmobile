@@ -4,8 +4,8 @@
 // Default service manager: systemd (PM2 fallback when systemd is unavailable)
 
 import { spawnSync } from 'child_process';
-import { existsSync, copyFileSync, writeFileSync, mkdirSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { existsSync, copyFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -69,6 +69,13 @@ function resolveNodeBinary() {
   fail('Could not resolve the current node binary. Ensure `node` is on PATH.');
 }
 
+function resolveNpmBinary() {
+  const result = capture('command -v npm');
+  const path = (result.stdout || '').trim();
+  if (result.status === 0 && path) return path;
+  fail('Could not resolve the npm binary. Ensure `npm` is on PATH.');
+}
+
 function buildRuntimePath() {
   const homeDir = process.env.HOME || '/home/ubuntu';
   const dirs = [
@@ -89,6 +96,15 @@ function buildRuntimePath() {
   } catch {}
 
   return [...new Set(dirs)].join(':');
+}
+
+function renderSystemdTemplate(templatePath, replacements) {
+  if (!existsSync(templatePath)) fail(`Systemd template missing: ${templatePath}`);
+  let content = capture(`cat ${JSON.stringify(templatePath)}`).stdout || '';
+  for (const [key, value] of Object.entries(replacements)) {
+    content = content.replaceAll(key, value);
+  }
+  return content;
 }
 
 function detectServiceManager() {
@@ -181,69 +197,35 @@ function createPm2Config(nodeBinary) {
   ok('ecosystem.config.cjs created');
 }
 
-function createSystemdService(nodeBinary) {
-  step('Creating systemd service file');
+function renderSystemdUnits(nodeBinary) {
+  step('Rendering systemd unit files');
   const runtimePath = buildRuntimePath();
-  const systemdContent = `[Unit]
-Description=agentmobile WebSocket tmux bridge service
-Documentation=file:${ROOT}/docs/SERVICES.md
-After=network.target agentmobile-tmux.service
-Requires=agentmobile-tmux.service
-
-[Service]
-Type=simple
-User=${process.env.USER || 'ubuntu'}
-Group=${process.env.USER || 'ubuntu'}
-ExecStart=${nodeBinary} ${ROOT}/server.js
-WorkingDirectory=${ROOT}
-Restart=on-failure
-RestartSec=10
-KillMode=control-group
-StandardOutput=journal
-StandardError=journal
-Environment=NODE_ENV=production
-Environment=PATH=${runtimePath}
-
-[Install]
-WantedBy=multi-user.target
-`;
-  writeFileSync(SYSTEMD_UNIT_PATH, systemdContent);
-  ok('agentmobile.service created');
+  const replacements = {
+    '__ROOT__': ROOT,
+    '__USER__': process.env.USER || 'ubuntu',
+    '__GROUP__': process.env.USER || 'ubuntu',
+    '__NODE_BINARY__': nodeBinary,
+    '__NPM_BINARY__': resolveNpmBinary(),
+    '__RUNTIME_PATH__': runtimePath,
+  };
+  const tmpDir = mkdtempSync(join(ROOT, '.tmp-systemd-'))
+  const rendered = [];
+  for (const file of ['agentmobile.service', 'agentmobile-tmux.service', 'agentmobile-im.service', 'agentmobile-5001.service']) {
+    const templatePath = resolve(ROOT, file);
+    if (!existsSync(templatePath)) continue;
+    const outputPath = resolve(tmpDir, file);
+    writeFileSync(outputPath, renderSystemdTemplate(templatePath, replacements));
+    rendered.push(outputPath);
+  }
+  ok('systemd unit files rendered');
+  return { tmpDir, rendered };
 }
 
-function createSystemdTmuxService() {
-  step('Creating systemd tmux runtime service file');
-  const runtimePath = buildRuntimePath();
-  const systemdContent = `[Unit]
-Description=agentmobile persistent tmux runtime
-Documentation=file:${ROOT}/docs/SERVICES.md
-After=network.target
-
-[Service]
-Type=simple
-User=${process.env.USER || 'ubuntu'}
-Group=${process.env.USER || 'ubuntu'}
-ExecStart=${ROOT}/scripts/tmux-runtime.sh
-WorkingDirectory=${ROOT}
-Restart=always
-RestartSec=10
-KillMode=control-group
-StandardOutput=journal
-StandardError=journal
-Environment=NODE_ENV=production
-Environment=PATH=${runtimePath}
-
-[Install]
-WantedBy=multi-user.target
-`;
-  writeFileSync(SYSTEMD_TMUX_UNIT_PATH, systemdContent);
-  ok('agentmobile-tmux.service created');
-}
-
-function installSystemdService() {
+function installSystemdService(rendered) {
   step('Installing systemd service');
-  if (run('sudo cp agentmobile-tmux.service /etc/systemd/system/').status !== 0) fail('Failed to copy agentmobile-tmux.service into /etc/systemd/system');
-  if (run('sudo cp agentmobile.service /etc/systemd/system/').status !== 0) fail('Failed to copy agentmobile.service into /etc/systemd/system');
+  for (const file of rendered) {
+    if (run(`sudo cp ${shellQuote(file)} /etc/systemd/system/`).status !== 0) fail(`Failed to copy ${file} into /etc/systemd/system`);
+  }
   if (run('sudo systemctl daemon-reload').status !== 0) fail('systemd daemon-reload failed');
   if (run('sudo systemctl enable agentmobile-tmux').status !== 0) fail('systemd enable failed — check: sudo systemctl status agentmobile-tmux');
   if (run('sudo systemctl enable agentmobile').status !== 0) fail('systemd enable failed — check: sudo systemctl status agentmobile');
@@ -332,9 +314,12 @@ if (serviceManager.useSystemd) {
 
 let serviceStatus;
 if (serviceManager.useSystemd) {
-  createSystemdTmuxService();
-  createSystemdService(nodeBinary);
-  serviceStatus = installSystemdService();
+  const renderedUnits = renderSystemdUnits(nodeBinary);
+  try {
+    serviceStatus = installSystemdService(renderedUnits.rendered);
+  } finally {
+    rmSync(renderedUnits.tmpDir, { recursive: true, force: true });
+  }
 } else {
   serviceStatus = installPm2Service(nodeBinary, serviceManager.hasSudo);
 }

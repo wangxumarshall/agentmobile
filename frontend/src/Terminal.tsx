@@ -10,6 +10,7 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import { mapSpecialKey, shouldSkipInput, stripMobileInputArtifacts } from './mobileInput'
 
 // ANSI 256-color palette (0-15 standard, 16-231 6x6x6 cube, 232-255 grayscale)
 const ANSI256: string[] = (() => {
@@ -131,6 +132,20 @@ const SCROLLBACK_OPEN_THRESHOLD_PX = 40
 const KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS = 1400
 const RESIZE_REPAINT_ROW_NUDGE_THRESHOLD = 3
 const MAX_UPLOAD_NOTIFICATIONS = 5
+const MAX_PARALLEL_UPLOADS = 3
+
+type UploadStatus = 'pending' | 'uploading' | 'done' | 'error' | 'conflict'
+
+interface UploadQueueItem {
+  id: string
+  file: File
+  filename: string
+  progress: number
+  status: UploadStatus
+  error?: string
+  fullPath?: string
+  xhr?: XMLHttpRequest
+}
 
 export type ThemeMode = 'dark' | 'light'
 
@@ -296,7 +311,7 @@ export default function Terminal({ token }: Props) {
   const [windowsLoaded, setWindowsLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pasteFileRef = useRef<HTMLInputElement>(null)
-  const uploadFileRef = useRef<(file: File) => Promise<void>>(null!)
+  const enqueueUploadFilesRef = useRef<(files: Iterable<File>) => void>(() => {})
   const [windowOutputs, setWindowOutputs] = useState<Record<number, { output: string; clients: number; idleMs: number; connected: boolean }>>({})
     const scrollPositionsRef = useRef<Record<number, number>>({})
   const windowsRef = useRef<TmuxWindow[]>([])
@@ -323,7 +338,9 @@ export default function Terminal({ token }: Props) {
   const toolbarCollapsedRef = useRef<boolean | undefined>(undefined)
   useEffect(() => { toolbarCollapsedRef.current = toolbarCollapsed }, [toolbarCollapsed])
   const [uploadNotifications, setUploadNotifications] = useState<Array<{ id: string; filename: string; path: string }>>([])
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([])
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const uploadQueueRef = useRef<UploadQueueItem[]>([])
   const wheelScrollRemainderRef = useRef(0)
 
   // F-18: 多 tmux session 支持
@@ -517,6 +534,10 @@ export default function Terminal({ token }: Props) {
     })
   }, [])
 
+  useEffect(() => {
+    uploadQueueRef.current = uploadQueue
+  }, [uploadQueue])
+
   const removeUploadNotification = useCallback((id: string) => {
     setUploadNotifications(prev => prev.filter(n => n.id !== id))
   }, [])
@@ -543,8 +564,9 @@ export default function Terminal({ token }: Props) {
   }, [copyToClipboard])
 
   const sendToWs = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(data)
+    const sanitized = stripMobileInputArtifacts(data)
+    if (sanitized && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(sanitized)
     }
   }, [])
 
@@ -927,61 +949,109 @@ export default function Terminal({ token }: Props) {
     fileInputRef.current?.click()
   }
 
-  async function uploadFile(file: File, overwrite = false) {
+  const enqueueUploadFiles = useCallback((files: Iterable<File>) => {
+    const items = Array.from(files).map(file => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      file,
+      filename: file.name,
+      progress: 0,
+      status: 'pending' as UploadStatus,
+    }))
+    if (items.length === 0) return
+    setUploadQueue(prev => [...prev, ...items])
+  }, [])
+
+  const removeUploadItem = useCallback((itemId: string) => {
+    setUploadQueue(prev => {
+      const item = prev.find(entry => entry.id === itemId)
+      item?.xhr?.abort()
+      return prev.filter(entry => entry.id !== itemId)
+    })
+  }, [])
+
+  const startUpload = useCallback((itemId: string, overwrite = false) => {
+    const snapshot = uploadQueueRef.current.find(item => item.id === itemId)
+    if (!snapshot) return
+    setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'uploading', progress: overwrite ? item.progress : 0, error: undefined } : item))
+
+    const xhr = new XMLHttpRequest()
     const formData = new FormData()
-    formData.append('file', file)
-    formData.append('originalName', file.name)
-    try {
-      const sessionParam = `session=${encodeURIComponent(activeTmuxSessionRef.current)}`
-      const url = overwrite ? `/api/files/upload?overwrite=1&${sessionParam}` : `/api/files/upload?${sessionParam}`
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      })
-      if (res.status === 409) {
-        // 文件已存在，显示确认对话框
-        const data = await res.json()
-        setUploadConflict({ show: true, file, filename: data.filename || file.name })
+    formData.append('file', snapshot.file)
+    formData.append('originalName', snapshot.file.name)
+    const sessionParam = `session=${encodeURIComponent(activeTmuxSessionRef.current)}`
+    const url = overwrite ? `/api/files/upload?overwrite=1&${sessionParam}` : `/api/files/upload?${sessionParam}`
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return
+      const progress = Math.max(1, Math.min(100, Math.round((event.loaded / event.total) * 100)))
+      setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, progress } : item))
+    }
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (xhr.status === 0) return
+      if (xhr.status === 409) {
+        const data = JSON.parse(xhr.responseText || '{}')
+        setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'conflict', error: data.filename || item.filename } : item))
+        setUploadConflict({ show: true, itemId, filename: data.filename || snapshot.filename })
         return
       }
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
+      if (xhr.status < 200 || xhr.status >= 300) {
+        setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'error', error: xhr.responseText || 'upload failed' } : item))
+        const term = termRef.current
+        if (term) term.writeln(`\r\n\x1b[31m[agentmobile: 上传失败]\x1b[0m ${snapshot.filename}`)
+        return
+      }
+      const data = JSON.parse(xhr.responseText || '{}')
       const fullPath = data.fullPath || data.url || ''
-      const filename = data.originalName || data.filename || file.name
-      if (!fullPath) console.warn('[agentmobile] Upload response missing fullPath:', data)
+      const filename = data.originalName || data.filename || snapshot.filename
+      setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'done', progress: 100, fullPath } : item))
       addUploadNotification(filename, fullPath)
       const term = termRef.current
       if (term) {
         term.writeln(`\r\n\x1b[32m[agentmobile: 文件已上传]\x1b[0m ${filename}`)
         if (fullPath) term.writeln(`\x1b[36m路径: ${fullPath}\x1b[0m`)
       }
-    } catch (e: any) {
-      console.error('Upload failed:', e)
-      const term = termRef.current
-      if (term) {
-        term.writeln(`\r\n\x1b[31m[agentmobile: 上传失败]\x1b[0m ${e.message || 'unknown error'}`)
-      }
     }
+
+    xhr.open('POST', url)
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.send(formData)
+    setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, xhr } : item))
+  }, [addUploadNotification, token])
+
+  useEffect(() => {
+    const activeCount = uploadQueue.filter(item => item.status === 'uploading').length
+    if (activeCount >= MAX_PARALLEL_UPLOADS) return
+    const next = uploadQueue.filter(item => item.status === 'pending').slice(0, MAX_PARALLEL_UPLOADS - activeCount)
+    next.forEach(item => startUpload(item.id))
+  }, [startUpload, uploadQueue])
+
+  useEffect(() => {
+    enqueueUploadFilesRef.current = enqueueUploadFiles
+  }, [enqueueUploadFiles])
+
+  function retryUpload(itemId: string) {
+    startUpload(itemId, true)
   }
 
   function handleOverwriteConfirm() {
-    if (uploadConflict.file) {
-      uploadFile(uploadConflict.file, true)
-      setUploadConflict({ show: false, file: null, filename: '' })
+    if (uploadConflict.itemId) {
+      retryUpload(uploadConflict.itemId)
+      setUploadConflict({ show: false, itemId: null, filename: '' })
     }
   }
 
   function handleOverwriteCancel() {
-    setUploadConflict({ show: false, file: null, filename: '' })
+    const itemId = uploadConflict.itemId
+    setUploadConflict({ show: false, itemId: null, filename: '' })
+    if (itemId) removeUploadItem(itemId)
     const term = termRef.current
     if (term) {
       term.writeln(`\r\n\x1b[33m[agentmobile: 上传已取消]\x1b[0m ${uploadConflict.filename}`)
     }
   }
 
-  // Keep refs current on every render
-  uploadFileRef.current = uploadFile
   activeWindowIndexRef.current = activeWindowIndex
 
   // 全局剪贴板粘贴：图片直接上传（F-14）
@@ -996,7 +1066,7 @@ export default function Terminal({ token }: Props) {
         if (items[i].type.startsWith('image/')) {
           e.preventDefault()
           const file = items[i].getAsFile()
-          if (file) uploadFileRef.current(file)
+          if (file) enqueueUploadFilesRef.current([file])
           return
         }
       }
@@ -1391,7 +1461,7 @@ export default function Terminal({ token }: Props) {
       container.style.boxShadow = ''
       const files = e.dataTransfer?.files
       if (files && files.length > 0) {
-        uploadFileRef.current(files[0])
+        enqueueUploadFilesRef.current(files)
       }
     }
     container.addEventListener('dragover', onDragOver)
@@ -1539,9 +1609,8 @@ export default function Terminal({ token }: Props) {
   }
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    if (isComposingRef.current) return // handled by compositionEnd
-    // Mobile fallback: some keyboards emit text via input/change instead of keydown.
-    const val = e.target.value
+    if (shouldSkipInput(e, isComposingRef.current)) return
+    const val = stripMobileInputArtifacts(e.target.value)
     setMobileInputValue(val)
     if (val) {
       sendToWs(val)
@@ -1553,24 +1622,11 @@ export default function Terminal({ token }: Props) {
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (isComposingRef.current) return
-    if (e.key === 'Enter') { e.preventDefault(); sendToWs('\r') }
-    else if (e.key === 'Backspace') { e.preventDefault(); sendToWs('\x7f') }
-    else if (e.key === 'Tab') { e.preventDefault(); sendToWs('\t') }
-    else if (e.key === 'Escape') { e.preventDefault(); sendToWs('\x1b') }
-    else if (e.key === 'Delete') { e.preventDefault(); sendToWs('\x1b[3~') }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); sendToWs('\x1b[A') }
-    else if (e.key === 'ArrowDown') { e.preventDefault(); sendToWs('\x1b[B') }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); sendToWs('\x1b[C') }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); sendToWs('\x1b[D') }
-    else if (e.key === 'Home') { e.preventDefault(); sendToWs('\x1b[H') }
-    else if (e.key === 'End') { e.preventDefault(); sendToWs('\x1b[F') }
-    else if (e.key === 'PageUp') { e.preventDefault(); sendToWs('\x1b[5~') }
-    else if (e.key === 'PageDown') { e.preventDefault(); sendToWs('\x1b[6~') }
-    else if (e.ctrlKey && e.key.length === 1) {
+    const mapped = mapSpecialKey(e.key, e.ctrlKey)
+    if (mapped) {
       e.preventDefault()
-      sendToWs(String.fromCharCode(e.key.toLowerCase().charCodeAt(0) - 96))
-    }
-    else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      sendToWs(mapped)
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // On mobile, let the input update first so the user gets immediate local
       // feedback; handleInputChange will forward the text to the terminal.
       if (isWidePC) {
@@ -1582,7 +1638,7 @@ export default function Terminal({ token }: Props) {
 
   function handleCompositionEnd(e: React.CompositionEvent<HTMLInputElement>) {
     isComposingRef.current = false
-    const text = e.data
+    const text = stripMobileInputArtifacts(e.data)
     if (text) sendToWs(text)
     resetMobileInput(e.currentTarget)
   }
@@ -1590,7 +1646,7 @@ export default function Terminal({ token }: Props) {
   // Track keyboard visibility and adjust layout height on mobile
   const [vvHeight, setVvHeight] = useState<number | null>(null)
   // 文件上传覆盖确认对话框状态
-  const [uploadConflict, setUploadConflict] = useState<{ show: boolean; file: File | null; filename: string }>({ show: false, file: null, filename: '' })
+  const [uploadConflict, setUploadConflict] = useState<{ show: boolean; itemId: string | null; filename: string }>({ show: false, itemId: null, filename: '' })
   useEffect(() => {
     if (isWidePC) {
       setVvHeight(null)
@@ -1759,7 +1815,8 @@ export default function Terminal({ token }: Props) {
     onOpenWorkspace: () => setShowWorkspace(true),
     onOpenTasks: () => setShowTasks(true),
     onUpload: handleFileUpload,
-    onUploadFile: uploadFile,
+    onUploadFile: (file: File) => enqueueUploadFiles([file]),
+    onUploadFiles: (files: FileList) => enqueueUploadFiles(files),
     onShowCopySheet: (text: string) => setCopySheetText(text),
     collapsed: toolbarCollapsed,
     onCollapsedChange: setToolbarCollapsed,
@@ -1805,12 +1862,12 @@ export default function Terminal({ token }: Props) {
         ref={fileInputRef}
         type="file"
         accept="image/*,video/*"
-        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
-        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        multiple
+        className="fixed w-11 h-11 opacity-[0.01] -z-10"
+        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
         tabIndex={-1}
         onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) uploadFile(file)
+          if (e.target.files) enqueueUploadFiles(e.target.files)
           e.target.value = '' // reset
         }}
         aria-hidden="true"
@@ -1818,12 +1875,12 @@ export default function Terminal({ token }: Props) {
       <input
         ref={pasteFileRef}
         type="file"
-        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
-        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        multiple
+        className="fixed w-11 h-11 opacity-[0.01] -z-10"
+        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
         tabIndex={-1}
         onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) uploadFile(file)
+          if (e.target.files) enqueueUploadFiles(e.target.files)
           e.target.value = '' // reset
         }}
         aria-hidden="true"
@@ -2290,10 +2347,9 @@ export default function Terminal({ token }: Props) {
       {uploadConflict.show && (
         <div className="fixed inset-0 z-[500] bg-black/70 flex items-center justify-center p-5">
           <div className="bg-agentmobile-menu-bg rounded-xl p-6 max-w-[400px] border border-agentmobile-border">
-            <h3 className="text-agentmobile-text mt-0 mb-2">文件已存在</h3>
+            <h3 className="text-agentmobile-text mt-0 mb-2">{t('upload.conflictTitle')}</h3>
             <p className="text-agentmobile-text-2 text-sm mb-4">
-              文件 "<span className="text-agentmobile-text font-mono">{uploadConflict.filename}</span>" 已存在。
-              <br />是否覆盖？
+              {t('upload.conflictMessage', { filename: uploadConflict.filename })}
             </p>
             <div className="flex gap-3">
               <button
@@ -2309,6 +2365,38 @@ export default function Terminal({ token }: Props) {
                 覆盖
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {uploadQueue.length > 0 && (
+        <div
+          className="fixed left-1/2 -translate-x-1/2 z-[210] max-w-[92vw] w-[560px] rounded-xl border border-agentmobile-border bg-agentmobile-menu-bg shadow-[0_12px_36px_rgba(0,0,0,0.28)] overflow-hidden"
+          style={{ bottom: isWidePC ? 96 : (toolbarHeightRef.current + 96) }}
+        >
+          <div className="flex items-center justify-between px-3 py-2 border-b border-agentmobile-border">
+            <span className="text-agentmobile-text text-sm font-semibold">{t('upload.queueTitle')}</span>
+            <span className="text-agentmobile-text-2 text-xs">{uploadQueue.filter(item => item.status === 'uploading').length}/{MAX_PARALLEL_UPLOADS}</span>
+          </div>
+          <div className="max-h-[220px] overflow-y-auto">
+            {uploadQueue.map(item => (
+              <div key={item.id} className="px-3 py-2.5 border-b border-agentmobile-border last:border-b-0">
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 text-agentmobile-text text-sm truncate" title={item.filename}>{item.filename}</span>
+                  <span className="text-agentmobile-text-2 text-xs">{item.status === 'done' ? t('upload.done') : item.status === 'error' ? t('upload.error') : item.status === 'conflict' ? t('upload.conflict') : `${item.progress}%`}</span>
+                  <button
+                    onClick={() => removeUploadItem(item.id)}
+                    className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center"
+                    title={t('upload.cancel')}
+                  >
+                    <Icon name="x" size={14} />
+                  </button>
+                </div>
+                <div className="mt-2 h-1.5 rounded-full bg-agentmobile-bg-2 overflow-hidden">
+                  <div className={`h-full ${item.status === 'error' ? 'bg-agentmobile-error' : item.status === 'done' ? 'bg-agentmobile-success' : 'bg-agentmobile-accent'}`} style={{ width: `${item.progress}%` }} />
+                </div>
+                {item.error && <div className="mt-1 text-[11px] text-agentmobile-text-2 truncate">{item.error}</div>}
+              </div>
+            ))}
           </div>
         </div>
       )}

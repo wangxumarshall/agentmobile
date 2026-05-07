@@ -5,7 +5,7 @@ import GhostShield from './GhostShield'
 import useOverlayGuard from './useOverlayGuard'
 import { Icon } from './icons'
 import type { Terminal } from '@xterm/xterm'
-import { KeyDef, ToolbarConfig, ALL_KEYS, FACTORY_CONFIG } from './toolbarDefaults'
+import { KeyDef, ToolbarConfig, FACTORY_CONFIG, makeCustomKey, getAllKeys } from './toolbarDefaults'
 import type { ThemeMode } from './Terminal'
 
 interface Props {
@@ -19,6 +19,7 @@ interface Props {
   onOpenSessions?: () => void
   onUpload?: () => void
   onUploadFile?: (file: File) => void
+  onUploadFiles?: (files: FileList) => void
   onOpenFiles?: () => void
   onOpenWorkspace?: () => void
   onOpenTasks?: () => void
@@ -32,8 +33,6 @@ interface Props {
   onCollapsedChange?: (collapsed: boolean) => void
 }
 
-const KEY_MAP = Object.fromEntries(ALL_KEYS.map(k => [k.id, k]))
-
 const CONFIG_KEY = 'agentmobile_toolbar_v2'
 const USER_DEFAULT_KEY = 'agentmobile_toolbar_default'
 const COLLAPSED_KEY = 'agentmobile_toolbar_collapsed'
@@ -44,24 +43,32 @@ const ARROW_REPEAT_INTERVAL_MS = 80
 // PC 端断点
 const PC_BREAKPOINT = 768
 
+function normalizeConfig(raw: ToolbarConfig | null | undefined): ToolbarConfig {
+  return {
+    pinned: Array.isArray(raw?.pinned) ? raw.pinned : [...FACTORY_CONFIG.pinned],
+    expanded: Array.isArray(raw?.expanded) ? raw.expanded : [...FACTORY_CONFIG.expanded],
+    custom: Array.isArray(raw?.custom) ? raw.custom : [],
+  }
+}
+
 function loadConfig(): ToolbarConfig {
   try {
     const s = localStorage.getItem(CONFIG_KEY)
-    if (s) return JSON.parse(s)
+    if (s) return normalizeConfig(JSON.parse(s))
   } catch {}
   try {
     const d = localStorage.getItem(USER_DEFAULT_KEY)
-    if (d) return JSON.parse(d)
+    if (d) return normalizeConfig(JSON.parse(d))
   } catch {}
-  return { pinned: [...FACTORY_CONFIG.pinned], expanded: [...FACTORY_CONFIG.expanded] }
+  return normalizeConfig(FACTORY_CONFIG)
 }
 
 function loadDefault(): ToolbarConfig {
   try {
     const d = localStorage.getItem(USER_DEFAULT_KEY)
-    if (d) return JSON.parse(d)
+    if (d) return normalizeConfig(JSON.parse(d))
   } catch {}
-  return { pinned: [...FACTORY_CONFIG.pinned], expanded: [...FACTORY_CONFIG.expanded] }
+  return normalizeConfig(FACTORY_CONFIG)
 }
 
 // ---- 拖拽状态 ----
@@ -81,9 +88,10 @@ interface KeyRepeatState {
   pointerId: number | null
 }
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
+  const [customKeyLabel, setCustomKeyLabel] = useState('')
   const isControlled = controlledCollapsed !== undefined
   const [collapsedInternal, setCollapsedInternal] = useState(() => {
     const saved = localStorage.getItem(COLLAPSED_KEY)
@@ -143,8 +151,9 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data && data.pinned && data.expanded) {
-          setConfig(data)
-          localStorage.setItem(CONFIG_KEY, JSON.stringify(data))
+          const next = normalizeConfig(data)
+          setConfig(next)
+          localStorage.setItem(CONFIG_KEY, JSON.stringify(next))
         }
       })
       .catch(() => {})
@@ -245,15 +254,20 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   }
 
   function saveConfig(c: ToolbarConfig) {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(c))
+    const normalized = normalizeConfig(c)
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(normalized))
     fetch('/api/toolbar-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(c),
+      body: JSON.stringify(normalized),
     }).catch(() => {})
   }
 
-  function updateConfig(next: ToolbarConfig) { setConfig(next); saveConfig(next) }
+  function updateConfig(next: ToolbarConfig) {
+    const normalized = normalizeConfig(next)
+    setConfig(normalized)
+    saveConfig(normalized)
+  }
 
   async function handleKey(key: KeyDef) {
     if (key.action === 'scrollToBottom') {
@@ -317,7 +331,24 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   }
 
   function resetConfig() {
-    updateConfig(loadDefault())
+    const base = loadDefault()
+    updateConfig({ ...base, custom: config.custom ?? [] })
+  }
+
+  function removeCustomKey(id: string) {
+    updateConfig({
+      pinned: config.pinned.filter(keyId => keyId !== id),
+      expanded: config.expanded.filter(keyId => keyId !== id),
+      custom: (config.custom ?? []).filter(key => key.id !== id),
+    })
+  }
+
+  function addCustomKey() {
+    const customKey = makeCustomKey(customKeyLabel)
+    if (!customKey) return
+    if ((config.custom ?? []).some(key => key.label === customKey.label)) return
+    updateConfig({ ...config, custom: [...(config.custom ?? []), customKey] })
+    setCustomKeyLabel('')
   }
 
   function saveAsDefault() {
@@ -358,15 +389,17 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     return arr
   }
 
+  const allKeys = getAllKeys(config)
+  const keyMap = Object.fromEntries(allKeys.map(k => [k.id, k]))
   const usedIds = new Set([...config.pinned, ...config.expanded])
-  const availableKeys = ALL_KEYS.filter(k => !usedIds.has(k.id))
+  const availableKeys = allKeys.filter(k => !usedIds.has(k.id))
 
   // ---- 渲染按键 ----
   function renderKeys(ids: string[]) {
     return (
       <div className={isPC ? 'flex flex-wrap gap-1.5 px-3 py-1' : 'flex flex-wrap gap-1 px-1.5 py-0.5'}>
         {ids.map(id => {
-          const key = KEY_MAP[id]
+          const key = keyMap[id]
           if (!key) return null
           return (
             <button
@@ -414,7 +447,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 {section === 'pinned' ? t('toolbar.fixedRow') : t('toolbar.expandSection')}
               </div>
               {getDisplayIds(section).map((id, idx) => {
-                const key = KEY_MAP[id]
+                const key = keyMap[id]
                 if (!key) return null
                 const isDragging = drag?.section === section && drag.toIdx === idx && drag.fromIdx !== idx
                 const isSource   = drag?.section === section && drag.fromIdx === idx && drag.fromIdx !== drag.toIdx
@@ -472,6 +505,29 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               ))}
             </div>
           )}
+          <div className="mb-1">
+            <div className={isPC ? 'text-agentmobile-text-2 text-xs px-5 py-2.5 pb-1.5 tracking-wide uppercase' : 'text-agentmobile-text-2 text-[11px] px-2.5 py-1.5 pb-[3px] tracking-wide uppercase'}>{t('toolbar.customKeys')}</div>
+            <div className={isPC ? 'px-5 pb-3 flex gap-2' : 'px-2.5 pb-2 flex gap-2'}>
+              <input
+                value={customKeyLabel}
+                onChange={(e) => setCustomKeyLabel(e.target.value)}
+                placeholder={t('toolbar.customKeyPlaceholder')}
+                className="flex-1 bg-agentmobile-bg-2 border border-agentmobile-border rounded text-agentmobile-text text-sm px-3 py-2 outline-none"
+              />
+              <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addCustomKey() }}>{t('toolbar.addCustom')}</button>
+            </div>
+            {(config.custom ?? []).map(key => (
+              <div key={key.id} className={isPC ? 'flex items-center px-5 h-12 gap-3 border-b border-agentmobile-border box-border' : 'flex items-center px-2.5 h-12 gap-2 border-b border-agentmobile-border box-border'}>
+                <span className={isPC ? 'text-agentmobile-text font-mono text-sm min-w-[60px] shrink-0' : 'text-agentmobile-text font-mono text-[13px] min-w-[48px] shrink-0'}>{key.label}</span>
+                <span className={isPC ? 'text-agentmobile-text-2 text-xs flex-1 overflow-hidden text-ellipsis whitespace-nowrap' : 'text-agentmobile-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'}>{t('toolbar.customKeyHelp')}</span>
+                <div className="flex gap-1 ml-auto shrink-0">
+                  {!config.pinned.includes(key.id) && <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('pinned', key.id) }}>{t('toolbar.pinToFixed')}</button>}
+                  {!config.expanded.includes(key.id) && <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('expanded', key.id) }}>{t('toolbar.pinToExpand')}</button>}
+                  <button className={isPC ? editBtnSmPCClass : editBtnSmClass} onPointerDown={(e) => { e.preventDefault(); removeCustomKey(key.id) }}>{t('toolbar.remove')}</button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </>
     )
@@ -562,10 +618,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         ref={fileInputRef}
         type="file"
         accept="image/*,video/*"
-        className="hidden"
+        multiple
+        className="fixed w-11 h-11 opacity-[0.01] -z-10"
+        style={{ left: '-9999px', top: '0' }}
         onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file && onUploadFile) { onUploadFile(file) }
+          if (e.target.files && onUploadFiles) onUploadFiles(e.target.files)
           e.target.value = ''
         }}
       />
@@ -573,10 +630,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         ref={pasteFileRef}
         type="file"
         accept="*/*"
-        className="hidden"
+        multiple
+        className="fixed w-11 h-11 opacity-[0.01] -z-10"
+        style={{ left: '-9999px', top: '0' }}
         onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file && onUploadFile) { onUploadFile(file) }
+          if (e.target.files && onUploadFiles) onUploadFiles(e.target.files)
           e.target.value = ''
         }}
       />
@@ -605,7 +663,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         {/* Key grid */}
         <div className="flex flex-wrap gap-[3px] px-2 pb-2">
           {allEmbedded.map(id => {
-            const key = KEY_MAP[id]
+            const key = keyMap[id]
             if (!key) return null
             return (
               <button
@@ -677,7 +735,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           {/* 固定键：始终显示，占据中间空间 */}
           <div className="flex gap-1.5 flex-wrap flex-1 ml-2 items-center">
             {config.pinned.map(id => {
-              const key = KEY_MAP[id]
+              const key = keyMap[id]
               if (!key) return null
               return (
                 <button
@@ -750,7 +808,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             {chunk(config.expanded, 16).map((row, i) => (
               <div key={i} className="flex flex-wrap gap-1.5 px-3 py-1">
                 {row.map(id => {
-                  const key = KEY_MAP[id]
+                  const key = keyMap[id]
                   if (!key) return null
                   return (
                     <button
@@ -879,7 +937,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           {chunk(config.expanded, 8).map((row, i) => (
             <div key={i} className="flex flex-wrap gap-1 px-1.5 py-0.5">
               {row.map(id => {
-                const key = KEY_MAP[id]
+                const key = keyMap[id]
                 if (!key) return null
                 return (
                   <button
