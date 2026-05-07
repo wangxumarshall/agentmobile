@@ -237,6 +237,24 @@ function refreshTerminalViewport(term: XTerm) {
   }
 }
 
+type XTermCoreAccess = XTerm & {
+  _core?: {
+    coreService?: {
+      isCursorInitialized?: boolean
+    }
+  }
+}
+
+function setManagedMobileCursor(term: XTerm | null, active: boolean) {
+  if (!term) return
+  if (active) {
+    const core = (term as XTermCoreAccess)._core
+    if (core?.coreService) core.coreService.isCursorInitialized = true
+  }
+  term.element?.classList.toggle('focus', active)
+  refreshTerminalViewport(term)
+}
+
 export function getInitialTheme(): ThemeMode {
   const saved = localStorage.getItem(THEME_KEY)
   if (saved === 'light' || saved === 'dark') return saved
@@ -425,6 +443,7 @@ export default function Terminal({ token }: Props) {
     } catch {
       input.focus()
     }
+    setManagedMobileCursor(termRef.current, true)
     keepMobileInputCaretVisible(input)
   }, [keepMobileInputCaretVisible, syncMobileKeyboard])
 
@@ -442,6 +461,7 @@ export default function Terminal({ token }: Props) {
       xtermTa.inputMode = 'none'
       xtermTa.blur()
     }
+    setManagedMobileCursor(termRef.current, false)
   }, [syncMobileKeyboard])
 
   const fetchTmuxSessions = useCallback(async () => {
@@ -1863,10 +1883,12 @@ export default function Terminal({ token }: Props) {
         onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
         onFocus={(e) => {
           if (!isWidePC) syncMobileKeyboard(true)
+          if (!isWidePC) setManagedMobileCursor(termRef.current, true)
           keepMobileInputCaretVisible(e.currentTarget)
         }}
         onBlur={() => {
           if (isWidePC) return
+          setManagedMobileCursor(termRef.current, false)
           window.setTimeout(() => {
             if (document.activeElement !== inputRef.current) {
               syncMobileKeyboard(false)
