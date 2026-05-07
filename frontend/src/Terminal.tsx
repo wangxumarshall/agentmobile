@@ -1659,13 +1659,11 @@ export default function Terminal({ token }: Props) {
     resetMobileInput(e.currentTarget)
   }
 
-  // Track keyboard visibility and adjust layout height on mobile
-  const [vvHeight, setVvHeight] = useState<number | null>(null)
+  // Track keyboard visibility on mobile without resizing the terminal surface.
   // 文件上传覆盖确认对话框状态
   const [uploadConflict, setUploadConflict] = useState<{ show: boolean; itemId: string | null; filename: string }>({ show: false, itemId: null, filename: '' })
   useEffect(() => {
     if (isWidePC) {
-      setVvHeight(null)
       setMobileKeyboardVisible(false)
       return
     }
@@ -1674,7 +1672,6 @@ export default function Terminal({ token }: Props) {
     const handleResize = () => {
       const visible = vv.height < window.innerHeight * 0.8
       syncMobileKeyboard(visible)
-      setVvHeight(Math.round(vv.height))
       if (!visible && inputRef.current) {
         inputRef.current.inputMode = 'none'
         inputRef.current.readOnly = true
@@ -1839,7 +1836,7 @@ export default function Terminal({ token }: Props) {
   }
 
   return (
-    <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
+    <div className="flex flex-col w-full relative" style={{ height: '100dvh' }}>
       <input
         ref={inputRef}
         className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
