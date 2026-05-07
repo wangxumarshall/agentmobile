@@ -322,6 +322,7 @@ export default function Terminal({ token }: Props) {
   const toolbarWrapRef = useRef<HTMLDivElement>(null)
   const toolbarHeightRef = useRef(0)
   const keyboardVisibleRef = useRef(false)
+  const mobileKeyboardLayoutUntilRef = useRef(0)
   const [mobileKeyboardVisible, setMobileKeyboardVisible] = useState(false)
   const [mobileInputValue, setMobileInputValue] = useState('')
   // Viewport height is handled by CSS 100dvh, not JS
@@ -383,6 +384,13 @@ export default function Terminal({ token }: Props) {
   }, [])
 
   const syncMobileKeyboard = useCallback((visible: boolean) => {
+    const changed = keyboardVisibleRef.current !== visible
+    if (visible || changed) {
+      mobileKeyboardLayoutUntilRef.current = Math.max(
+        mobileKeyboardLayoutUntilRef.current,
+        Date.now() + KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS,
+      )
+    }
     keyboardVisibleRef.current = visible
     setMobileKeyboardVisible(visible)
     suppressHistorySwipe()
@@ -617,17 +625,18 @@ export default function Terminal({ token }: Props) {
     setIsScrolledUp(false)
   }, [])
 
-  const fitAndNotifyPty = useCallback((options: { followBottom?: boolean; forceRepaint?: boolean } = {}) => {
+  const fitAndNotifyPty = useCallback((options: { followBottom?: boolean; forceRepaint?: boolean; notifyPty?: boolean } = {}) => {
     const term = termRef.current
     const fitAddon = fitAddonRef.current
     if (!term || !fitAddon) return
 
     const followBottom = options.followBottom ?? false
+    const notifyPty = options.notifyPty ?? true
     const wasAtBottom = !userScrolledRef.current
     fitAddon.fit()
     refreshTerminalViewport(term)
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (notifyPty && wsRef.current?.readyState === WebSocket.OPEN) {
       if (options.forceRepaint) {
         const nudgedRows = Math.max(term.rows - RESIZE_REPAINT_ROW_NUDGE_THRESHOLD, 5)
         if (nudgedRows !== term.rows) {
@@ -693,7 +702,14 @@ export default function Terminal({ token }: Props) {
       // Debounce: 延迟执行，确保布局稳定（特别是工具栏动画结束后）
       debounceTimer = window.setTimeout(() => {
         rafId = requestAnimationFrame(() => {
-          fitAndNotifyPty({ followBottom: true })
+          const isMobileKeyboardLayout = !isWidePC && (
+            keyboardVisibleRef.current ||
+            Date.now() < mobileKeyboardLayoutUntilRef.current
+          )
+          fitAndNotifyPty({
+            followBottom: !isMobileKeyboardLayout,
+            notifyPty: !isMobileKeyboardLayout,
+          })
           rafId = null
         })
       }, 150) // 150ms debounce 覆盖 CSS transition
@@ -720,7 +736,7 @@ export default function Terminal({ token }: Props) {
       if (rafId) cancelAnimationFrame(rafId)
       if (debounceTimer) window.clearTimeout(debounceTimer)
     }
-  }, [fitAndNotifyPty])
+  }, [fitAndNotifyPty, isWidePC])
 
   async function fetchWindows() {
     try {
