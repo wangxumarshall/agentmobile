@@ -490,11 +490,29 @@ app.use(express.static(join(__dirname, 'public')));
 app.use(express.static(join(__dirname, 'frontend', 'dist')));
 
 // Auth middleware
+function getCookieToken(req) {
+  const cookieHeader = req.headers.cookie || '';
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const [rawKey, ...rest] = part.trim().split('=');
+    if (rawKey !== 'agentmobile_token') continue;
+    const rawValue = rest.join('=');
+    if (!rawValue) return null;
+    try {
+      return decodeURIComponent(rawValue);
+    } catch {
+      return rawValue;
+    }
+  }
+  return null;
+}
+
 function getRequestToken(req) {
   const auth = req.headers.authorization || '';
   const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const cookieToken = getCookieToken(req);
   const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
-  return headerToken || queryToken;
+  return headerToken || cookieToken || queryToken;
 }
 
 function authMiddleware(req, res, next) {
@@ -516,6 +534,16 @@ app.post('/api/auth/login', async (req, res) => {
     const ok = await bcrypt.compare(password, ACC_PASSWORD_HASH);
     if (!ok) return res.status(401).json({ error: 'unauthorized' });
     const token = jwt.sign({}, JWT_SECRET, { expiresIn: '30d' });
+    const isSecure = String(req.headers['x-forwarded-proto'] || req.protocol || '').includes('https');
+    const cookieAttrs = [
+      `agentmobile_token=${encodeURIComponent(token)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      'Max-Age=2592000',
+    ];
+    if (isSecure) cookieAttrs.push('Secure');
+    res.setHeader('Set-Cookie', cookieAttrs.join('; '));
     res.json({ token });
   } catch (err) {
     res.status(500).json({ error: 'internal error' });
