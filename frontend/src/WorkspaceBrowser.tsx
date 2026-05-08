@@ -332,13 +332,13 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     }
   }
 
-  // 获取文件的完整 URL（带上 token 用于浏览器直接访问）
+  // 获取文件的完整 URL（依赖 HttpOnly cookie 认证）
   function getFileUrl(name: string): string {
     if (!currentPath || !workspaceRoot) return ''
 
     const filePath = currentPath.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`
     // 统一使用 /workspace?path=xxx 格式，避免不同路径格式问题
-    return `/workspace?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(token)}`
+    return `/workspace?path=${encodeURIComponent(filePath)}`
   }
 
   // 打开文件（查看）
