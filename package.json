@@ -22,7 +22,8 @@
     "service:deploy:im": "scripts/service-control.sh deploy-im",
     "service:restart:im": "scripts/service-control.sh restart-im",
     "service:migrate-tmux": "scripts/service-control.sh migrate-tmux",
-    "service:restart:tmux": "scripts/service-control.sh restart-tmux"
+    "service:restart:tmux": "scripts/service-control.sh restart-tmux",
+    "test": "npm run build:im"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.81",

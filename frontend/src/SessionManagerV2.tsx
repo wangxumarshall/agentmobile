@@ -198,7 +198,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   useImperativeHandle(ref, () => ({ refresh: handleRefresh }), [handleRefresh])
 
   useEffect(() => {
-    const es = new EventSource(`/api/projects/events?token=${encodeURIComponent(token)}`)
+    const es = new EventSource('/api/projects/events')
     const onProjectsChanged = () => handleRefresh()
     es.addEventListener('projects_changed', onProjectsChanged as EventListener)
     es.onerror = () => {

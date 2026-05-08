@@ -282,7 +282,7 @@ export default function TaskPanel({ token, currentProject, currentChannelName, o
     if (eventSourcesRef.current.has(taskId)) return
 
     const fromSeq = resumeStateRef.current[taskId]?.lastSeq ?? 0
-    const url = `/api/tasks/${encodeURIComponent(taskId)}/events?token=${encodeURIComponent(token)}&from_seq=${fromSeq}`
+    const url = `/api/tasks/${encodeURIComponent(taskId)}/events?from_seq=${fromSeq}`
     const source = new EventSource(url)
 
     source.addEventListener('snapshot', (event) => {

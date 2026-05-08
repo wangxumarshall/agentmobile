@@ -490,15 +490,46 @@ app.use(express.static(join(__dirname, 'public')));
 app.use(express.static(join(__dirname, 'frontend', 'dist')));
 
 // Auth middleware
-function getRequestToken(req) {
+function getCookieToken(req) {
+  const cookieHeader = req.headers.cookie || '';
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const [rawKey, ...rest] = part.trim().split('=');
+    if (rawKey !== 'agentmobile_token') continue;
+    const rawValue = rest.join('=');
+    if (!rawValue) return null;
+    try {
+      return decodeURIComponent(rawValue);
+    } catch {
+      return rawValue;
+    }
+  }
+  return null;
+}
+
+function getRequestToken(req, options = {}) {
+  const { allowQuery = true } = options;
   const auth = req.headers.authorization || '';
   const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
-  return headerToken || queryToken;
+  const cookieToken = getCookieToken(req);
+  const queryToken = allowQuery && typeof req.query?.token === 'string' ? req.query.token : null;
+  return headerToken || cookieToken || queryToken;
 }
 
 function authMiddleware(req, res, next) {
   const token = getRequestToken(req);
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'unauthorized' });
+  }
+}
+
+
+function authMiddlewareNoQueryToken(req, res, next) {
+  const token = getRequestToken(req, { allowQuery: false });
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     jwt.verify(token, JWT_SECRET);
@@ -516,13 +547,39 @@ app.post('/api/auth/login', async (req, res) => {
     const ok = await bcrypt.compare(password, ACC_PASSWORD_HASH);
     if (!ok) return res.status(401).json({ error: 'unauthorized' });
     const token = jwt.sign({}, JWT_SECRET, { expiresIn: '30d' });
+    const isSecure = String(req.headers['x-forwarded-proto'] || req.protocol || '').includes('https');
+    const cookieAttrs = [
+      `agentmobile_token=${encodeURIComponent(token)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      'Max-Age=2592000',
+    ];
+    if (isSecure) cookieAttrs.push('Secure');
+    res.setHeader('Set-Cookie', cookieAttrs.join('; '));
     res.json({ token });
   } catch (err) {
     res.status(500).json({ error: 'internal error' });
   }
 });
 
-app.get('/api/projects/events', authMiddleware, (req, res) => {
+
+// POST /api/auth/logout
+app.post('/api/auth/logout', (req, res) => {
+  const isSecure = String(req.headers['x-forwarded-proto'] || req.protocol || '').includes('https');
+  const cookieAttrs = [
+    'agentmobile_token=',
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+  if (isSecure) cookieAttrs.push('Secure');
+  res.setHeader('Set-Cookie', cookieAttrs.join('; '));
+  res.json({ ok: true });
+});
+
+app.get('/api/projects/events', authMiddlewareNoQueryToken, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -2378,7 +2435,7 @@ app.get('/api/tasks/:id', authMiddleware, (req, res) => {
 })
 
 // GET /api/tasks/:id/events — 订阅任务输出，支持断线续连
-app.get('/api/tasks/:id/events', authMiddleware, (req, res) => {
+app.get('/api/tasks/:id/events', authMiddlewareNoQueryToken, (req, res) => {
   const taskId = req.params.id
   const task = getTaskSnapshot(taskId)
   if (!task) return res.status(404).json({ error: 'task not found' })
@@ -2863,7 +2920,7 @@ function ensureWindowPty(session, windowIndex) {
   return { key: actualKey, entry };
 }
 
-// WebSocket 服务 — 支持 /ws?token=xxx&window=<index>
+// WebSocket 服务 — 使用 cookie auth（不接受 query token）
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const wsHeartbeatInterval = setInterval(() => {
@@ -2888,7 +2945,7 @@ wss.on('connection', (ws, req) => {
     ws.isAlive = true
   })
   const url = new URL(req.url, 'http://x');
-  const token = url.searchParams.get('token');
+  const token = getCookieToken({ headers: { cookie: req.headers.cookie || '' } });
   const windowParam = url.searchParams.get('window') || '0';
   const windowIndex = parseInt(windowParam, 10) || 0;
   const session = url.searchParams.get('session') || TMUX_SESSION;
