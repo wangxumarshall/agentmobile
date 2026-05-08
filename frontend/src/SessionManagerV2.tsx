@@ -99,6 +99,75 @@ export interface SessionManagerV2Handle {
   refresh: () => void
 }
 
+interface RenameEditorProps {
+  value: string
+  inputRef: React.RefObject<HTMLInputElement>
+  inputClassName: string
+  disabled: boolean
+  onChange: (value: string) => void
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onSubmit: () => void
+  onCancel: () => void
+}
+
+function RenameEditor({
+  value,
+  inputRef,
+  inputClassName,
+  disabled,
+  onChange,
+  onKeyDown,
+  onSubmit,
+  onCancel,
+}: RenameEditorProps) {
+  const { t } = useTranslation()
+  return (
+    <div
+      className="flex items-center gap-1.5 flex-1 min-w-0"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        className={inputClassName}
+        disabled={disabled}
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+      />
+      <button
+        type="button"
+        className="w-7 h-7 shrink-0 rounded border border-agentmobile-border bg-agentmobile-accent text-white flex items-center justify-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        onPointerDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          onSubmit()
+        }}
+        disabled={disabled}
+        title={t('common.save')}
+      >
+        <Icon name="check" size={14} />
+      </button>
+      <button
+        type="button"
+        className="w-7 h-7 shrink-0 rounded border border-agentmobile-border bg-transparent text-agentmobile-text-2 flex items-center justify-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        onPointerDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          onCancel()
+        }}
+        disabled={disabled}
+        title={t('common.cancel')}
+      >
+        <Icon name="x" size={14} />
+      </button>
+    </div>
+  )
+}
+
 export default forwardRef<SessionManagerV2Handle, Props>(function SessionManagerV2({
   token,
   currentProject,
@@ -471,10 +540,11 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   const menuButtonClass = (mode: 'sidebar' | 'modal') =>
     mode === 'sidebar'
-      ? 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 shrink-0'
+      ? 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity duration-150 shrink-0'
       : 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-60 transition-opacity duration-150 shrink-0'
 
-  const renameInputClass = 'w-full bg-agentmobile-bg-2 border border-agentmobile-border rounded px-2 py-1 text-sm text-agentmobile-text outline-none'
+  const inlineActionClass = 'bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity duration-150 shrink-0'
+  const renameInputClass = 'w-full min-w-0 bg-agentmobile-bg-2 border border-agentmobile-border rounded px-2 py-1 text-sm text-agentmobile-text outline-none'
 
   const handleRenameInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -545,13 +615,14 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-agentmobile-muted'}`} />
                   <div className="flex-1 min-w-0">
                     {isRenamingProject ? (
-                      <input
-                        ref={renameInputRef}
+                      <RenameEditor
+                        inputRef={renameInputRef}
                         value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
+                        onChange={setRenameValue}
                         onKeyDown={handleRenameInputKeyDown}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        className={renameInputClass}
+                        onSubmit={submitRename}
+                        onCancel={cancelRename}
+                        inputClassName={renameInputClass}
                         disabled={renaming}
                       />
                     ) : (
@@ -564,8 +635,24 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                     )}
                   </div>
                   <span className="text-xs text-agentmobile-text-2 font-mono shrink-0">({project.channelCount})</span>
-                  {!isSidebar && (
+                  {!isRenamingProject && (
                     <button
+                      type="button"
+                      className={inlineActionClass}
+                      onPointerDown={(e) => {
+                        e.stopPropagation()
+                        startRenameProject(project)
+                      }}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      onTouchEnd={(e) => e.stopPropagation()}
+                      title={t('common.rename')}
+                    >
+                      <Icon name="pencil" size={14} />
+                    </button>
+                  )}
+                  {!isSidebar && !isRenamingProject && (
+                    <button
+                      type="button"
                       className={menuButtonClass('modal')}
                       onPointerDown={(e) => {
                         e.stopPropagation()
@@ -627,20 +714,37 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   <span className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ background: STATUS_DOT[status] }} title={status} />
                   <span className="text-agentmobile-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
                   {isRenamingChannel ? (
-                    <input
-                      ref={renameInputRef}
+                    <RenameEditor
+                      inputRef={renameInputRef}
                       value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
+                      onChange={setRenameValue}
                       onKeyDown={handleRenameInputKeyDown}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      className={`${renameInputClass} flex-1 min-w-0`}
+                      onSubmit={submitRename}
+                      onCancel={cancelRename}
+                      inputClassName={`${renameInputClass} flex-1 min-w-0`}
                       disabled={renaming}
                     />
                   ) : (
                     <span className="flex-1 text-sm text-agentmobile-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
                   )}
-                  {!isSidebar && (
+                  {!isRenamingChannel && (
                     <button
+                      type="button"
+                      className={inlineActionClass}
+                      onPointerDown={(e) => {
+                        e.stopPropagation()
+                        startRenameChannel(channel)
+                      }}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      onTouchEnd={(e) => e.stopPropagation()}
+                      title={t('common.rename')}
+                    >
+                      <Icon name="pencil" size={14} />
+                    </button>
+                  )}
+                  {!isSidebar && !isRenamingChannel && (
+                    <button
+                      type="button"
                       className={menuButtonClass('modal')}
                       onPointerDown={(e) => {
                         e.stopPropagation()
@@ -671,12 +775,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                 className="fixed bg-agentmobile-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
                 style={{ left: activeChannelMenu.x, top: activeChannelMenu.y }}
               >
-                <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameChannel(activeChannelMenu.channel)}>
+                <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameChannel(activeChannelMenu.channel)}>
                   <Icon name="pencil" size={14} />
                   <span>{t('common.rename')}</span>
                 </button>
                 <div className="h-px bg-agentmobile-border my-1" />
-                <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(activeChannelMenu.channel)}>
+                <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(activeChannelMenu.channel)}>
                   <Icon name="x" size={14} />
                   <span>{t('common.close')}</span>
                 </button>
@@ -743,13 +847,14 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-agentmobile-muted'}`} />
                   <div className="flex-1 min-w-0">
                     {isRenamingProject ? (
-                      <input
-                        ref={renameInputRef}
+                      <RenameEditor
+                        inputRef={renameInputRef}
                         value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
+                        onChange={setRenameValue}
                         onKeyDown={handleRenameInputKeyDown}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        className={renameInputClass}
+                        onSubmit={submitRename}
+                        onCancel={cancelRename}
+                        inputClassName={renameInputClass}
                         disabled={renaming}
                       />
                     ) : (
@@ -762,6 +867,19 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                     )}
                   </div>
                   <span className="text-xs text-agentmobile-text-2 font-mono shrink-0">({project.channelCount})</span>
+                  {!isRenamingProject && (
+                    <button
+                      type="button"
+                      className={menuButtonClass('sidebar')}
+                      onPointerDown={(e) => {
+                        e.stopPropagation()
+                        startRenameProject(project)
+                      }}
+                      title={t('common.rename')}
+                    >
+                      <Icon name="pencil" size={14} />
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -808,17 +926,31 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   <span className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ background: STATUS_DOT[status] }} title={status} />
                   <span className="text-agentmobile-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
                   {isRenamingChannel ? (
-                    <input
-                      ref={renameInputRef}
+                    <RenameEditor
+                      inputRef={renameInputRef}
                       value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
+                      onChange={setRenameValue}
                       onKeyDown={handleRenameInputKeyDown}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      className={`${renameInputClass} flex-1 min-w-0`}
+                      onSubmit={submitRename}
+                      onCancel={cancelRename}
+                      inputClassName={`${renameInputClass} flex-1 min-w-0`}
                       disabled={renaming}
                     />
                   ) : (
                     <span className="flex-1 text-sm text-agentmobile-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
+                  )}
+                  {!isRenamingChannel && (
+                    <button
+                      type="button"
+                      className={menuButtonClass('sidebar')}
+                      onPointerDown={(e) => {
+                        e.stopPropagation()
+                        startRenameChannel(channel)
+                      }}
+                      title={t('common.rename')}
+                    >
+                      <Icon name="pencil" size={14} />
+                    </button>
                   )}
                 </div>
               )
@@ -838,12 +970,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
               className="fixed bg-agentmobile-bg border border-agentmobile-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
               style={{ left: sidebarChannelMenu.x, top: sidebarChannelMenu.y }}
             >
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameChannel(sidebarChannelMenu.channel)}>
+              <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameChannel(sidebarChannelMenu.channel)}>
                 <Icon name="pencil" size={14} />
                 <span>{t('common.rename')}</span>
               </button>
               <div className="h-px bg-agentmobile-border my-1" />
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(sidebarChannelMenu.channel)}>
+              <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseChannel(sidebarChannelMenu.channel)}>
                 <Icon name="x" size={14} />
                 <span>{t('common.close')}</span>
               </button>
@@ -862,12 +994,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
               <div className="px-4 py-1.5 text-xs font-semibold text-agentmobile-text-2 border-b border-agentmobile-border mb-0">
                 {sidebarProjectMenu.project.name}
               </div>
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameProject(sidebarProjectMenu.project)}>
+              <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameProject(sidebarProjectMenu.project)}>
                 <Icon name="pencil" size={14} />
                 <span>{t('common.rename')}</span>
               </button>
               <div className="h-px bg-agentmobile-border my-1" />
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(sidebarProjectMenu.project)}>
+              <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(sidebarProjectMenu.project)}>
                 <Icon name="x" size={14} />
                 <span>{t('sessionMgr.closeProject')}</span>
               </button>
@@ -909,12 +1041,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
               style={{ left: projectMenu.x, top: projectMenu.y }}
             >
               <div className="px-4 py-1.5 text-xs font-semibold text-agentmobile-text-2 border-b border-agentmobile-border mb-0">{projectMenu.project.name}</div>
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameProject(projectMenu.project)}>
+              <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-text text-sm cursor-pointer w-full text-left" onPointerDown={() => startRenameProject(projectMenu.project)}>
                 <Icon name="pencil" size={14} />
                 <span>{t('common.rename')}</span>
               </button>
               <div className="h-px bg-agentmobile-border my-1" />
-              <button className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(projectMenu.project)}>
+              <button type="button" className="flex items-center gap-2 px-4 py-2.5 bg-transparent border-none text-agentmobile-error text-sm cursor-pointer w-full text-left" onPointerDown={() => handleCloseProject(projectMenu.project)}>
                 <Icon name="x" size={14} />
                 <span>{t('sessionMgr.closeProject')}</span>
               </button>

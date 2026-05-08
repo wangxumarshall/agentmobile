@@ -11,6 +11,7 @@ import type { ThemeMode } from './Terminal'
 interface Props {
   token: string
   sendToWs: (data: string) => void
+  pasteToTerminal: (data: string) => void
   scrollToBottom: () => void
   termRef: RefObject<Terminal | null>
   themeMode: ThemeMode
@@ -89,7 +90,7 @@ interface KeyRepeatState {
   pointerId: number | null
 }
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, onTerminalInputRequest, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, pasteToTerminal, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenTasks, onFitTerminal, onShowCopySheet, onTerminalInputRequest, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [customKeyLabel, setCustomKeyLabel] = useState('')
@@ -291,7 +292,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         if (!handled) {
           try {
             const text = await navigator.clipboard.readText()
-            if (text) { sendToWs(text); handled = true }
+            if (text) { pasteToTerminal(text); handled = true }
           } catch {}
         }
         if (handled) return
@@ -585,7 +586,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             }
             setTimeout(() => {
               const text = pasteBoxRef.current?.value ?? ''
-              if (text) { sendToWs(text); setShowPasteBox(false) }
+              if (text) { pasteToTerminal(text); setShowPasteBox(false) }
             }, 0)
           }}
         />
@@ -593,7 +594,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           className="w-full mt-2 py-2.5 rounded-lg bg-agentmobile-accent text-white text-sm font-medium cursor-pointer border-none"
           onClick={() => {
             const text = pasteBoxRef.current?.value ?? ''
-            if (text) { sendToWs(text); setShowPasteBox(false) }
+            if (text) { pasteToTerminal(text); setShowPasteBox(false) }
           }}
         >
           Send
