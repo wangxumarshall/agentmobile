@@ -131,6 +131,8 @@ const SCROLLBACK_PREFETCH_THRESHOLD_PX = 10
 const SCROLLBACK_OPEN_THRESHOLD_PX = 40
 const KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS = 1400
 const RESIZE_REPAINT_ROW_NUDGE_THRESHOLD = 3
+const TERMINAL_INPUT_CHUNK_SIZE = 1024
+const TERMINAL_INPUT_CHUNK_DELAY_MS = 5
 const MAX_UPLOAD_NOTIFICATIONS = 5
 const MAX_PARALLEL_UPLOADS = 3
 
@@ -234,6 +236,30 @@ function asFiniteNumber(value: unknown): number | null {
 function refreshTerminalViewport(term: XTerm) {
   if (term.rows > 0) {
     term.refresh(0, term.rows - 1)
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+function nextTerminalInputChunkEnd(value: string, start: number): number {
+  const end = Math.min(value.length, start + TERMINAL_INPUT_CHUNK_SIZE)
+  if (end < value.length && end > start + 1) {
+    const lastCodeUnit = value.charCodeAt(end - 1)
+    if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) return end - 1
+  }
+  return end
+}
+
+async function sendTerminalInputPayload(ws: WebSocket, payload: string): Promise<void> {
+  let offset = 0
+  while (offset < payload.length) {
+    if (ws.readyState !== WebSocket.OPEN) return
+    const end = nextTerminalInputChunkEnd(payload, offset)
+    ws.send(payload.slice(offset, end))
+    offset = end
+    if (offset < payload.length) await delay(TERMINAL_INPUT_CHUNK_DELAY_MS)
   }
 }
 
@@ -362,6 +388,8 @@ export default function Terminal({ token }: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const uploadQueueRef = useRef<UploadQueueItem[]>([])
   const wheelScrollRemainderRef = useRef(0)
+  const wheelHistoryAccumRef = useRef(0)
+  const terminalInputQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   // F-18: 多 tmux session 支持
   const [tmuxSessions, setTmuxSessions] = useState<string[]>([])
@@ -597,6 +625,19 @@ export default function Terminal({ token }: Props) {
     if (sanitized && wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(sanitized)
     }
+  }, [])
+
+  const pasteToTerminal = useCallback((data: string) => {
+    const sanitized = stripMobileInputArtifacts(data)
+    if (!sanitized) return
+    terminalInputQueueRef.current = terminalInputQueueRef.current
+      .catch(() => {})
+      .then(() => {
+        const ws = wsRef.current
+        if (ws?.readyState === WebSocket.OPEN) {
+          return sendTerminalInputPayload(ws, sanitized)
+        }
+      })
   }, [])
 
   useEffect(() => {
@@ -1178,8 +1219,39 @@ export default function Terminal({ token }: Props) {
       const next = wheelScrollRemainderRef.current + lineDelta
       const lines = next < 0 ? Math.ceil(next) : Math.floor(next)
       wheelScrollRemainderRef.current = next - lines
+      const buffer = (term as any).buffer?.active
+      const wasAtTop = buffer ? buffer.viewportY <= 0 : false
       if (lines !== 0) {
         term.scrollLines(lines)
+      }
+      const isAtTop = buffer ? buffer.viewportY <= 0 : false
+
+      if (e.deltaY < 0 && (wasAtTop || isAtTop)) {
+        const olderDelta = Math.abs(e.deltaY)
+        wheelHistoryAccumRef.current += olderDelta
+        if (
+          wheelHistoryAccumRef.current > SCROLLBACK_PREFETCH_THRESHOLD_PX &&
+          !scrollbackPrefetchRef.current &&
+          scrollbackCacheRef.current === null
+        ) {
+          const wi = activeWindowIndexRef.current
+          const s = activeTmuxSessionRef.current
+          scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }).then(r => r.ok ? r.json() : Promise.reject(r.status))
+            .then((data: { content: string }) => {
+              scrollbackCacheRef.current = data.content.trimEnd()
+              scrollbackPrefetchRef.current = null
+              return data
+            })
+            .catch(() => { scrollbackPrefetchRef.current = null; return { content: '' } })
+        }
+        if (wheelHistoryAccumRef.current > SCROLLBACK_OPEN_THRESHOLD_PX) {
+          scrollbackOpenOffsetRef.current = wheelHistoryAccumRef.current
+          triggerScrollbackRef.current()
+        }
+      } else if (e.deltaY > 0) {
+        wheelHistoryAccumRef.current = 0
       }
     }
 
@@ -1230,9 +1302,7 @@ export default function Terminal({ token }: Props) {
       if (clipboardMod && clipboardKey === 'v' && noOtherMod) {
         e.preventDefault()
         navigator.clipboard.readText().then(text => {
-          if (text && wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(text)
-          }
+          pasteToTerminal(text)
         }).catch(() => {})
         return
       }
@@ -1550,7 +1620,7 @@ export default function Terminal({ token }: Props) {
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, [blurMobileInput, fitAndNotifyPty, focusMobileInput, token])
+  }, [blurMobileInput, fitAndNotifyPty, focusMobileInput, pasteToTerminal, token])
 
   // Effect B: WebSocket connection (reconnects on window switch, xterm persists)
   useEffect(() => {
@@ -1845,6 +1915,7 @@ export default function Terminal({ token }: Props) {
   const toolbarProps = {
     token,
     sendToWs,
+    pasteToTerminal,
     scrollToBottom,
     onFitTerminal: fitTerminal,
     termRef,
