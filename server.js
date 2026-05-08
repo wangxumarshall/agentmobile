@@ -507,16 +507,29 @@ function getCookieToken(req) {
   return null;
 }
 
-function getRequestToken(req) {
+function getRequestToken(req, options = {}) {
+  const { allowQuery = true } = options;
   const auth = req.headers.authorization || '';
   const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   const cookieToken = getCookieToken(req);
-  const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
+  const queryToken = allowQuery && typeof req.query?.token === 'string' ? req.query.token : null;
   return headerToken || cookieToken || queryToken;
 }
 
 function authMiddleware(req, res, next) {
   const token = getRequestToken(req);
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'unauthorized' });
+  }
+}
+
+
+function authMiddlewareNoQueryToken(req, res, next) {
+  const token = getRequestToken(req, { allowQuery: false });
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     jwt.verify(token, JWT_SECRET);
@@ -550,7 +563,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.get('/api/projects/events', authMiddleware, (req, res) => {
+app.get('/api/projects/events', authMiddlewareNoQueryToken, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -2406,7 +2419,7 @@ app.get('/api/tasks/:id', authMiddleware, (req, res) => {
 })
 
 // GET /api/tasks/:id/events — 订阅任务输出，支持断线续连
-app.get('/api/tasks/:id/events', authMiddleware, (req, res) => {
+app.get('/api/tasks/:id/events', authMiddlewareNoQueryToken, (req, res) => {
   const taskId = req.params.id
   const task = getTaskSnapshot(taskId)
   if (!task) return res.status(404).json({ error: 'task not found' })
