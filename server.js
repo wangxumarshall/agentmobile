@@ -563,6 +563,22 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+
+// POST /api/auth/logout
+app.post('/api/auth/logout', (req, res) => {
+  const isSecure = String(req.headers['x-forwarded-proto'] || req.protocol || '').includes('https');
+  const cookieAttrs = [
+    'agentmobile_token=',
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+  if (isSecure) cookieAttrs.push('Secure');
+  res.setHeader('Set-Cookie', cookieAttrs.join('; '));
+  res.json({ ok: true });
+});
+
 app.get('/api/projects/events', authMiddlewareNoQueryToken, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
