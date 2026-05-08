@@ -237,6 +237,24 @@ function refreshTerminalViewport(term: XTerm) {
   }
 }
 
+type XTermCoreAccess = XTerm & {
+  _core?: {
+    coreService?: {
+      isCursorInitialized?: boolean
+    }
+  }
+}
+
+function setManagedMobileCursor(term: XTerm | null, active: boolean) {
+  if (!term) return
+  if (active) {
+    const core = (term as XTermCoreAccess)._core
+    if (core?.coreService) core.coreService.isCursorInitialized = true
+  }
+  term.element?.classList.toggle('focus', active)
+  refreshTerminalViewport(term)
+}
+
 export function getInitialTheme(): ThemeMode {
   const saved = localStorage.getItem(THEME_KEY)
   if (saved === 'light' || saved === 'dark') return saved
@@ -322,7 +340,9 @@ export default function Terminal({ token }: Props) {
   const toolbarWrapRef = useRef<HTMLDivElement>(null)
   const toolbarHeightRef = useRef(0)
   const keyboardVisibleRef = useRef(false)
+  const mobileKeyboardLayoutUntilRef = useRef(0)
   const [mobileKeyboardVisible, setMobileKeyboardVisible] = useState(false)
+  const [keyboardLift, setKeyboardLift] = useState(0)
   const [mobileInputValue, setMobileInputValue] = useState('')
   // Viewport height is handled by CSS 100dvh, not JS
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
@@ -383,6 +403,13 @@ export default function Terminal({ token }: Props) {
   }, [])
 
   const syncMobileKeyboard = useCallback((visible: boolean) => {
+    const changed = keyboardVisibleRef.current !== visible
+    if (visible || changed) {
+      mobileKeyboardLayoutUntilRef.current = Math.max(
+        mobileKeyboardLayoutUntilRef.current,
+        Date.now() + KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS,
+      )
+    }
     keyboardVisibleRef.current = visible
     setMobileKeyboardVisible(visible)
     suppressHistorySwipe()
@@ -416,6 +443,7 @@ export default function Terminal({ token }: Props) {
     } catch {
       input.focus()
     }
+    setManagedMobileCursor(termRef.current, true)
     keepMobileInputCaretVisible(input)
   }, [keepMobileInputCaretVisible, syncMobileKeyboard])
 
@@ -433,6 +461,7 @@ export default function Terminal({ token }: Props) {
       xtermTa.inputMode = 'none'
       xtermTa.blur()
     }
+    setManagedMobileCursor(termRef.current, false)
   }, [syncMobileKeyboard])
 
   const fetchTmuxSessions = useCallback(async () => {
@@ -617,17 +646,18 @@ export default function Terminal({ token }: Props) {
     setIsScrolledUp(false)
   }, [])
 
-  const fitAndNotifyPty = useCallback((options: { followBottom?: boolean; forceRepaint?: boolean } = {}) => {
+  const fitAndNotifyPty = useCallback((options: { followBottom?: boolean; forceRepaint?: boolean; notifyPty?: boolean } = {}) => {
     const term = termRef.current
     const fitAddon = fitAddonRef.current
     if (!term || !fitAddon) return
 
     const followBottom = options.followBottom ?? false
+    const notifyPty = options.notifyPty ?? true
     const wasAtBottom = !userScrolledRef.current
     fitAddon.fit()
     refreshTerminalViewport(term)
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (notifyPty && wsRef.current?.readyState === WebSocket.OPEN) {
       if (options.forceRepaint) {
         const nudgedRows = Math.max(term.rows - RESIZE_REPAINT_ROW_NUDGE_THRESHOLD, 5)
         if (nudgedRows !== term.rows) {
@@ -693,7 +723,14 @@ export default function Terminal({ token }: Props) {
       // Debounce: 延迟执行，确保布局稳定（特别是工具栏动画结束后）
       debounceTimer = window.setTimeout(() => {
         rafId = requestAnimationFrame(() => {
-          fitAndNotifyPty({ followBottom: true })
+          const isMobileKeyboardLayout = !isWidePC && (
+            keyboardVisibleRef.current ||
+            Date.now() < mobileKeyboardLayoutUntilRef.current
+          )
+          fitAndNotifyPty({
+            followBottom: !isMobileKeyboardLayout,
+            notifyPty: !isMobileKeyboardLayout,
+          })
           rafId = null
         })
       }, 150) // 150ms debounce 覆盖 CSS transition
@@ -720,7 +757,7 @@ export default function Terminal({ token }: Props) {
       if (rafId) cancelAnimationFrame(rafId)
       if (debounceTimer) window.clearTimeout(debounceTimer)
     }
-  }, [fitAndNotifyPty])
+  }, [fitAndNotifyPty, isWidePC])
 
   async function fetchWindows() {
     try {
@@ -1643,14 +1680,13 @@ export default function Terminal({ token }: Props) {
     resetMobileInput(e.currentTarget)
   }
 
-  // Track keyboard visibility and adjust layout height on mobile
-  const [vvHeight, setVvHeight] = useState<number | null>(null)
+  // Track keyboard visibility on mobile without resizing the terminal surface.
   // 文件上传覆盖确认对话框状态
   const [uploadConflict, setUploadConflict] = useState<{ show: boolean; itemId: string | null; filename: string }>({ show: false, itemId: null, filename: '' })
   useEffect(() => {
     if (isWidePC) {
-      setVvHeight(null)
       setMobileKeyboardVisible(false)
+      setKeyboardLift(0)
       return
     }
     const vv = window.visualViewport
@@ -1658,7 +1694,7 @@ export default function Terminal({ token }: Props) {
     const handleResize = () => {
       const visible = vv.height < window.innerHeight * 0.8
       syncMobileKeyboard(visible)
-      setVvHeight(Math.round(vv.height))
+      setKeyboardLift(Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)))
       if (!visible && inputRef.current) {
         inputRef.current.inputMode = 'none'
         inputRef.current.readOnly = true
@@ -1666,7 +1702,11 @@ export default function Terminal({ token }: Props) {
     }
     handleResize()
     vv.addEventListener('resize', handleResize)
-    return () => vv.removeEventListener('resize', handleResize)
+    vv.addEventListener('scroll', handleResize)
+    return () => {
+      vv.removeEventListener('resize', handleResize)
+      vv.removeEventListener('scroll', handleResize)
+    }
   }, [isWidePC, syncMobileKeyboard])
 
   // Layer 2: Global focusin guard — blur any input that triggers keyboard when it should be hidden
@@ -1818,12 +1858,15 @@ export default function Terminal({ token }: Props) {
     onUploadFile: (file: File) => enqueueUploadFiles([file]),
     onUploadFiles: (files: FileList) => enqueueUploadFiles(files),
     onShowCopySheet: (text: string) => setCopySheetText(text),
+    onTerminalInputRequest: () => {
+      if (keyboardVisibleRef.current) focusMobileInput()
+    },
     collapsed: toolbarCollapsed,
     onCollapsedChange: setToolbarCollapsed,
   }
 
   return (
-    <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
+    <div className="flex flex-col w-full relative" style={{ height: '100dvh' }}>
       <input
         ref={inputRef}
         className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
@@ -1840,10 +1883,12 @@ export default function Terminal({ token }: Props) {
         onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
         onFocus={(e) => {
           if (!isWidePC) syncMobileKeyboard(true)
+          if (!isWidePC) setManagedMobileCursor(termRef.current, true)
           keepMobileInputCaretVisible(e.currentTarget)
         }}
         onBlur={() => {
           if (isWidePC) return
+          setManagedMobileCursor(termRef.current, false)
           window.setTimeout(() => {
             if (document.activeElement !== inputRef.current) {
               syncMobileKeyboard(false)
@@ -2059,7 +2104,14 @@ export default function Terminal({ token }: Props) {
         </div>
       ) : (
         <div className="flex flex-col flex-1 overflow-hidden min-h-0">
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+          <div
+            className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
+            style={{
+              transform: keyboardLift ? `translateY(-${keyboardLift}px)` : 'translateY(0)',
+              transition: 'transform 0.18s ease',
+              willChange: keyboardLift ? 'transform' : undefined,
+            }}
+          >
             <div ref={containerRef} className="flex-1 overflow-hidden relative" />
             {isConnecting && (
               <div className="absolute inset-0 bg-agentmobile-bg flex flex-col items-center justify-center gap-3 z-10">
@@ -2072,7 +2124,15 @@ export default function Terminal({ token }: Props) {
             )}
           </div>
           <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={toolbarHeightRef.current} />
-          <div ref={toolbarWrapRef}><Toolbar {...toolbarProps} /></div>
+          <div
+            ref={toolbarWrapRef}
+            className="shrink-0"
+            style={{
+              transform: keyboardLift ? `translateY(-${keyboardLift}px)` : 'translateY(0)',
+              transition: 'transform 0.18s ease',
+              willChange: keyboardLift ? 'transform' : undefined,
+            }}
+          ><Toolbar {...toolbarProps} /></div>
         </div>
       )}
 
