@@ -2920,7 +2920,7 @@ function ensureWindowPty(session, windowIndex) {
   return { key: actualKey, entry };
 }
 
-// WebSocket 服务 — 支持 /ws?token=xxx&window=<index>
+// WebSocket 服务 — 支持 header/cookie auth（兼容 query token）
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const wsHeartbeatInterval = setInterval(() => {
@@ -2945,7 +2945,9 @@ wss.on('connection', (ws, req) => {
     ws.isAlive = true
   })
   const url = new URL(req.url, 'http://x');
-  const token = url.searchParams.get('token');
+  const queryToken = url.searchParams.get('token');
+  const cookieToken = getCookieToken({ headers: { cookie: req.headers.cookie || '' } });
+  const token = queryToken || cookieToken;
   const windowParam = url.searchParams.get('window') || '0';
   const windowIndex = parseInt(windowParam, 10) || 0;
   const session = url.searchParams.get('session') || TMUX_SESSION;

@@ -1546,7 +1546,7 @@ export default function Terminal({ token }: Props) {
     function createWs(isReconnect = false) {
       const s = activeTmuxSessionRef.current
       const wi = activeWindowIndexRef.current
-      const newWs = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}&window=${wi}&session=${encodeURIComponent(s)}`)
+      const newWs = new WebSocket(`${protocol}//${location.host}/ws?window=${wi}&session=${encodeURIComponent(s)}`)
       wsRef.current = newWs
 
       newWs.onopen = () => {
