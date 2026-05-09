@@ -102,6 +102,7 @@ agentmobile IM Bridge（Node.js，im/server-im.ts，可选独立进程）
 // 每个 "session:windowIndex" 独立 PTY 实例
 const ptyMap = new Map()
 // entry: { pty, clients: Set<ws>, clientSizes: Map<ws, {cols,rows}>, lastOutput, lastActivity }
+// scrollback: tmux history-limit 50000; API capture clamps to the same limit.
 
 function getOrCreatePty(session, windowIndex) {
   // key = "session:windowIndex"

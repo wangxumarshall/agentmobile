@@ -149,9 +149,30 @@ const {
   GITHUB_REPO = 'wangxumarshall/agentmobile',
 } = process.env;
 
+const DEFAULT_TMUX_HISTORY_LIMIT = 50000;
+const TMUX_HISTORY_LIMIT = parsePositiveInt(process.env.TMUX_HISTORY_LIMIT, DEFAULT_TMUX_HISTORY_LIMIT, 200000);
+const TMUX_SCROLLBACK_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+
 if (!JWT_SECRET || !ACC_PASSWORD_HASH) {
   console.error('ERROR: JWT_SECRET and ACC_PASSWORD_HASH must be set in environment');
   process.exit(1);
+}
+
+function parsePositiveInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+function ensureTmuxHistoryLimit(sessionName) {
+  try {
+    execFileSync('tmux', ['set-option', '-g', 'history-limit', String(TMUX_HISTORY_LIMIT)], { stdio: 'pipe' });
+    if (sessionName) {
+      execFileSync('tmux', ['set-option', '-t', String(sessionName), 'history-limit', String(TMUX_HISTORY_LIMIT)], { stdio: 'pipe' });
+    }
+  } catch (err) {
+    console.warn('tmux history-limit setup failed:', err.message);
+  }
 }
 
 function getTelegramBotToken() {
@@ -1657,13 +1678,13 @@ app.get('/api/sessions/:id/output', authMiddleware, (req, res) => {
 app.get('/api/sessions/:id/scrollback', authMiddleware, (req, res) => {
   const windowIndex = parseInt(req.params.id, 10)
   const session = req.query.session || TMUX_SESSION
-  const lines = Math.min(parseInt(req.query.lines || '3000', 10), 10000)
+  const lines = parsePositiveInt(req.query.lines, TMUX_HISTORY_LIMIT, TMUX_HISTORY_LIMIT)
   const target = `${session}:${windowIndex}`
 
   // Get pane height first, then capture content and dedup ghost frames
   exec(`tmux display -p -t ${target} '#{pane_height}' 2>/dev/null`, (err, phOut) => {
     const paneHeight = parseInt(phOut?.trim(), 10) || 50
-    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: TMUX_SCROLLBACK_MAX_BUFFER_BYTES }, (err, stdout) => {
       if (err) return res.status(500).json({ error: err.message })
       const rawLines = stdout.split('\n').map(l => l.trimEnd())
       const content = dedupScrollback(rawLines, paneHeight).join('\n')
@@ -3040,7 +3061,9 @@ server.listen(Number(PORT), '0.0.0.0', () => {
   // 启动时确保默认 tmux session 存在，窗口名使用 WORKSPACE_ROOT 的目录名
   try {
     const defaultWindowName = WORKSPACE_ROOT.replace(/^\/+|\/+$/, '').split('/').pop() || '~'
+    ensureTmuxHistoryLimit(TMUX_SESSION);
     execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n "${defaultWindowName}" -c "${WORKSPACE_ROOT}" "${INTERACTIVE_SHELL}"`);
+    ensureTmuxHistoryLimit(TMUX_SESSION);
     console.log(`tmux session '${TMUX_SESSION}' ready`);
   } catch (e) { console.warn('tmux session init failed:', e.message); }
 });

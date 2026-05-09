@@ -28,6 +28,11 @@ session="${session:-main}"
 workspace="${workspace:-$HOME}"
 shell_cmd="${SHELL:-/bin/bash}"
 window_name="$(basename "$workspace")"
+history_limit="${TMUX_HISTORY_LIMIT:-}"
+if [ -z "$history_limit" ]; then
+  history_limit="$(read_env_value TMUX_HISTORY_LIMIT)"
+fi
+history_limit="${history_limit:-50000}"
 
 if ! command -v tmux >/dev/null 2>&1; then
   echo "[agentmobile-tmux] tmux command not found" >&2
@@ -35,9 +40,11 @@ if ! command -v tmux >/dev/null 2>&1; then
 fi
 
 ensure_session() {
+  tmux set-option -g history-limit "$history_limit" >/dev/null
   if ! tmux has-session -t "$session" 2>/dev/null; then
     tmux new-session -d -s "$session" -n "$window_name" -c "$workspace" "$shell_cmd"
   fi
+  tmux set-option -t "$session" history-limit "$history_limit" >/dev/null
 }
 
 ensure_session

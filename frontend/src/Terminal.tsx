@@ -127,6 +127,7 @@ const FONT_SIZE_KEY = 'agentmobile_font_size'
 const THEME_KEY = 'agentmobile_theme'
 const WINDOW_KEY = 'agentmobile_window'
 const TAP_THRESHOLD = 8
+const TERMINAL_SCROLLBACK_LINES = 50000
 const SCROLLBACK_PREFETCH_THRESHOLD_PX = 10
 const SCROLLBACK_OPEN_THRESHOLD_PX = 40
 const KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS = 1400
@@ -1162,7 +1163,7 @@ export default function Terminal({ token }: Props) {
       theme: THEMES[initialTheme],
       fontSize,
       fontFamily: 'Menlo, Monaco, "Cascadia Code", "Fira Code", monospace',
-      scrollback: 10000,
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       cursorBlink: true,
       cursorInactiveStyle: 'block',
       allowProposedApi: true,
@@ -1236,7 +1237,7 @@ export default function Terminal({ token }: Props) {
         ) {
           const wi = activeWindowIndexRef.current
           const s = activeTmuxSessionRef.current
-          scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+          scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
             headers: { Authorization: `Bearer ${token}` },
           }).then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then((data: { content: string }) => {
@@ -1483,7 +1484,7 @@ export default function Terminal({ token }: Props) {
             ) {
               const wi = activeWindowIndexRef.current
               const s = activeTmuxSessionRef.current
-              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
                 headers: { Authorization: `Bearer ${token}` },
               }).then(r => r.ok ? r.json() : Promise.reject(r.status))
                 .then((data: { content: string }) => {
@@ -1882,7 +1883,7 @@ export default function Terminal({ token }: Props) {
     const wi = activeWindowIndexRef.current
     const s = activeTmuxSessionRef.current
     const promise = scrollbackPrefetchRef.current ??
-      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
         headers: { Authorization: `Bearer ${token}` },
       }).then(r => r.ok ? r.json() : Promise.reject(r.status))
 
