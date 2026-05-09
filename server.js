@@ -14,6 +14,13 @@ import { randomUUID } from 'node:crypto';
 import https from 'node:https';
 import multer from 'multer';
 import QRCode from 'qrcode';
+import {
+  buildAuthCookie,
+  buildClearAuthCookie,
+  getCookieToken,
+  getRequestToken,
+  isSecureRequest,
+} from './auth.js';
 
 // 加载 .env 文件（如果存在）
 try {
@@ -511,34 +518,19 @@ app.use(express.static(join(__dirname, 'public')));
 app.use(express.static(join(__dirname, 'frontend', 'dist')));
 
 // Auth middleware
-function getCookieToken(req) {
-  const cookieHeader = req.headers.cookie || '';
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(';')) {
-    const [rawKey, ...rest] = part.trim().split('=');
-    if (rawKey !== 'agentmobile_token') continue;
-    const rawValue = rest.join('=');
-    if (!rawValue) return null;
-    try {
-      return decodeURIComponent(rawValue);
-    } catch {
-      return rawValue;
-    }
-  }
-  return null;
-}
-
-function getRequestToken(req, options = {}) {
-  const { allowQuery = true } = options;
-  const auth = req.headers.authorization || '';
-  const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const cookieToken = getCookieToken(req);
-  const queryToken = allowQuery && typeof req.query?.token === 'string' ? req.query.token : null;
-  return headerToken || cookieToken || queryToken;
-}
-
 function authMiddleware(req, res, next) {
   const token = getRequestToken(req);
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'unauthorized' });
+  }
+}
+
+function authCookieMiddleware(req, res, next) {
+  const token = getCookieToken(req);
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     jwt.verify(token, JWT_SECRET);
@@ -568,16 +560,7 @@ app.post('/api/auth/login', async (req, res) => {
     const ok = await bcrypt.compare(password, ACC_PASSWORD_HASH);
     if (!ok) return res.status(401).json({ error: 'unauthorized' });
     const token = jwt.sign({}, JWT_SECRET, { expiresIn: '30d' });
-    const isSecure = String(req.headers['x-forwarded-proto'] || req.protocol || '').includes('https');
-    const cookieAttrs = [
-      `agentmobile_token=${encodeURIComponent(token)}`,
-      'Path=/',
-      'HttpOnly',
-      'SameSite=Lax',
-      'Max-Age=2592000',
-    ];
-    if (isSecure) cookieAttrs.push('Secure');
-    res.setHeader('Set-Cookie', cookieAttrs.join('; '));
+    res.setHeader('Set-Cookie', buildAuthCookie(token, { secure: isSecureRequest(req) }));
     res.json({ token });
   } catch (err) {
     res.status(500).json({ error: 'internal error' });
@@ -585,18 +568,15 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 
+// GET /api/auth/session
+app.get('/api/auth/session', authCookieMiddleware, (req, res) => {
+  res.json({ ok: true });
+});
+
+
 // POST /api/auth/logout
 app.post('/api/auth/logout', (req, res) => {
-  const isSecure = String(req.headers['x-forwarded-proto'] || req.protocol || '').includes('https');
-  const cookieAttrs = [
-    'agentmobile_token=',
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    'Max-Age=0',
-  ];
-  if (isSecure) cookieAttrs.push('Secure');
-  res.setHeader('Set-Cookie', cookieAttrs.join('; '));
+  res.setHeader('Set-Cookie', buildClearAuthCookie({ secure: isSecureRequest(req) }));
   res.json({ ok: true });
 });
 
@@ -2960,27 +2940,46 @@ const wsHeartbeatInterval = setInterval(() => {
 }, 30000)
 wsHeartbeatInterval.unref?.()
 
+function verifyJwtToken(token) {
+  try {
+    jwt.verify(token, JWT_SECRET);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 wss.on('connection', (ws, req) => {
   ws.isAlive = true
   ws.on('pong', () => {
     ws.isAlive = true
   })
   const url = new URL(req.url, 'http://x');
-  const token = getCookieToken({ headers: { cookie: req.headers.cookie || '' } });
+  const cookieToken = getCookieToken({ headers: { cookie: req.headers.cookie || '' } });
   const windowParam = url.searchParams.get('window') || '0';
   const windowIndex = parseInt(windowParam, 10) || 0;
   const session = url.searchParams.get('session') || TMUX_SESSION;
+  const { key, entry } = ensureWindowPty(session, windowIndex);
+  let authenticated = verifyJwtToken(cookieToken);
+  let authTimer = null;
 
-  try {
-    jwt.verify(token, JWT_SECRET);
-  } catch {
-    ws.close(4001, 'unauthorized');
-    return;
+  if (!authenticated) {
+    authTimer = setTimeout(() => {
+      if (!authenticated && ws.readyState === 1) ws.close(4001, 'unauthorized');
+    }, 2500);
+    authTimer.unref?.();
+  } else {
+    entry.clients.add(ws);
+    console.log(`Client connected to ${key} (clients: ${entry.clients.size})`);
   }
 
-  const { key, entry } = ensureWindowPty(session, windowIndex);
-  entry.clients.add(ws);
-  console.log(`Client connected to ${key} (clients: ${entry.clients.size})`);
+  function markAuthenticated(source) {
+    if (authenticated) return;
+    authenticated = true;
+    if (authTimer) clearTimeout(authTimer);
+    entry.clients.add(ws);
+    console.log(`Client connected to ${key} via ${source} (clients: ${entry.clients.size})`);
+  }
 
   ws.on('message', (msg) => {
     const ent = ptyMap.get(key);
@@ -2989,6 +2988,16 @@ wss.on('connection', (ws, req) => {
     let isResize = false;
     try {
       const data = JSON.parse(str);
+      if (!authenticated && data?.type === 'auth' && typeof data.token === 'string') {
+        if (verifyJwtToken(data.token)) {
+          markAuthenticated('in-band auth');
+          return;
+        }
+        ws.close(4001, 'unauthorized');
+        return;
+      }
+      if (!authenticated) return;
+      if (data?.type === 'auth') return;
       if (data && data.type === 'resize' && data.cols && data.rows) {
         isResize = true;
         const newCols = Number(data.cols);
@@ -2999,6 +3008,7 @@ wss.on('connection', (ws, req) => {
         ent.pty.resize(Math.max(newCols, 10), Math.max(newRows, 5));
       }
     } catch { /* not JSON — fall through to pty.write */ }
+    if (!authenticated) return;
     // Write for all non-resize messages. Previously only the catch branch wrote,
     // which silently dropped single-digit strings ('1'..'9','0') since
     // JSON.parse('1') succeeds without throwing.
@@ -3006,6 +3016,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    if (authTimer) clearTimeout(authTimer);
     const ent = ptyMap.get(key);
     if (ent) {
       ent.clients.delete(ws);

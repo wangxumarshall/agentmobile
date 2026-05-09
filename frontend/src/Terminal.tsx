@@ -11,6 +11,7 @@ import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
 import { mapSpecialKey, shouldSkipInput, stripMobileInputArtifacts } from './mobileInput'
+import { buildWebSocketAuthMessage, clearAuthAndReload } from './auth'
 
 // ANSI 256-color palette (0-15 standard, 16-231 6x6x6 cube, 232-255 grayscale)
 const ANSI256: string[] = (() => {
@@ -207,12 +208,9 @@ export const THEMES: Record<ThemeMode, ITheme> = {
   light: LIGHT_THEME,
 }
 
-const AUTH_TOKEN_KEY = 'agentmobile_token'
-
 async function parseApiError(r: Response, fallback?: string): Promise<string> {
   if (r.status === 401) {
-    localStorage.removeItem(AUTH_TOKEN_KEY)
-    window.location.reload()
+    clearAuthAndReload()
     return ''
   }
   try {
@@ -1658,6 +1656,7 @@ export default function Terminal({ token }: Props) {
       wsRef.current = newWs
 
       newWs.onopen = () => {
+        newWs.send(buildWebSocketAuthMessage(token))
         if (isReconnect) {
           writeTerm('\r\n\x1b[32m[agentmobile: 已重新连接]\x1b[0m\r\n')
         } else {
@@ -1683,7 +1682,8 @@ export default function Terminal({ token }: Props) {
       newWs.onclose = (e) => {
         if (intentionalClose) return
         if (e.code === 4001) {
-          writeTerm('\r\n\x1b[31m[agentmobile: 认证失败，请刷新重新登录]\x1b[0m\r\n')
+          writeTerm('\r\n\x1b[31m[agentmobile: 认证失败，正在返回登录页]\x1b[0m\r\n')
+          window.setTimeout(() => clearAuthAndReload(), 300)
           return
         }
         if (reconnectAttempts >= maxReconnectAttempts) {

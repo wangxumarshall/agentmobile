@@ -125,7 +125,7 @@ Default login password: `agentmobile` (user can change it in `.env` after setup)
 agentmobile is a **single-user, self-hosted tool** — not a multi-tenant platform.
 
 - 🔒 bcrypt (12 rounds) password hash + JWT (30d)
-- ⚠️ WebSocket token passed via query string — enable TLS in production
+- 🔐 API calls use Bearer tokens; WebSocket and SSE use the HttpOnly auth cookie
 - 🛡️ Run behind firewall, VPN, or tunnel — do not expose directly to the internet
 
 ---
