@@ -27,7 +27,7 @@
     "service:migrate-tmux": "scripts/service-control.sh migrate-tmux",
     "service:restart:tmux": "scripts/service-control.sh restart-tmux",
     "test": "npm run build:im && npm run test:unit",
-    "test:unit": "node tests/auth.test.mjs && npx tsx frontend/src/auth.test.ts && npx tsx frontend/src/mobileInput.test.ts"
+    "test:unit": "node tests/auth.test.mjs && npx tsx frontend/src/auth.test.ts && npx tsx frontend/src/mobileInput.test.ts && npx tsx frontend/src/mobileKeyboard.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.81",

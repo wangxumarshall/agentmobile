@@ -10,6 +10,7 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import { resolveMobileKeyboardViewportState } from './mobileKeyboard'
 import { mapSpecialKey, shouldSkipInput, stripMobileInputArtifacts } from './mobileInput'
 import { buildWebSocketAuthMessage, clearAuthAndReload } from './auth'
 
@@ -308,6 +309,7 @@ applyAgentmobileCssVars(getInitialTheme())
 // Agent 状态推断（F-15）
 export default function Terminal({ token }: Props) {
   const { t } = useTranslation()
+  const layoutRootRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -363,11 +365,13 @@ export default function Terminal({ token }: Props) {
   const [showGuide, setShowGuide] = useState(() => localStorage.getItem('agentmobile_guide_seen') !== 'true')
   const [isScrolledUp, setIsScrolledUp] = useState(false)
   const toolbarWrapRef = useRef<HTMLDivElement>(null)
-  const toolbarHeightRef = useRef(0)
+  const [toolbarHeight, setToolbarHeight] = useState(0)
   const keyboardVisibleRef = useRef(false)
+  const mobileInputEnabledRef = useRef(false)
   const mobileKeyboardLayoutUntilRef = useRef(0)
   const [mobileKeyboardVisible, setMobileKeyboardVisible] = useState(false)
-  const [keyboardLift, setKeyboardLift] = useState(0)
+  const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0)
+  const [mobileInputEnabled, setMobileInputEnabled] = useState(false)
   const [mobileInputValue, setMobileInputValue] = useState('')
   // Viewport height is handled by CSS 100dvh, not JS
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
@@ -389,6 +393,7 @@ export default function Terminal({ token }: Props) {
   const wheelScrollRemainderRef = useRef(0)
   const wheelHistoryAccumRef = useRef(0)
   const terminalInputQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const mobileBottomChromeInset = isWidePC ? 0 : toolbarHeight + mobileKeyboardInset
 
   // F-18: 多 tmux session 支持
   const [tmuxSessions, setTmuxSessions] = useState<string[]>([])
@@ -442,6 +447,11 @@ export default function Terminal({ token }: Props) {
     suppressHistorySwipe()
   }, [suppressHistorySwipe])
 
+  const syncMobileInputEnabled = useCallback((enabled: boolean) => {
+    mobileInputEnabledRef.current = enabled
+    setMobileInputEnabled(enabled)
+  }, [])
+
   const keepMobileInputCaretVisible = useCallback((input: HTMLInputElement) => {
     requestAnimationFrame(() => {
       const len = input.value.length
@@ -454,7 +464,35 @@ export default function Terminal({ token }: Props) {
     })
   }, [])
 
+  const syncMobileViewportLayout = useCallback(() => {
+    if (isWidePC) {
+      setMobileKeyboardVisible(false)
+      setMobileKeyboardInset(0)
+      return
+    }
+    const vv = window.visualViewport
+    const layoutEl = layoutRootRef.current
+    if (!vv || !layoutEl) {
+      setMobileKeyboardInset(0)
+      return
+    }
+    const nextState = resolveMobileKeyboardViewportState({
+      viewportHeight: vv.height,
+      viewportOffsetTop: vv.offsetTop,
+      windowHeight: window.innerHeight,
+      layoutBottom: layoutEl.getBoundingClientRect().bottom,
+      inputEnabled: mobileInputEnabledRef.current,
+    })
+    syncMobileKeyboard(nextState.keyboardVisible)
+    setMobileKeyboardInset(nextState.keyboardInset)
+    if (nextState.shouldLockInput && inputRef.current) {
+      inputRef.current.inputMode = 'none'
+      inputRef.current.readOnly = true
+    }
+  }, [isWidePC, syncMobileKeyboard])
+
   const focusMobileInput = useCallback(() => {
+    syncMobileInputEnabled(true)
     syncMobileKeyboard(true)
     const xtermTa = termRef.current?.textarea
     if (xtermTa) {
@@ -472,11 +510,17 @@ export default function Terminal({ token }: Props) {
     }
     setManagedMobileCursor(termRef.current, true)
     keepMobileInputCaretVisible(input)
-  }, [keepMobileInputCaretVisible, syncMobileKeyboard])
+    requestAnimationFrame(() => {
+      syncMobileViewportLayout()
+      requestAnimationFrame(syncMobileViewportLayout)
+    })
+  }, [keepMobileInputCaretVisible, syncMobileInputEnabled, syncMobileKeyboard, syncMobileViewportLayout])
 
   const blurMobileInput = useCallback(() => {
+    syncMobileInputEnabled(false)
     suppressHistorySwipe()
     syncMobileKeyboard(false)
+    setMobileKeyboardInset(0)
     const input = inputRef.current
     if (input) {
       input.inputMode = 'none'
@@ -489,7 +533,7 @@ export default function Terminal({ token }: Props) {
       xtermTa.blur()
     }
     setManagedMobileCursor(termRef.current, false)
-  }, [syncMobileKeyboard])
+  }, [suppressHistorySwipe, syncMobileInputEnabled, syncMobileKeyboard])
 
   const fetchTmuxSessions = useCallback(async () => {
     try {
@@ -732,6 +776,21 @@ export default function Terminal({ token }: Props) {
     }, 150)
   }, [fitAndNotifyPty])
 
+  useEffect(() => {
+    if (isWidePC) return
+
+    const timers = [
+      window.setTimeout(() => {
+        fitAndNotifyPty({ followBottom: true, forceRepaint: true })
+      }, 0),
+      window.setTimeout(() => {
+        fitAndNotifyPty({ followBottom: true, forceRepaint: true })
+      }, 220),
+    ]
+
+    return () => timers.forEach(timer => window.clearTimeout(timer))
+  }, [fitAndNotifyPty, isWidePC, mobileBottomChromeInset, mobileInputEnabled, mobileKeyboardVisible])
+
   // 简化的 resize 处理：只在必要时执行，避免过度工程化
   useEffect(() => {
     const container = containerRef.current
@@ -763,13 +822,9 @@ export default function Terminal({ token }: Props) {
       // Debounce: 延迟执行，确保布局稳定（特别是工具栏动画结束后）
       debounceTimer = window.setTimeout(() => {
         rafId = requestAnimationFrame(() => {
-          const isMobileKeyboardLayout = !isWidePC && (
-            keyboardVisibleRef.current ||
-            Date.now() < mobileKeyboardLayoutUntilRef.current
-          )
           fitAndNotifyPty({
-            followBottom: !isMobileKeyboardLayout,
-            notifyPty: !isMobileKeyboardLayout,
+            followBottom: true,
+            notifyPty: true,
           })
           rafId = null
         })
@@ -1756,36 +1811,31 @@ export default function Terminal({ token }: Props) {
   const [uploadConflict, setUploadConflict] = useState<{ show: boolean; itemId: string | null; filename: string }>({ show: false, itemId: null, filename: '' })
   useEffect(() => {
     if (isWidePC) {
+      syncMobileInputEnabled(false)
       setMobileKeyboardVisible(false)
-      setKeyboardLift(0)
+      setMobileKeyboardInset(0)
       return
     }
     const vv = window.visualViewport
     if (!vv) return
-    const handleResize = () => {
-      const visible = vv.height < window.innerHeight * 0.8
-      syncMobileKeyboard(visible)
-      setKeyboardLift(Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)))
-      if (!visible && inputRef.current) {
-        inputRef.current.inputMode = 'none'
-        inputRef.current.readOnly = true
-      }
-    }
+    const handleResize = () => syncMobileViewportLayout()
     handleResize()
     vv.addEventListener('resize', handleResize)
     vv.addEventListener('scroll', handleResize)
+    window.addEventListener('resize', handleResize)
     return () => {
       vv.removeEventListener('resize', handleResize)
       vv.removeEventListener('scroll', handleResize)
+      window.removeEventListener('resize', handleResize)
     }
-  }, [isWidePC, syncMobileKeyboard])
+  }, [isWidePC, syncMobileInputEnabled, syncMobileViewportLayout])
 
   // Layer 2: Global focusin guard — blur any input that triggers keyboard when it should be hidden
   // This covers both our custom hidden input AND xterm's internal textarea
   useEffect(() => {
     if (isWidePC) return
     function handleFocusin(e: FocusEvent) {
-      if (keyboardVisibleRef.current) return
+      if (keyboardVisibleRef.current || mobileInputEnabledRef.current) return
       const target = e.target as HTMLElement
       const xtermTa = termRef.current?.textarea
       if (target === inputRef.current || (xtermTa && target === xtermTa)) {
@@ -1813,10 +1863,10 @@ export default function Terminal({ token }: Props) {
     const el = toolbarWrapRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      toolbarHeightRef.current = el.offsetHeight
+      setToolbarHeight(prev => prev === el.offsetHeight ? prev : el.offsetHeight)
     })
     ro.observe(el)
-    toolbarHeightRef.current = el.offsetHeight
+    setToolbarHeight(el.offsetHeight)
     return () => ro.disconnect()
   }, [])
 
@@ -1839,9 +1889,9 @@ export default function Terminal({ token }: Props) {
   }, [anyOverlayOpen, isWidePC])
 
   useEffect(() => {
-    if (isWidePC || !anyOverlayOpen || !mobileKeyboardVisible) return
+    if (isWidePC || !anyOverlayOpen || (!mobileKeyboardVisible && !mobileInputEnabled)) return
     blurMobileInput()
-  }, [anyOverlayOpen, blurMobileInput, isWidePC, mobileKeyboardVisible])
+  }, [anyOverlayOpen, blurMobileInput, isWidePC, mobileInputEnabled, mobileKeyboardVisible])
 
   function closeScrollback() {
     showScrollbackRef.current = false
@@ -1931,20 +1981,28 @@ export default function Terminal({ token }: Props) {
     onUploadFiles: (files: FileList) => enqueueUploadFiles(files),
     onShowCopySheet: (text: string) => setCopySheetText(text),
     onTerminalInputRequest: () => {
-      if (keyboardVisibleRef.current) focusMobileInput()
+      if (!mobileInputEnabledRef.current) focusMobileInput()
     },
     collapsed: toolbarCollapsed,
     onCollapsedChange: setToolbarCollapsed,
   }
 
   return (
-    <div className="flex flex-col w-full relative" style={{ height: '100dvh' }}>
+    <div
+      ref={layoutRootRef}
+      className="flex flex-col w-full relative"
+      style={{
+        height: '100dvh',
+        paddingBottom: isWidePC ? 0 : mobileKeyboardInset,
+        transition: isWidePC ? undefined : 'padding-bottom 0.18s ease',
+      }}
+    >
       <input
         ref={inputRef}
         className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
         style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
         value={mobileInputValue}
-        readOnly={!mobileKeyboardVisible}
+        readOnly={!mobileInputEnabled}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
@@ -1954,6 +2012,7 @@ export default function Terminal({ token }: Props) {
         onKeyDown={handleKeyDown}
         onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
         onFocus={(e) => {
+          syncMobileInputEnabled(true)
           if (!isWidePC) syncMobileKeyboard(true)
           if (!isWidePC) setManagedMobileCursor(termRef.current, true)
           keepMobileInputCaretVisible(e.currentTarget)
@@ -1963,6 +2022,7 @@ export default function Terminal({ token }: Props) {
           setManagedMobileCursor(termRef.current, false)
           window.setTimeout(() => {
             if (document.activeElement !== inputRef.current) {
+              syncMobileInputEnabled(false)
               syncMobileKeyboard(false)
             }
           }, 0)
@@ -2176,14 +2236,7 @@ export default function Terminal({ token }: Props) {
         </div>
       ) : (
         <div className="flex flex-col flex-1 overflow-hidden min-h-0">
-          <div
-            className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
-            style={{
-              transform: keyboardLift ? `translateY(-${keyboardLift}px)` : 'translateY(0)',
-              transition: 'transform 0.18s ease',
-              willChange: keyboardLift ? 'transform' : undefined,
-            }}
-          >
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
             <div ref={containerRef} className="flex-1 overflow-hidden relative" />
             {isConnecting && (
               <div className="absolute inset-0 bg-agentmobile-bg flex flex-col items-center justify-center gap-3 z-10">
@@ -2195,16 +2248,8 @@ export default function Terminal({ token }: Props) {
               <button className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-agentmobile-accent border-none text-white text-lg cursor-pointer z-50 flex items-center justify-center shadow-lg backdrop-blur-sm" onClick={scrollToBottom} title="滚到底部"><Icon name="arrowDown" size={16} /></button>
             )}
           </div>
-          <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={toolbarHeightRef.current} />
-          <div
-            ref={toolbarWrapRef}
-            className="shrink-0"
-            style={{
-              transform: keyboardLift ? `translateY(-${keyboardLift}px)` : 'translateY(0)',
-              transition: 'transform 0.18s ease',
-              willChange: keyboardLift ? 'transform' : undefined,
-            }}
-          ><Toolbar {...toolbarProps} /></div>
+          <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={mobileBottomChromeInset} />
+          <div ref={toolbarWrapRef} className="shrink-0"><Toolbar {...toolbarProps} /></div>
         </div>
       )}
 
@@ -2503,7 +2548,7 @@ export default function Terminal({ token }: Props) {
       {uploadQueue.length > 0 && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-[210] max-w-[92vw] w-[560px] rounded-xl border border-agentmobile-border bg-agentmobile-menu-bg shadow-[0_12px_36px_rgba(0,0,0,0.28)] overflow-hidden"
-          style={{ bottom: isWidePC ? 96 : (toolbarHeightRef.current + 96) }}
+          style={{ bottom: isWidePC ? 96 : (mobileBottomChromeInset + 96) }}
         >
           <div className="flex items-center justify-between px-3 py-2 border-b border-agentmobile-border">
             <span className="text-agentmobile-text text-sm font-semibold">{t('upload.queueTitle')}</span>
@@ -2540,7 +2585,7 @@ export default function Terminal({ token }: Props) {
         const termFontFamily = termRef.current?.options.fontFamily ?? 'Menlo, Monaco, monospace'
         const termMuted = (termTheme as any).brightBlack ?? '#4a5568'
         return (
-          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : toolbarHeightRef.current, overscrollBehaviorY: 'none' }}>
+          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : mobileBottomChromeInset, overscrollBehaviorY: 'none' }}>
             <GhostShield />
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b flex-shrink-0" style={{ borderColor: `${termMuted}44` }}>
               <span className="font-semibold text-sm" style={{ color: termFg }}>历史记录</span>
@@ -2575,7 +2620,7 @@ export default function Terminal({ token }: Props) {
       {uploadNotifications.length > 0 && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 max-w-[90vw] w-[480px]"
-          style={{ bottom: isWidePC ? 16 : (toolbarHeightRef.current + 16) }}
+          style={{ bottom: isWidePC ? 16 : (mobileBottomChromeInset + 16) }}
         >
           {uploadNotifications.map((notification) => (
             <div
