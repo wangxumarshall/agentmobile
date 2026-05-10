@@ -11,6 +11,10 @@ docs/superpowers/
 
 # Environment (contains secrets)
 .env
+.DS_Store
+.codex/
+.entire/
+.omc/
 
 # Dependencies
 node_modules/

@@ -54,6 +54,14 @@ fix(terminal): sync wsSessionKey on restore
 docs(readme): update Quick Start for WSL2 users
 ```
 
+## Automation Helpers
+
+- `npm run commit:auto` creates a local commit with the repo's standard trailer
+- `npm run commit:auto:push` creates the same commit and pushes the current branch
+- `npm run docs:index` regenerates the tracked docs index used by the GitHub workflow
+
+The GitHub workflow only commits generated files that already live in the repository. It does not have access to unpublished local changes on your machine.
+
 ---
 
 ## Good First Issues
