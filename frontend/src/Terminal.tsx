@@ -138,6 +138,7 @@ const TERMINAL_INPUT_CHUNK_SIZE = 1024
 const TERMINAL_INPUT_CHUNK_DELAY_MS = 5
 const MAX_UPLOAD_NOTIFICATIONS = 5
 const MAX_PARALLEL_UPLOADS = 3
+const TERMINAL_ALT_REFRESH_DEBOUNCE_MS = 34
 
 type UploadStatus = 'pending' | 'uploading' | 'done' | 'error' | 'conflict'
 
@@ -393,6 +394,7 @@ export default function Terminal({ token }: Props) {
   const wheelScrollRemainderRef = useRef(0)
   const wheelHistoryAccumRef = useRef(0)
   const terminalInputQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const altScreenRefreshTimerRef = useRef<number | null>(null)
   const mobileBottomChromeInset = isWidePC ? 0 : toolbarHeight + mobileKeyboardInset
 
   // F-18: 多 tmux session 支持
@@ -775,6 +777,27 @@ export default function Terminal({ token }: Props) {
       })
     }, 150)
   }, [fitAndNotifyPty])
+
+  const scheduleAltScreenRefresh = useCallback(() => {
+    const term = termRef.current
+    if (!term || term.rows <= 0) return
+
+    if (altScreenRefreshTimerRef.current !== null) {
+      window.clearTimeout(altScreenRefreshTimerRef.current)
+    }
+
+    altScreenRefreshTimerRef.current = window.setTimeout(() => {
+      altScreenRefreshTimerRef.current = null
+      const liveTerm = termRef.current
+      if (!liveTerm || liveTerm.rows <= 0) return
+      try {
+        liveTerm.clearTextureAtlas()
+      } catch {
+        // clearTextureAtlas is best-effort only.
+      }
+      refreshTerminalViewport(liveTerm)
+    }, TERMINAL_ALT_REFRESH_DEBOUNCE_MS)
+  }, [])
 
   useEffect(() => {
     if (isWidePC) return
@@ -1220,7 +1243,8 @@ export default function Terminal({ token }: Props) {
       cursorBlink: true,
       cursorInactiveStyle: 'block',
       allowProposedApi: true,
-      screenReaderMode: true,
+      customGlyphs: false,
+      screenReaderMode: false,
     })
 
     const fitAddon = new FitAddon()
@@ -1457,6 +1481,13 @@ export default function Terminal({ token }: Props) {
       }
     })
 
+    term.onWriteParsed(() => {
+      const activeBuffer = term.buffer.active
+      if (activeBuffer.type === 'alternate') {
+        scheduleAltScreenRefresh()
+      }
+    })
+
     let touchStartX = 0
     let touchStartY = 0
     let touchLastY = 0
@@ -1670,11 +1701,15 @@ export default function Terminal({ token }: Props) {
       container.removeEventListener('dragleave', onDragLeave)
       container.removeEventListener('drop', onDrop)
       if (inp) inp.removeEventListener('touchstart', onInputTouchStart)
+      if (altScreenRefreshTimerRef.current !== null) {
+        window.clearTimeout(altScreenRefreshTimerRef.current)
+        altScreenRefreshTimerRef.current = null
+      }
       term.dispose()
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, [blurMobileInput, fitAndNotifyPty, focusMobileInput, pasteToTerminal, token])
+  }, [blurMobileInput, fitAndNotifyPty, focusMobileInput, pasteToTerminal, scheduleAltScreenRefresh, token])
 
   // Effect B: WebSocket connection (reconnects on window switch, xterm persists)
   useEffect(() => {
