@@ -114,7 +114,11 @@
     "resetToFactory": "Resets to factory default config",
     "reset": "Reset",
     "saveAsDefault": "Save as Default",
-    "done": "Done"
+    "done": "Done",
+    "customKeys": "Custom Keys",
+    "customKeyPlaceholder": "^X, M-b, Esc, \\u001b[1;5D",
+    "addCustom": "Add",
+    "customKeyHelp": "Supports Ctrl/Alt, arrows, single chars, and JSON escapes"
   },
   "toolbarKeys": {
     "prevHistory": "Previous history",
@@ -151,7 +155,17 @@
     "togglePermission": "Toggle permission mode",
     "scrollBottom": "Scroll to bottom",
     "copyTerminal": "Copy terminal content",
-    "fitTerminal": "Fit terminal size"
+    "fitTerminal": "Fit terminal size",
+    "customKey": "Custom key"
+  },
+  "upload": {
+    "queueTitle": "Upload Queue",
+    "done": "Done",
+    "error": "Error",
+    "conflict": "Conflict",
+    "cancel": "Cancel",
+    "conflictTitle": "File already exists",
+    "conflictMessage": "File \"{{filename}}\" already exists. Overwrite it?"
   },
   "settings": {
     "title": "Settings",

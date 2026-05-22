@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
-  <rect width="192" height="192" rx="32" fill="#1a1a2e"/>
-  <rect x="20" y="56" width="152" height="96" rx="8" fill="#0f172a" stroke="#3b82f6" stroke-width="3"/>
-  <circle cx="36" cy="72" r="5" fill="#ef4444"/>
-  <circle cx="56" cy="72" r="5" fill="#f59e0b"/>
-  <circle cx="76" cy="72" r="5" fill="#22c55e"/>
-  <text x="28" y="118" font-family="monospace" font-size="28" fill="#22c55e">N&gt;_</text>
-</svg>

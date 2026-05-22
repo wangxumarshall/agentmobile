@@ -14,6 +14,13 @@ import { randomUUID } from 'node:crypto';
 import https from 'node:https';
 import multer from 'multer';
 import QRCode from 'qrcode';
+import {
+  buildAuthCookie,
+  buildClearAuthCookie,
+  getCookieToken,
+  getRequestToken,
+  isSecureRequest,
+} from './auth.js';
 
 // 加载 .env 文件（如果存在）
 try {
@@ -149,9 +156,30 @@ const {
   GITHUB_REPO = 'wangxumarshall/agentmobile',
 } = process.env;
 
+const DEFAULT_TMUX_HISTORY_LIMIT = 50000;
+const TMUX_HISTORY_LIMIT = parsePositiveInt(process.env.TMUX_HISTORY_LIMIT, DEFAULT_TMUX_HISTORY_LIMIT, 200000);
+const TMUX_SCROLLBACK_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+
 if (!JWT_SECRET || !ACC_PASSWORD_HASH) {
   console.error('ERROR: JWT_SECRET and ACC_PASSWORD_HASH must be set in environment');
   process.exit(1);
+}
+
+function parsePositiveInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+function ensureTmuxHistoryLimit(sessionName) {
+  try {
+    execFileSync('tmux', ['set-option', '-g', 'history-limit', String(TMUX_HISTORY_LIMIT)], { stdio: 'pipe' });
+    if (sessionName) {
+      execFileSync('tmux', ['set-option', '-t', String(sessionName), 'history-limit', String(TMUX_HISTORY_LIMIT)], { stdio: 'pipe' });
+    }
+  } catch (err) {
+    console.warn('tmux history-limit setup failed:', err.message);
+  }
 }
 
 function getTelegramBotToken() {
@@ -177,6 +205,59 @@ function commandExists(cmd) {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function getSessionEnvValue(sessionName, key) {
+  try {
+    const out = execFileSync('tmux', ['show-environment', '-t', String(sessionName), key], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const prefix = `${key}=`
+    return out.startsWith(prefix) ? out.slice(prefix.length) : null
+  } catch {
+    return null
+  }
+}
+
+function getSessionPaneCurrentPath(sessionName) {
+  try {
+    const panePath = execFileSync('tmux', ['display-message', '-t', String(sessionName), '-p', '#{pane_current_path}'], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    return panePath || null
+  } catch {
+    return null
+  }
+}
+
+function isWithinDir(targetPath, rootPath) {
+  const normalizedTarget = normalize(targetPath)
+  const normalizedRoot = normalize(rootPath)
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`)
+}
+
+function validateWorkspaceDir(cwd) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return 'path required'
+  const normalizedCwd = normalize(cwd)
+  if (!isWithinDir(normalizedCwd, WORKSPACE_ROOT)) return 'path must stay within workspace root'
+  if (!existsSync(normalizedCwd)) return 'workspace path does not exist'
+  try {
+    const stats = statSync(normalizedCwd)
+    if (!stats.isDirectory()) return 'workspace path is not a directory'
+  } catch {
+    return 'workspace path is not accessible'
+  }
+  return null
+}
+
+function sanitizeWindowName(name) {
+  return name
+    .replace(/[\x00-\x1f\x7f:]/g, '')
+    .trim()
+    .substring(0, 50)
+}
+
+function sanitizeSessionName(name) {
+  return name
+    .replace(/[\s:./\\\x00-\x1f\x7f]/g, '')
+    .trim()
+    .substring(0, 50)
 }
 
 const AGENT_SPECS = {
@@ -371,18 +452,8 @@ function listProjects() {
     const lines = stdout.split('\n').filter(Boolean)
     const projects = lines.map(line => {
       const [name, windows] = line.split('|')
-      let path = ''
-      try {
-        const envOutput = execSync(`tmux show-environment -t ${name} NEXUS_CWD 2>/dev/null`).toString().trim()
-        const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
-        if (match) path = match[1]
-      } catch {}
-      if (!path && windows !== '0') {
-        try {
-          const cwdOutput = execSync(`tmux list-windows -t ${name} -F '#{pane_current_path}' 2>/dev/null | head -1`).toString().trim()
-          if (cwdOutput) path = cwdOutput
-        } catch {}
-      }
+      let path = getSessionEnvValue(name, 'NEXUS_CWD') || ''
+      if (!path && windows !== '0') path = getSessionPaneCurrentPath(name) || ''
       return {
         name,
         path: path || WORKSPACE_ROOT,
@@ -447,15 +518,31 @@ app.use(express.static(join(__dirname, 'public')));
 app.use(express.static(join(__dirname, 'frontend', 'dist')));
 
 // Auth middleware
-function getRequestToken(req) {
-  const auth = req.headers.authorization || '';
-  const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
-  return headerToken || queryToken;
-}
-
 function authMiddleware(req, res, next) {
   const token = getRequestToken(req);
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'unauthorized' });
+  }
+}
+
+function authCookieMiddleware(req, res, next) {
+  const token = getCookieToken(req);
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'unauthorized' });
+  }
+}
+
+
+function authMiddlewareNoQueryToken(req, res, next) {
+  const token = getRequestToken(req, { allowQuery: false });
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     jwt.verify(token, JWT_SECRET);
@@ -473,13 +560,27 @@ app.post('/api/auth/login', async (req, res) => {
     const ok = await bcrypt.compare(password, ACC_PASSWORD_HASH);
     if (!ok) return res.status(401).json({ error: 'unauthorized' });
     const token = jwt.sign({}, JWT_SECRET, { expiresIn: '30d' });
+    res.setHeader('Set-Cookie', buildAuthCookie(token, { secure: isSecureRequest(req) }));
     res.json({ token });
   } catch (err) {
     res.status(500).json({ error: 'internal error' });
   }
 });
 
-app.get('/api/projects/events', authMiddleware, (req, res) => {
+
+// GET /api/auth/session
+app.get('/api/auth/session', authCookieMiddleware, (req, res) => {
+  res.json({ ok: true });
+});
+
+
+// POST /api/auth/logout
+app.post('/api/auth/logout', (req, res) => {
+  res.setHeader('Set-Cookie', buildClearAuthCookie({ secure: isSecureRequest(req) }));
+  res.json({ ok: true });
+});
+
+app.get('/api/projects/events', authMiddlewareNoQueryToken, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -1359,13 +1460,19 @@ app.post('/api/upload', authMiddleware, (req, res, next) => {
 
 // 读取指定 session 的 uploads 目录（基于 tmux NEXUS_CWD 环境变量）
 function getWorkspaceUploadsDir(session = TMUX_SESSION) {
-  let cwd = WORKSPACE_ROOT
-  try {
-    const out = execSync(`tmux show-environment -t ${session} NEXUS_CWD 2>/dev/null`).toString().trim()
-    const m = out.match(/^NEXUS_CWD=(.+)$/)
-    if (m) cwd = m[1]
-  } catch {}
+  const sessionName = typeof session === 'string' && session ? session : TMUX_SESSION
+  const cwd =
+    getSessionEnvValue(sessionName, 'NEXUS_CWD') ||
+    getSessionPaneCurrentPath(sessionName) ||
+    WORKSPACE_ROOT
   return join(cwd, 'data', 'uploads')
+}
+
+function isPathAllowedForSession(filePath, session) {
+  const normalized = normalize(filePath)
+  if (isWithinDir(normalized, WORKSPACE_ROOT)) return true
+  const uploadsDir = getWorkspaceUploadsDir(session)
+  return isWithinDir(normalized, uploadsDir)
 }
 
 const fileUpload = multer({
@@ -1426,7 +1533,8 @@ app.get('/api/files/content', authMiddleware, (req, res) => {
   const filePath = req.query.path
   if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'path required' })
   const normalized = normalize(filePath)
-  if (!normalized.startsWith(WORKSPACE_ROOT)) return res.status(403).json({ error: 'access denied' })
+  const session = typeof req.query.session === 'string' && req.query.session ? req.query.session : TMUX_SESSION
+  if (!isPathAllowedForSession(normalized, session)) return res.status(403).json({ error: 'access denied' })
   if (!existsSync(normalized)) return res.status(404).json({ error: 'file not found' })
   res.sendFile(normalized)
 })
@@ -1504,7 +1612,8 @@ app.delete('/api/files/content', authMiddleware, (req, res) => {
   const filePath = req.query.path
   if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'path required' })
   const normalized = normalize(filePath)
-  if (!normalized.startsWith(WORKSPACE_ROOT)) return res.status(403).json({ error: 'access denied' })
+  const session = typeof req.query.session === 'string' && req.query.session ? req.query.session : TMUX_SESSION
+  if (!isPathAllowedForSession(normalized, session)) return res.status(403).json({ error: 'access denied' })
   try {
     if (existsSync(normalized)) {
       unlinkSync(normalized)
@@ -1523,9 +1632,9 @@ app.post('/api/sessions/:id/rename', authMiddleware, (req, res) => {
   const session = req.query.session || TMUX_SESSION
   const { name } = req.body || {}
   if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name required' })
-  const safeName = name.trim().replace(/[^a-zA-Z0-9._-]/g, '-').substring(0, 50)
+  const safeName = sanitizeWindowName(name)
   if (!safeName) return res.status(400).json({ error: 'invalid name format' })
-  execFile('tmux', ['rename-window', '-t', `${session}:${index}`, safeName], (err) => {
+  execFile('tmux', ['rename-window', '-t', `${session}:${index}`, '--', safeName], (err) => {
     if (err) return res.status(500).json({ error: err.message })
     res.json({ ok: true, name: safeName })
   })
@@ -1549,13 +1658,13 @@ app.get('/api/sessions/:id/output', authMiddleware, (req, res) => {
 app.get('/api/sessions/:id/scrollback', authMiddleware, (req, res) => {
   const windowIndex = parseInt(req.params.id, 10)
   const session = req.query.session || TMUX_SESSION
-  const lines = Math.min(parseInt(req.query.lines || '3000', 10), 10000)
+  const lines = parsePositiveInt(req.query.lines, TMUX_HISTORY_LIMIT, TMUX_HISTORY_LIMIT)
   const target = `${session}:${windowIndex}`
 
   // Get pane height first, then capture content and dedup ghost frames
   exec(`tmux display -p -t ${target} '#{pane_height}' 2>/dev/null`, (err, phOut) => {
     const paneHeight = parseInt(phOut?.trim(), 10) || 50
-    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: TMUX_SCROLLBACK_MAX_BUFFER_BYTES }, (err, stdout) => {
       if (err) return res.status(500).json({ error: err.message })
       const rawLines = stdout.split('\n').map(l => l.trimEnd())
       const content = dedupScrollback(rawLines, paneHeight).join('\n')
@@ -1650,22 +1759,7 @@ app.get('/api/projects', authMiddleware, (req, res) => {
 // GET /api/session-cwd — 获取指定 session 的 NEXUS_CWD
 app.get('/api/session-cwd', authMiddleware, (req, res) => {
   const session = req.query.session || TMUX_SESSION
-  let cwd = WORKSPACE_ROOT
-
-  // 1. 尝试读取 NEXUS_CWD（外部启动的 session 可能没有，会抛异常）
-  try {
-    const envOutput = execSync(`tmux show-environment -t ${session} NEXUS_CWD 2>/dev/null`).toString().trim()
-    const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
-    if (match) cwd = match[1]
-  } catch { /* NEXUS_CWD 未设置 */ }
-
-  // 2. 若 NEXUS_CWD 未设置，回退到 pane_current_path
-  if (cwd === WORKSPACE_ROOT) {
-    try {
-      const panePath = execSync(`tmux display-message -t ${session} -p '#{pane_current_path}' 2>/dev/null`).toString().trim()
-      if (panePath) cwd = panePath
-    } catch { /* fallback to WORKSPACE_ROOT */ }
-  }
+  const cwd = getSessionEnvValue(session, 'NEXUS_CWD') || getSessionPaneCurrentPath(session) || WORKSPACE_ROOT
 
   const relative = cwd.startsWith(WORKSPACE_ROOT) ? cwd.slice(WORKSPACE_ROOT.length).replace(/^\/+/, '') : ''
   res.json({ cwd, relative })
@@ -1701,7 +1795,9 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   const { path, shell_type, agent_type: reqAgentType, profile } = req.body || {}
   if (!path) return res.status(400).json({ error: 'path required' })
 
-  const cwd = path.startsWith('/') ? path : `${WORKSPACE_ROOT}/${path}`
+  const cwd = normalize(path.startsWith('/') ? path : `${WORKSPACE_ROOT}/${path}`)
+  const workspaceValidationError = validateWorkspaceDir(cwd)
+  if (workspaceValidationError) return res.status(400).json({ error: workspaceValidationError })
 
   // agent_type 优先于 shell_type（向后兼容）
   const agentType = normalizeRequestedAgentType(shell_type, reqAgentType, profile)
@@ -1730,13 +1826,12 @@ app.post('/api/projects', authMiddleware, (req, res) => {
 
   // 创建 tmux session（如果不存在）
   try {
-    execSync(`tmux new-session -d -s ${finalName} -n "${initialWindowName}" -c "${cwd}" "${shellCmd}"`)
-    // 设置 NEXUS_CWD
-    execSync(`tmux set-environment -t ${finalName} NEXUS_CWD "${cwd}"`)
-    execSync(`tmux set-environment -t ${finalName} NEXUS_LAST_CHANNEL 0`)
+    execFileSync('tmux', ['new-session', '-d', '-s', finalName, '-n', initialWindowName, '-c', cwd, shellCmd], { stdio: 'pipe' })
+    execFileSync('tmux', ['set-environment', '-t', finalName, 'NEXUS_CWD', cwd], { stdio: 'pipe' })
+    execFileSync('tmux', ['set-environment', '-t', finalName, 'NEXUS_LAST_CHANNEL', '0'], { stdio: 'pipe' })
     // 设置代理变量
     for (const [key, value] of Object.entries(proxyVars)) {
-      try { execSync(`tmux set-environment -t ${finalName} ${key} "${value}" 2>/dev/null`) } catch {}
+      try { execFileSync('tmux', ['set-environment', '-t', finalName, key, value], { stdio: 'pipe' }) } catch {}
     }
   } catch (err) {
     return res.status(500).json({ error: 'failed to create project: ' + err.message })
@@ -1754,14 +1849,12 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
   // 优先使用前端传入的 path，其次读取 NEXUS_CWD，最后 fallback 到 WORKSPACE_ROOT
   let cwd = WORKSPACE_ROOT
   if (bodyPath) {
-    cwd = bodyPath
+    cwd = normalize(bodyPath)
   } else {
-    try {
-      const envOutput = execSync(`tmux show-environment -t ${sessionName} NEXUS_CWD 2>/dev/null`).toString().trim()
-      const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
-      if (match) cwd = match[1]
-    } catch {}
+    cwd = getSessionEnvValue(sessionName, 'NEXUS_CWD') || getSessionPaneCurrentPath(sessionName) || WORKSPACE_ROOT
   }
+  const workspaceValidationError = validateWorkspaceDir(cwd)
+  if (workspaceValidationError) return res.status(400).json({ error: workspaceValidationError })
 
   // agent_type 优先于 shell_type（向后兼容）
   const agentType = normalizeRequestedAgentType(shell_type, reqAgentType, profile)
@@ -1799,14 +1892,17 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
 
   // 确保 session 存在
   try {
-    execSync(`tmux has-session -t ${sessionName} 2>/dev/null || tmux new-session -d -s ${sessionName} -n shell "${INTERACTIVE_SHELL}"`)
-  } catch {}
+    execFileSync('tmux', ['has-session', '-t', sessionName], { stdio: 'pipe' })
+  } catch {
+    try {
+      execFileSync('tmux', ['new-session', '-d', '-s', sessionName, '-n', 'shell', INTERACTIVE_SHELL], { stdio: 'pipe' })
+    } catch {}
+  }
 
   // 创建新 window
-  const cmd = `tmux new-window -P -F "#{window_index}" -t ${shellQuote(sessionName)} -c ${shellQuote(cwd)} -n ${shellQuote(channelName)} ${shellQuote(shellCmd)}`
-  exec(cmd, (err, stdout) => {
+  execFile('tmux', ['new-window', '-P', '-F', '#{window_index}', '-t', sessionName, '-c', cwd, '-n', channelName, shellCmd], (err, stdout) => {
     if (err) return res.status(500).json({ error: err.message })
-    const windowIndex = Number(stdout.trim())
+    const windowIndex = Number(String(stdout).trim())
     if (Number.isFinite(windowIndex)) {
       try {
         execFileSync('tmux', ['select-window', '-t', `${sessionName}:${windowIndex}`], { stdio: 'pipe' })
@@ -1840,7 +1936,7 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
   if (typeof newName !== 'string' || !newName.trim()) {
     return res.status(400).json({ error: 'new name required' })
   }
-  const sanitizedNewName = newName.trim().replace(/[^a-zA-Z0-9_\-]/g, '')
+  const sanitizedNewName = sanitizeSessionName(newName)
   if (!sanitizedNewName) {
     return res.status(400).json({ error: 'invalid name format' })
   }
@@ -1861,7 +1957,7 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
     // 不存在，可以重命名
   }
   // 执行重命名
-  execFile('tmux', ['rename-session', '-t', oldName, sanitizedNewName], (err) => {
+  execFile('tmux', ['rename-session', '-t', oldName, '--', sanitizedNewName], (err) => {
     if (err) return res.status(500).json({ error: err.message })
     refreshProjectsSnapshot('rename_project')
     res.json({ ok: true, oldName, newName: sanitizedNewName })
@@ -2340,7 +2436,7 @@ app.get('/api/tasks/:id', authMiddleware, (req, res) => {
 })
 
 // GET /api/tasks/:id/events — 订阅任务输出，支持断线续连
-app.get('/api/tasks/:id/events', authMiddleware, (req, res) => {
+app.get('/api/tasks/:id/events', authMiddlewareNoQueryToken, (req, res) => {
   const taskId = req.params.id
   const task = getTaskSnapshot(taskId)
   if (!task) return res.status(404).json({ error: 'task not found' })
@@ -2825,27 +2921,65 @@ function ensureWindowPty(session, windowIndex) {
   return { key: actualKey, entry };
 }
 
-// WebSocket 服务 — 支持 /ws?token=xxx&window=<index>
+// WebSocket 服务 — 使用 cookie auth（不接受 query token）
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+const wsHeartbeatInterval = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate()
+      continue
+    }
+    ws.isAlive = false
+    try {
+      ws.ping()
+    } catch {
+      ws.terminate()
+    }
+  }
+}, 30000)
+wsHeartbeatInterval.unref?.()
+
+function verifyJwtToken(token) {
+  try {
+    jwt.verify(token, JWT_SECRET);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 wss.on('connection', (ws, req) => {
+  ws.isAlive = true
+  ws.on('pong', () => {
+    ws.isAlive = true
+  })
   const url = new URL(req.url, 'http://x');
-  const token = url.searchParams.get('token');
+  const cookieToken = getCookieToken({ headers: { cookie: req.headers.cookie || '' } });
   const windowParam = url.searchParams.get('window') || '0';
   const windowIndex = parseInt(windowParam, 10) || 0;
   const session = url.searchParams.get('session') || TMUX_SESSION;
+  const { key, entry } = ensureWindowPty(session, windowIndex);
+  let authenticated = verifyJwtToken(cookieToken);
+  let authTimer = null;
 
-  try {
-    jwt.verify(token, JWT_SECRET);
-  } catch {
-    ws.close(4001, 'unauthorized');
-    return;
+  if (!authenticated) {
+    authTimer = setTimeout(() => {
+      if (!authenticated && ws.readyState === 1) ws.close(4001, 'unauthorized');
+    }, 2500);
+    authTimer.unref?.();
+  } else {
+    entry.clients.add(ws);
+    console.log(`Client connected to ${key} (clients: ${entry.clients.size})`);
   }
 
-  const { key, entry } = ensureWindowPty(session, windowIndex);
-  entry.clients.add(ws);
-  console.log(`Client connected to ${key} (clients: ${entry.clients.size})`);
+  function markAuthenticated(source) {
+    if (authenticated) return;
+    authenticated = true;
+    if (authTimer) clearTimeout(authTimer);
+    entry.clients.add(ws);
+    console.log(`Client connected to ${key} via ${source} (clients: ${entry.clients.size})`);
+  }
 
   ws.on('message', (msg) => {
     const ent = ptyMap.get(key);
@@ -2854,6 +2988,16 @@ wss.on('connection', (ws, req) => {
     let isResize = false;
     try {
       const data = JSON.parse(str);
+      if (!authenticated && data?.type === 'auth' && typeof data.token === 'string') {
+        if (verifyJwtToken(data.token)) {
+          markAuthenticated('in-band auth');
+          return;
+        }
+        ws.close(4001, 'unauthorized');
+        return;
+      }
+      if (!authenticated) return;
+      if (data?.type === 'auth') return;
       if (data && data.type === 'resize' && data.cols && data.rows) {
         isResize = true;
         const newCols = Number(data.cols);
@@ -2864,6 +3008,7 @@ wss.on('connection', (ws, req) => {
         ent.pty.resize(Math.max(newCols, 10), Math.max(newRows, 5));
       }
     } catch { /* not JSON — fall through to pty.write */ }
+    if (!authenticated) return;
     // Write for all non-resize messages. Previously only the catch branch wrote,
     // which silently dropped single-digit strings ('1'..'9','0') since
     // JSON.parse('1') succeeds without throwing.
@@ -2871,6 +3016,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    if (authTimer) clearTimeout(authTimer);
     const ent = ptyMap.get(key);
     if (ent) {
       ent.clients.delete(ws);
@@ -2926,7 +3072,9 @@ server.listen(Number(PORT), '0.0.0.0', () => {
   // 启动时确保默认 tmux session 存在，窗口名使用 WORKSPACE_ROOT 的目录名
   try {
     const defaultWindowName = WORKSPACE_ROOT.replace(/^\/+|\/+$/, '').split('/').pop() || '~'
+    ensureTmuxHistoryLimit(TMUX_SESSION);
     execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n "${defaultWindowName}" -c "${WORKSPACE_ROOT}" "${INTERACTIVE_SHELL}"`);
+    ensureTmuxHistoryLimit(TMUX_SESSION);
     console.log(`tmux session '${TMUX_SESSION}' ready`);
   } catch (e) { console.warn('tmux session init failed:', e.message); }
 });

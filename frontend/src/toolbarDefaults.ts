@@ -7,9 +7,14 @@ export interface KeyDef {
   category: 'nav' | 'edit' | 'control' | 'input' | 'ui'
 }
 
+export interface CustomKeyDef extends KeyDef {
+  custom: true
+}
+
 export interface ToolbarConfig {
   pinned: string[]
   expanded: string[]
+  custom?: CustomKeyDef[]
 }
 
 // Unified label conventions:
@@ -94,4 +99,84 @@ export const FACTORY_EXPANDED = [
 export const FACTORY_CONFIG: ToolbarConfig = {
   pinned: FACTORY_PINNED,
   expanded: FACTORY_EXPANDED,
+}
+
+const SPECIAL_KEY_SEQUENCES: Record<string, string> = {
+  esc: '\x1b',
+  escape: '\x1b',
+  enter: '\r',
+  '↵': '\r',
+  tab: '\t',
+  backspace: '\x7f',
+  del: '\x1b[3~',
+  delete: '\x1b[3~',
+  home: '\x1b[H',
+  end: '\x1b[F',
+  pgup: '\x1b[5~',
+  pgdn: '\x1b[6~',
+  pageup: '\x1b[5~',
+  pagedown: '\x1b[6~',
+  up: '\x1b[A',
+  down: '\x1b[B',
+  left: '\x1b[D',
+  right: '\x1b[C',
+  '↑': '\x1b[A',
+  '↓': '\x1b[B',
+  '←': '\x1b[D',
+  '→': '\x1b[C',
+}
+
+function unescapeJsonString(input: string): string {
+  try {
+    return JSON.parse(`"${input.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`) as string
+  } catch {
+    return input
+  }
+}
+
+export function parseCustomKeySequence(label: string): string | null {
+  const trimmed = label.trim()
+  if (!trimmed) return null
+
+  const ctrlMatch = trimmed.match(/^\^([A-Za-z@[\]\\^_?])$/)
+  if (ctrlMatch) {
+    const ch = ctrlMatch[1]
+    if (ch === '?') return '\x7f'
+    return String.fromCharCode(ch.toUpperCase().charCodeAt(0) & 0x1f)
+  }
+
+  const altMatch = trimmed.match(/^M-(.+)$/i)
+  if (altMatch) {
+    const nested = parseCustomKeySequence(altMatch[1])
+    return nested ? `\x1b${nested}` : `\x1b${unescapeJsonString(altMatch[1])}`
+  }
+
+  const lowered = trimmed.toLowerCase()
+  if (SPECIAL_KEY_SEQUENCES[lowered]) return SPECIAL_KEY_SEQUENCES[lowered]
+  if (trimmed.length === 1) return trimmed
+
+  const unescaped = unescapeJsonString(trimmed)
+  return unescaped ? unescaped : null
+}
+
+export function makeCustomKey(label: string): CustomKeyDef | null {
+  const normalizedLabel = label.trim()
+  const seq = parseCustomKeySequence(normalizedLabel)
+  if (!normalizedLabel || !seq) return null
+  const slug = normalizedLabel
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return {
+    id: `custom:${slug || 'key'}:${normalizedLabel.slice(0, 32)}`,
+    label: normalizedLabel,
+    seq,
+    desc: 'toolbarKeys.customKey',
+    category: 'input',
+    custom: true,
+  }
+}
+
+export function getAllKeys(config?: ToolbarConfig): KeyDef[] {
+  return [...ALL_KEYS, ...((config?.custom ?? []) as KeyDef[])]
 }

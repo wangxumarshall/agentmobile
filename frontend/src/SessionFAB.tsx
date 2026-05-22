@@ -46,9 +46,6 @@ export default function SessionFAB({ onClick, windowCount, topInset = 0, bottomI
     return defaultPos(SIZE, bottomInset)
   })
 
-  // Keyboard height detected via visualViewport
-  const [keyboardHeight, setKeyboardHeight] = useState(0)
-
   // Transition string — set contextually, cleared after animation
   const [transition, setTransition] = useState('')
 
@@ -66,32 +63,15 @@ export default function SessionFAB({ onClick, windowCount, topInset = 0, bottomI
     localStorage.setItem(FAB_POS_KEY, JSON.stringify(pos))
   }, [pos])
 
-  // Track keyboard via visualViewport resize
+  // Animate when bottom inset changes (toolbar / keyboard safe area)
+  const prevBottomInset = useRef(bottomInset)
   useEffect(() => {
-    const vv = window.visualViewport
-    if (!vv) return
-    function update() {
-      const kbH = Math.max(0, window.innerHeight - vv!.height - vv!.offsetTop)
-      setKeyboardHeight(kbH)
-    }
-    vv.addEventListener('resize', update)
-    vv.addEventListener('scroll', update)
-    update()
-    return () => {
-      vv.removeEventListener('resize', update)
-      vv.removeEventListener('scroll', update)
-    }
-  }, [])
-
-  // Animate when keyboard height changes
-  const prevKeyboardHeight = useRef(keyboardHeight)
-  useEffect(() => {
-    if (prevKeyboardHeight.current === keyboardHeight) return
-    prevKeyboardHeight.current = keyboardHeight
+    if (prevBottomInset.current === bottomInset) return
+    prevBottomInset.current = bottomInset
     setTransition('top 0.22s ease, left 0.22s ease')
     const t = setTimeout(() => setTransition(''), 260)
     return () => clearTimeout(t)
-  }, [keyboardHeight])
+  }, [bottomInset])
 
   // Re-clamp + re-snap when toolbar insets change
   useEffect(() => {
@@ -113,9 +93,8 @@ export default function SessionFAB({ onClick, windowCount, topInset = 0, bottomI
     return () => window.removeEventListener('resize', onResize)
   }, [topInset, bottomInset])
 
-  // Rendered position = logical pos clamped to effective insets (incl. keyboard)
-  const effectiveBottomInset = bottomInset + keyboardHeight
-  const renderedPos = clampPos(pos.x, pos.y, SIZE, topInset, effectiveBottomInset)
+  // Rendered position = logical pos clamped to current effective insets
+  const renderedPos = clampPos(pos.x, pos.y, SIZE, topInset, bottomInset)
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -133,15 +112,9 @@ export default function SessionFAB({ onClick, windowCount, topInset = 0, bottomI
     const dy = e.clientY - startPointer.current.y
     if (!moved.current && Math.hypot(dx, dy) >= DRAG_THRESHOLD) moved.current = true
     if (moved.current) {
-      setPos(clampPos(startPos.current.x + dx, startPos.current.y + dy, SIZE, topInset, effectiveBottomInset))
+      setPos(clampPos(startPos.current.x + dx, startPos.current.y + dy, SIZE, topInset, bottomInset))
     }
-  }, [topInset, effectiveBottomInset])
-
-  const handleClick = useCallback(() => {
-    if (!moved.current) {
-      onClick()
-    }
-  }, [onClick])
+  }, [bottomInset, topInset])
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (!isDragging.current) return
@@ -152,20 +125,19 @@ export default function SessionFAB({ onClick, windowCount, topInset = 0, bottomI
     } else {
       const dx = e.clientX - startPointer.current.x
       const dy = e.clientY - startPointer.current.y
-      const raw = clampPos(startPos.current.x + dx, startPos.current.y + dy, SIZE, topInset, effectiveBottomInset)
+      const raw = clampPos(startPos.current.x + dx, startPos.current.y + dy, SIZE, topInset, bottomInset)
       const snapped: Pos = { x: snapToEdge(raw.x, SIZE), y: raw.y }
       setTransition('left 0.28s cubic-bezier(0.34,1.56,0.64,1)')
       setPos(snapped)
       localStorage.setItem(FAB_POS_KEY, JSON.stringify(snapped))
     }
-  }, [onClick, topInset, effectiveBottomInset])
+  }, [bottomInset, onClick, topInset])
 
   return (
     <div
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onClick={handleClick}
       style={{
         position: 'fixed',
         left: renderedPos.x,

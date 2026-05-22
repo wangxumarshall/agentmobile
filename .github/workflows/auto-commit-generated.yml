@@ -1,0 +1,42 @@
+name: Auto Commit Generated Files
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/**/*.md
+      - scripts/generate-docs-index.js
+      - scripts/auto-commit.js
+      - .github/workflows/auto-commit-generated.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-docs-index:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Regenerate docs index
+        run: npm run docs:index
+
+      - name: Commit generated docs index
+        run: >
+          node scripts/auto-commit.js
+          --message "docs(docs): refresh generated docs index"
+          --body "Keep the generated docs index aligned with tracked markdown files."
+          --path docs/DOCS-INDEX.md
+          --push

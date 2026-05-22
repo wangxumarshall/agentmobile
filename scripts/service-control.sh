@@ -8,6 +8,50 @@ WEB_UNIT="agentmobile.service"
 TMUX_UNIT="agentmobile-tmux.service"
 IM_UNIT="agentmobile-im.service"
 
+resolve_node_binary() {
+  if [ -n "${NODE_BINARY:-}" ] && [ -x "${NODE_BINARY:-}" ]; then
+    printf '%s\n' "$NODE_BINARY"
+    return 0
+  fi
+  command -v node
+}
+
+resolve_npm_binary() {
+  if [ -n "${NPM_BINARY:-}" ] && [ -x "${NPM_BINARY:-}" ]; then
+    printf '%s\n' "$NPM_BINARY"
+    return 0
+  fi
+  command -v npm
+}
+
+build_runtime_path() {
+  local home_dir npm_prefix
+  home_dir="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6 2>/dev/null || printf '/home/%s' "$(id -un)")}"
+  printf '%s\n' \
+    "${PATH:-}:$home_dir/.local/bin:$home_dir/.opencode/bin:$home_dir/bin:$home_dir/.npm-global/bin:$home_dir/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin" \
+    | awk -F: '{for(i=1;i<=NF;i++) if(length($i) && !seen[$i]++) out=(out?out":":"")$i} END{print out}'
+}
+
+render_unit_to() {
+  local template="$1"
+  local dest="$2"
+  local node_binary npm_binary runtime_path service_user service_group
+  node_binary="$(resolve_node_binary)" || die "node binary not found"
+  npm_binary="$(resolve_npm_binary)" || die "npm binary not found"
+  runtime_path="$(build_runtime_path)"
+  service_user="${SUDO_USER:-${USER:-$(id -un)}}"
+  service_group="$(id -gn "$service_user" 2>/dev/null || printf '%s' "$service_user")"
+
+  sed \
+    -e "s|__ROOT__|$ROOT|g" \
+    -e "s|__USER__|$service_user|g" \
+    -e "s|__GROUP__|$service_group|g" \
+    -e "s|__NODE_BINARY__|$node_binary|g" \
+    -e "s|__NPM_BINARY__|$npm_binary|g" \
+    -e "s|__RUNTIME_PATH__|$runtime_path|g" \
+    "$template" > "$dest"
+}
+
 die() {
   echo "error: $*" >&2
   exit 1
@@ -237,8 +281,8 @@ restart_im() {
 }
 
 deploy_web() {
-  npm install
-  (cd frontend && npm install && npm run build)
+  npm install --include=dev
+  (cd frontend && npm install --include=dev && npm run build)
   restart_web
 }
 
@@ -248,14 +292,14 @@ pull_web() {
 }
 
 deploy_im() {
-  npm install
+  npm install --include=dev
   npm run build:im
   restart_im
 }
 
 deploy_all() {
-  npm install
-  (cd frontend && npm install && npm run build)
+  npm install --include=dev
+  (cd frontend && npm install --include=dev && npm run build)
   npm run build:im
   restart_web_only
   restart_im_optional
@@ -277,7 +321,11 @@ install_units() {
 
   for unit in "${units[@]}"; do
     [ -f "$ROOT/$unit" ] || continue
-    as_root cp "$ROOT/$unit" /etc/systemd/system/
+    local rendered
+    rendered="$(mktemp)"
+    render_unit_to "$ROOT/$unit" "$rendered"
+    as_root cp "$rendered" "/etc/systemd/system/$unit"
+    rm -f "$rendered"
     echo "installed: $unit"
   done
 

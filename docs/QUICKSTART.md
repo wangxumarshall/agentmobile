@@ -67,6 +67,7 @@ cp .env.example .env
 | `JWT_SECRET` | 已预填 | JWT 签名密钥 |
 | `ACC_PASSWORD_HASH` | 已预填 | 默认密码：**`agentmobile`** |
 | `TMUX_SESSION` | `main` | tmux 会话名 |
+| `TMUX_HISTORY_LIMIT` | `50000` | tmux/xterm 历史保留行数 |
 | `WORKSPACE_ROOT` | `/home` | AI agent 能访问的目录根 |
 | `PORT` | `5000` | 服务端口 |
 | `CLAUDE_PROXY` | 空 | Claude Code 专用代理 |

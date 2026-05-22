@@ -10,6 +10,9 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import { resolveMobileKeyboardViewportState } from './mobileKeyboard'
+import { mapSpecialKey, shouldSkipInput, stripMobileInputArtifacts } from './mobileInput'
+import { buildWebSocketAuthMessage, clearAuthAndReload } from './auth'
 
 // ANSI 256-color palette (0-15 standard, 16-231 6x6x6 cube, 232-255 grayscale)
 const ANSI256: string[] = (() => {
@@ -126,11 +129,29 @@ const FONT_SIZE_KEY = 'agentmobile_font_size'
 const THEME_KEY = 'agentmobile_theme'
 const WINDOW_KEY = 'agentmobile_window'
 const TAP_THRESHOLD = 8
+const TERMINAL_SCROLLBACK_LINES = 50000
 const SCROLLBACK_PREFETCH_THRESHOLD_PX = 10
 const SCROLLBACK_OPEN_THRESHOLD_PX = 40
 const KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS = 1400
 const RESIZE_REPAINT_ROW_NUDGE_THRESHOLD = 3
+const TERMINAL_INPUT_CHUNK_SIZE = 1024
+const TERMINAL_INPUT_CHUNK_DELAY_MS = 5
 const MAX_UPLOAD_NOTIFICATIONS = 5
+const MAX_PARALLEL_UPLOADS = 3
+const TERMINAL_ALT_REFRESH_DEBOUNCE_MS = 34
+
+type UploadStatus = 'pending' | 'uploading' | 'done' | 'error' | 'conflict'
+
+interface UploadQueueItem {
+  id: string
+  file: File
+  filename: string
+  progress: number
+  status: UploadStatus
+  error?: string
+  fullPath?: string
+  xhr?: XMLHttpRequest
+}
 
 export type ThemeMode = 'dark' | 'light'
 
@@ -189,12 +210,9 @@ export const THEMES: Record<ThemeMode, ITheme> = {
   light: LIGHT_THEME,
 }
 
-const AUTH_TOKEN_KEY = 'agentmobile_token'
-
 async function parseApiError(r: Response, fallback?: string): Promise<string> {
   if (r.status === 401) {
-    localStorage.removeItem(AUTH_TOKEN_KEY)
-    window.location.reload()
+    clearAuthAndReload()
     return ''
   }
   try {
@@ -220,6 +238,48 @@ function refreshTerminalViewport(term: XTerm) {
   if (term.rows > 0) {
     term.refresh(0, term.rows - 1)
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+function nextTerminalInputChunkEnd(value: string, start: number): number {
+  const end = Math.min(value.length, start + TERMINAL_INPUT_CHUNK_SIZE)
+  if (end < value.length && end > start + 1) {
+    const lastCodeUnit = value.charCodeAt(end - 1)
+    if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) return end - 1
+  }
+  return end
+}
+
+async function sendTerminalInputPayload(ws: WebSocket, payload: string): Promise<void> {
+  let offset = 0
+  while (offset < payload.length) {
+    if (ws.readyState !== WebSocket.OPEN) return
+    const end = nextTerminalInputChunkEnd(payload, offset)
+    ws.send(payload.slice(offset, end))
+    offset = end
+    if (offset < payload.length) await delay(TERMINAL_INPUT_CHUNK_DELAY_MS)
+  }
+}
+
+type XTermCoreAccess = XTerm & {
+  _core?: {
+    coreService?: {
+      isCursorInitialized?: boolean
+    }
+  }
+}
+
+function setManagedMobileCursor(term: XTerm | null, active: boolean) {
+  if (!term) return
+  if (active) {
+    const core = (term as XTermCoreAccess)._core
+    if (core?.coreService) core.coreService.isCursorInitialized = true
+  }
+  term.element?.classList.toggle('focus', active)
+  refreshTerminalViewport(term)
 }
 
 export function getInitialTheme(): ThemeMode {
@@ -250,6 +310,7 @@ applyAgentmobileCssVars(getInitialTheme())
 // Agent 状态推断（F-15）
 export default function Terminal({ token }: Props) {
   const { t } = useTranslation()
+  const layoutRootRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -296,7 +357,7 @@ export default function Terminal({ token }: Props) {
   const [windowsLoaded, setWindowsLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pasteFileRef = useRef<HTMLInputElement>(null)
-  const uploadFileRef = useRef<(file: File) => Promise<void>>(null!)
+  const enqueueUploadFilesRef = useRef<(files: Iterable<File>) => void>(() => {})
   const [windowOutputs, setWindowOutputs] = useState<Record<number, { output: string; clients: number; idleMs: number; connected: boolean }>>({})
     const scrollPositionsRef = useRef<Record<number, number>>({})
   const windowsRef = useRef<TmuxWindow[]>([])
@@ -305,9 +366,13 @@ export default function Terminal({ token }: Props) {
   const [showGuide, setShowGuide] = useState(() => localStorage.getItem('agentmobile_guide_seen') !== 'true')
   const [isScrolledUp, setIsScrolledUp] = useState(false)
   const toolbarWrapRef = useRef<HTMLDivElement>(null)
-  const toolbarHeightRef = useRef(0)
+  const [toolbarHeight, setToolbarHeight] = useState(0)
   const keyboardVisibleRef = useRef(false)
+  const mobileInputEnabledRef = useRef(false)
+  const mobileKeyboardLayoutUntilRef = useRef(0)
   const [mobileKeyboardVisible, setMobileKeyboardVisible] = useState(false)
+  const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0)
+  const [mobileInputEnabled, setMobileInputEnabled] = useState(false)
   const [mobileInputValue, setMobileInputValue] = useState('')
   // Viewport height is handled by CSS 100dvh, not JS
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
@@ -323,8 +388,14 @@ export default function Terminal({ token }: Props) {
   const toolbarCollapsedRef = useRef<boolean | undefined>(undefined)
   useEffect(() => { toolbarCollapsedRef.current = toolbarCollapsed }, [toolbarCollapsed])
   const [uploadNotifications, setUploadNotifications] = useState<Array<{ id: string; filename: string; path: string }>>([])
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([])
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const uploadQueueRef = useRef<UploadQueueItem[]>([])
   const wheelScrollRemainderRef = useRef(0)
+  const wheelHistoryAccumRef = useRef(0)
+  const terminalInputQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const altScreenRefreshTimerRef = useRef<number | null>(null)
+  const mobileBottomChromeInset = isWidePC ? 0 : toolbarHeight + mobileKeyboardInset
 
   // F-18: 多 tmux session 支持
   const [tmuxSessions, setTmuxSessions] = useState<string[]>([])
@@ -366,10 +437,22 @@ export default function Terminal({ token }: Props) {
   }, [])
 
   const syncMobileKeyboard = useCallback((visible: boolean) => {
+    const changed = keyboardVisibleRef.current !== visible
+    if (visible || changed) {
+      mobileKeyboardLayoutUntilRef.current = Math.max(
+        mobileKeyboardLayoutUntilRef.current,
+        Date.now() + KEYBOARD_HISTORY_SWIPE_SUPPRESS_MS,
+      )
+    }
     keyboardVisibleRef.current = visible
     setMobileKeyboardVisible(visible)
     suppressHistorySwipe()
   }, [suppressHistorySwipe])
+
+  const syncMobileInputEnabled = useCallback((enabled: boolean) => {
+    mobileInputEnabledRef.current = enabled
+    setMobileInputEnabled(enabled)
+  }, [])
 
   const keepMobileInputCaretVisible = useCallback((input: HTMLInputElement) => {
     requestAnimationFrame(() => {
@@ -383,7 +466,35 @@ export default function Terminal({ token }: Props) {
     })
   }, [])
 
+  const syncMobileViewportLayout = useCallback(() => {
+    if (isWidePC) {
+      setMobileKeyboardVisible(false)
+      setMobileKeyboardInset(0)
+      return
+    }
+    const vv = window.visualViewport
+    const layoutEl = layoutRootRef.current
+    if (!vv || !layoutEl) {
+      setMobileKeyboardInset(0)
+      return
+    }
+    const nextState = resolveMobileKeyboardViewportState({
+      viewportHeight: vv.height,
+      viewportOffsetTop: vv.offsetTop,
+      windowHeight: window.innerHeight,
+      layoutBottom: layoutEl.getBoundingClientRect().bottom,
+      inputEnabled: mobileInputEnabledRef.current,
+    })
+    syncMobileKeyboard(nextState.keyboardVisible)
+    setMobileKeyboardInset(nextState.keyboardInset)
+    if (nextState.shouldLockInput && inputRef.current) {
+      inputRef.current.inputMode = 'none'
+      inputRef.current.readOnly = true
+    }
+  }, [isWidePC, syncMobileKeyboard])
+
   const focusMobileInput = useCallback(() => {
+    syncMobileInputEnabled(true)
     syncMobileKeyboard(true)
     const xtermTa = termRef.current?.textarea
     if (xtermTa) {
@@ -399,12 +510,19 @@ export default function Terminal({ token }: Props) {
     } catch {
       input.focus()
     }
+    setManagedMobileCursor(termRef.current, true)
     keepMobileInputCaretVisible(input)
-  }, [keepMobileInputCaretVisible, syncMobileKeyboard])
+    requestAnimationFrame(() => {
+      syncMobileViewportLayout()
+      requestAnimationFrame(syncMobileViewportLayout)
+    })
+  }, [keepMobileInputCaretVisible, syncMobileInputEnabled, syncMobileKeyboard, syncMobileViewportLayout])
 
   const blurMobileInput = useCallback(() => {
+    syncMobileInputEnabled(false)
     suppressHistorySwipe()
     syncMobileKeyboard(false)
+    setMobileKeyboardInset(0)
     const input = inputRef.current
     if (input) {
       input.inputMode = 'none'
@@ -416,7 +534,8 @@ export default function Terminal({ token }: Props) {
       xtermTa.inputMode = 'none'
       xtermTa.blur()
     }
-  }, [syncMobileKeyboard])
+    setManagedMobileCursor(termRef.current, false)
+  }, [suppressHistorySwipe, syncMobileInputEnabled, syncMobileKeyboard])
 
   const fetchTmuxSessions = useCallback(async () => {
     try {
@@ -517,6 +636,10 @@ export default function Terminal({ token }: Props) {
     })
   }, [])
 
+  useEffect(() => {
+    uploadQueueRef.current = uploadQueue
+  }, [uploadQueue])
+
   const removeUploadNotification = useCallback((id: string) => {
     setUploadNotifications(prev => prev.filter(n => n.id !== id))
   }, [])
@@ -543,9 +666,23 @@ export default function Terminal({ token }: Props) {
   }, [copyToClipboard])
 
   const sendToWs = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(data)
+    const sanitized = stripMobileInputArtifacts(data)
+    if (sanitized && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(sanitized)
     }
+  }, [])
+
+  const pasteToTerminal = useCallback((data: string) => {
+    const sanitized = stripMobileInputArtifacts(data)
+    if (!sanitized) return
+    terminalInputQueueRef.current = terminalInputQueueRef.current
+      .catch(() => {})
+      .then(() => {
+        const ws = wsRef.current
+        if (ws?.readyState === WebSocket.OPEN) {
+          return sendTerminalInputPayload(ws, sanitized)
+        }
+      })
   }, [])
 
   useEffect(() => {
@@ -595,17 +732,18 @@ export default function Terminal({ token }: Props) {
     setIsScrolledUp(false)
   }, [])
 
-  const fitAndNotifyPty = useCallback((options: { followBottom?: boolean; forceRepaint?: boolean } = {}) => {
+  const fitAndNotifyPty = useCallback((options: { followBottom?: boolean; forceRepaint?: boolean; notifyPty?: boolean } = {}) => {
     const term = termRef.current
     const fitAddon = fitAddonRef.current
     if (!term || !fitAddon) return
 
     const followBottom = options.followBottom ?? false
+    const notifyPty = options.notifyPty ?? true
     const wasAtBottom = !userScrolledRef.current
     fitAddon.fit()
     refreshTerminalViewport(term)
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (notifyPty && wsRef.current?.readyState === WebSocket.OPEN) {
       if (options.forceRepaint) {
         const nudgedRows = Math.max(term.rows - RESIZE_REPAINT_ROW_NUDGE_THRESHOLD, 5)
         if (nudgedRows !== term.rows) {
@@ -640,6 +778,42 @@ export default function Terminal({ token }: Props) {
     }, 150)
   }, [fitAndNotifyPty])
 
+  const scheduleAltScreenRefresh = useCallback(() => {
+    const term = termRef.current
+    if (!term || term.rows <= 0) return
+
+    if (altScreenRefreshTimerRef.current !== null) {
+      window.clearTimeout(altScreenRefreshTimerRef.current)
+    }
+
+    altScreenRefreshTimerRef.current = window.setTimeout(() => {
+      altScreenRefreshTimerRef.current = null
+      const liveTerm = termRef.current
+      if (!liveTerm || liveTerm.rows <= 0) return
+      try {
+        liveTerm.clearTextureAtlas()
+      } catch {
+        // clearTextureAtlas is best-effort only.
+      }
+      refreshTerminalViewport(liveTerm)
+    }, TERMINAL_ALT_REFRESH_DEBOUNCE_MS)
+  }, [])
+
+  useEffect(() => {
+    if (isWidePC) return
+
+    const timers = [
+      window.setTimeout(() => {
+        fitAndNotifyPty({ followBottom: true, forceRepaint: true })
+      }, 0),
+      window.setTimeout(() => {
+        fitAndNotifyPty({ followBottom: true, forceRepaint: true })
+      }, 220),
+    ]
+
+    return () => timers.forEach(timer => window.clearTimeout(timer))
+  }, [fitAndNotifyPty, isWidePC, mobileBottomChromeInset, mobileInputEnabled, mobileKeyboardVisible])
+
   // 简化的 resize 处理：只在必要时执行，避免过度工程化
   useEffect(() => {
     const container = containerRef.current
@@ -671,7 +845,10 @@ export default function Terminal({ token }: Props) {
       // Debounce: 延迟执行，确保布局稳定（特别是工具栏动画结束后）
       debounceTimer = window.setTimeout(() => {
         rafId = requestAnimationFrame(() => {
-          fitAndNotifyPty({ followBottom: true })
+          fitAndNotifyPty({
+            followBottom: true,
+            notifyPty: true,
+          })
           rafId = null
         })
       }, 150) // 150ms debounce 覆盖 CSS transition
@@ -698,7 +875,7 @@ export default function Terminal({ token }: Props) {
       if (rafId) cancelAnimationFrame(rafId)
       if (debounceTimer) window.clearTimeout(debounceTimer)
     }
-  }, [fitAndNotifyPty])
+  }, [fitAndNotifyPty, isWidePC])
 
   async function fetchWindows() {
     try {
@@ -927,61 +1104,109 @@ export default function Terminal({ token }: Props) {
     fileInputRef.current?.click()
   }
 
-  async function uploadFile(file: File, overwrite = false) {
+  const enqueueUploadFiles = useCallback((files: Iterable<File>) => {
+    const items = Array.from(files).map(file => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      file,
+      filename: file.name,
+      progress: 0,
+      status: 'pending' as UploadStatus,
+    }))
+    if (items.length === 0) return
+    setUploadQueue(prev => [...prev, ...items])
+  }, [])
+
+  const removeUploadItem = useCallback((itemId: string) => {
+    setUploadQueue(prev => {
+      const item = prev.find(entry => entry.id === itemId)
+      item?.xhr?.abort()
+      return prev.filter(entry => entry.id !== itemId)
+    })
+  }, [])
+
+  const startUpload = useCallback((itemId: string, overwrite = false) => {
+    const snapshot = uploadQueueRef.current.find(item => item.id === itemId)
+    if (!snapshot) return
+    setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'uploading', progress: overwrite ? item.progress : 0, error: undefined } : item))
+
+    const xhr = new XMLHttpRequest()
     const formData = new FormData()
-    formData.append('file', file)
-    formData.append('originalName', file.name)
-    try {
-      const sessionParam = `session=${encodeURIComponent(activeTmuxSessionRef.current)}`
-      const url = overwrite ? `/api/files/upload?overwrite=1&${sessionParam}` : `/api/files/upload?${sessionParam}`
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      })
-      if (res.status === 409) {
-        // 文件已存在，显示确认对话框
-        const data = await res.json()
-        setUploadConflict({ show: true, file, filename: data.filename || file.name })
+    formData.append('file', snapshot.file)
+    formData.append('originalName', snapshot.file.name)
+    const sessionParam = `session=${encodeURIComponent(activeTmuxSessionRef.current)}`
+    const url = overwrite ? `/api/files/upload?overwrite=1&${sessionParam}` : `/api/files/upload?${sessionParam}`
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return
+      const progress = Math.max(1, Math.min(100, Math.round((event.loaded / event.total) * 100)))
+      setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, progress } : item))
+    }
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (xhr.status === 0) return
+      if (xhr.status === 409) {
+        const data = JSON.parse(xhr.responseText || '{}')
+        setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'conflict', error: data.filename || item.filename } : item))
+        setUploadConflict({ show: true, itemId, filename: data.filename || snapshot.filename })
         return
       }
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
+      if (xhr.status < 200 || xhr.status >= 300) {
+        setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'error', error: xhr.responseText || 'upload failed' } : item))
+        const term = termRef.current
+        if (term) term.writeln(`\r\n\x1b[31m[agentmobile: 上传失败]\x1b[0m ${snapshot.filename}`)
+        return
+      }
+      const data = JSON.parse(xhr.responseText || '{}')
       const fullPath = data.fullPath || data.url || ''
-      const filename = data.originalName || data.filename || file.name
-      if (!fullPath) console.warn('[agentmobile] Upload response missing fullPath:', data)
+      const filename = data.originalName || data.filename || snapshot.filename
+      setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, status: 'done', progress: 100, fullPath } : item))
       addUploadNotification(filename, fullPath)
       const term = termRef.current
       if (term) {
         term.writeln(`\r\n\x1b[32m[agentmobile: 文件已上传]\x1b[0m ${filename}`)
         if (fullPath) term.writeln(`\x1b[36m路径: ${fullPath}\x1b[0m`)
       }
-    } catch (e: any) {
-      console.error('Upload failed:', e)
-      const term = termRef.current
-      if (term) {
-        term.writeln(`\r\n\x1b[31m[agentmobile: 上传失败]\x1b[0m ${e.message || 'unknown error'}`)
-      }
     }
+
+    xhr.open('POST', url)
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.send(formData)
+    setUploadQueue(prev => prev.map(item => item.id === itemId ? { ...item, xhr } : item))
+  }, [addUploadNotification, token])
+
+  useEffect(() => {
+    const activeCount = uploadQueue.filter(item => item.status === 'uploading').length
+    if (activeCount >= MAX_PARALLEL_UPLOADS) return
+    const next = uploadQueue.filter(item => item.status === 'pending').slice(0, MAX_PARALLEL_UPLOADS - activeCount)
+    next.forEach(item => startUpload(item.id))
+  }, [startUpload, uploadQueue])
+
+  useEffect(() => {
+    enqueueUploadFilesRef.current = enqueueUploadFiles
+  }, [enqueueUploadFiles])
+
+  function retryUpload(itemId: string) {
+    startUpload(itemId, true)
   }
 
   function handleOverwriteConfirm() {
-    if (uploadConflict.file) {
-      uploadFile(uploadConflict.file, true)
-      setUploadConflict({ show: false, file: null, filename: '' })
+    if (uploadConflict.itemId) {
+      retryUpload(uploadConflict.itemId)
+      setUploadConflict({ show: false, itemId: null, filename: '' })
     }
   }
 
   function handleOverwriteCancel() {
-    setUploadConflict({ show: false, file: null, filename: '' })
+    const itemId = uploadConflict.itemId
+    setUploadConflict({ show: false, itemId: null, filename: '' })
+    if (itemId) removeUploadItem(itemId)
     const term = termRef.current
     if (term) {
       term.writeln(`\r\n\x1b[33m[agentmobile: 上传已取消]\x1b[0m ${uploadConflict.filename}`)
     }
   }
 
-  // Keep refs current on every render
-  uploadFileRef.current = uploadFile
   activeWindowIndexRef.current = activeWindowIndex
 
   // 全局剪贴板粘贴：图片直接上传（F-14）
@@ -996,7 +1221,7 @@ export default function Terminal({ token }: Props) {
         if (items[i].type.startsWith('image/')) {
           e.preventDefault()
           const file = items[i].getAsFile()
-          if (file) uploadFileRef.current(file)
+          if (file) enqueueUploadFilesRef.current([file])
           return
         }
       }
@@ -1014,11 +1239,12 @@ export default function Terminal({ token }: Props) {
       theme: THEMES[initialTheme],
       fontSize,
       fontFamily: 'Menlo, Monaco, "Cascadia Code", "Fira Code", monospace',
-      scrollback: 10000,
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       cursorBlink: true,
       cursorInactiveStyle: 'block',
       allowProposedApi: true,
-      screenReaderMode: true,
+      customGlyphs: false,
+      screenReaderMode: false,
     })
 
     const fitAddon = new FitAddon()
@@ -1071,8 +1297,39 @@ export default function Terminal({ token }: Props) {
       const next = wheelScrollRemainderRef.current + lineDelta
       const lines = next < 0 ? Math.ceil(next) : Math.floor(next)
       wheelScrollRemainderRef.current = next - lines
+      const buffer = (term as any).buffer?.active
+      const wasAtTop = buffer ? buffer.viewportY <= 0 : false
       if (lines !== 0) {
         term.scrollLines(lines)
+      }
+      const isAtTop = buffer ? buffer.viewportY <= 0 : false
+
+      if (e.deltaY < 0 && (wasAtTop || isAtTop)) {
+        const olderDelta = Math.abs(e.deltaY)
+        wheelHistoryAccumRef.current += olderDelta
+        if (
+          wheelHistoryAccumRef.current > SCROLLBACK_PREFETCH_THRESHOLD_PX &&
+          !scrollbackPrefetchRef.current &&
+          scrollbackCacheRef.current === null
+        ) {
+          const wi = activeWindowIndexRef.current
+          const s = activeTmuxSessionRef.current
+          scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }).then(r => r.ok ? r.json() : Promise.reject(r.status))
+            .then((data: { content: string }) => {
+              scrollbackCacheRef.current = data.content.trimEnd()
+              scrollbackPrefetchRef.current = null
+              return data
+            })
+            .catch(() => { scrollbackPrefetchRef.current = null; return { content: '' } })
+        }
+        if (wheelHistoryAccumRef.current > SCROLLBACK_OPEN_THRESHOLD_PX) {
+          scrollbackOpenOffsetRef.current = wheelHistoryAccumRef.current
+          triggerScrollbackRef.current()
+        }
+      } else if (e.deltaY > 0) {
+        wheelHistoryAccumRef.current = 0
       }
     }
 
@@ -1123,9 +1380,7 @@ export default function Terminal({ token }: Props) {
       if (clipboardMod && clipboardKey === 'v' && noOtherMod) {
         e.preventDefault()
         navigator.clipboard.readText().then(text => {
-          if (text && wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(text)
-          }
+          pasteToTerminal(text)
         }).catch(() => {})
         return
       }
@@ -1226,6 +1481,13 @@ export default function Terminal({ token }: Props) {
       }
     })
 
+    term.onWriteParsed(() => {
+      const activeBuffer = term.buffer.active
+      if (activeBuffer.type === 'alternate') {
+        scheduleAltScreenRefresh()
+      }
+    })
+
     let touchStartX = 0
     let touchStartY = 0
     let touchLastY = 0
@@ -1306,7 +1568,7 @@ export default function Terminal({ token }: Props) {
             ) {
               const wi = activeWindowIndexRef.current
               const s = activeTmuxSessionRef.current
-              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
                 headers: { Authorization: `Bearer ${token}` },
               }).then(r => r.ok ? r.json() : Promise.reject(r.status))
                 .then((data: { content: string }) => {
@@ -1391,7 +1653,7 @@ export default function Terminal({ token }: Props) {
       container.style.boxShadow = ''
       const files = e.dataTransfer?.files
       if (files && files.length > 0) {
-        uploadFileRef.current(files[0])
+        enqueueUploadFilesRef.current(files)
       }
     }
     container.addEventListener('dragover', onDragOver)
@@ -1439,11 +1701,15 @@ export default function Terminal({ token }: Props) {
       container.removeEventListener('dragleave', onDragLeave)
       container.removeEventListener('drop', onDrop)
       if (inp) inp.removeEventListener('touchstart', onInputTouchStart)
+      if (altScreenRefreshTimerRef.current !== null) {
+        window.clearTimeout(altScreenRefreshTimerRef.current)
+        altScreenRefreshTimerRef.current = null
+      }
       term.dispose()
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, [blurMobileInput, fitAndNotifyPty, focusMobileInput, token])
+  }, [blurMobileInput, fitAndNotifyPty, focusMobileInput, pasteToTerminal, scheduleAltScreenRefresh, token])
 
   // Effect B: WebSocket connection (reconnects on window switch, xterm persists)
   useEffect(() => {
@@ -1476,10 +1742,11 @@ export default function Terminal({ token }: Props) {
     function createWs(isReconnect = false) {
       const s = activeTmuxSessionRef.current
       const wi = activeWindowIndexRef.current
-      const newWs = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}&window=${wi}&session=${encodeURIComponent(s)}`)
+      const newWs = new WebSocket(`${protocol}//${location.host}/ws?window=${wi}&session=${encodeURIComponent(s)}`)
       wsRef.current = newWs
 
       newWs.onopen = () => {
+        newWs.send(buildWebSocketAuthMessage(token))
         if (isReconnect) {
           writeTerm('\r\n\x1b[32m[agentmobile: 已重新连接]\x1b[0m\r\n')
         } else {
@@ -1505,7 +1772,8 @@ export default function Terminal({ token }: Props) {
       newWs.onclose = (e) => {
         if (intentionalClose) return
         if (e.code === 4001) {
-          writeTerm('\r\n\x1b[31m[agentmobile: 认证失败，请刷新重新登录]\x1b[0m\r\n')
+          writeTerm('\r\n\x1b[31m[agentmobile: 认证失败，正在返回登录页]\x1b[0m\r\n')
+          window.setTimeout(() => clearAuthAndReload(), 300)
           return
         }
         if (reconnectAttempts >= maxReconnectAttempts) {
@@ -1539,9 +1807,8 @@ export default function Terminal({ token }: Props) {
   }
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    if (isComposingRef.current) return // handled by compositionEnd
-    // Mobile fallback: some keyboards emit text via input/change instead of keydown.
-    const val = e.target.value
+    if (shouldSkipInput(e, isComposingRef.current)) return
+    const val = stripMobileInputArtifacts(e.target.value)
     setMobileInputValue(val)
     if (val) {
       sendToWs(val)
@@ -1553,24 +1820,11 @@ export default function Terminal({ token }: Props) {
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (isComposingRef.current) return
-    if (e.key === 'Enter') { e.preventDefault(); sendToWs('\r') }
-    else if (e.key === 'Backspace') { e.preventDefault(); sendToWs('\x7f') }
-    else if (e.key === 'Tab') { e.preventDefault(); sendToWs('\t') }
-    else if (e.key === 'Escape') { e.preventDefault(); sendToWs('\x1b') }
-    else if (e.key === 'Delete') { e.preventDefault(); sendToWs('\x1b[3~') }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); sendToWs('\x1b[A') }
-    else if (e.key === 'ArrowDown') { e.preventDefault(); sendToWs('\x1b[B') }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); sendToWs('\x1b[C') }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); sendToWs('\x1b[D') }
-    else if (e.key === 'Home') { e.preventDefault(); sendToWs('\x1b[H') }
-    else if (e.key === 'End') { e.preventDefault(); sendToWs('\x1b[F') }
-    else if (e.key === 'PageUp') { e.preventDefault(); sendToWs('\x1b[5~') }
-    else if (e.key === 'PageDown') { e.preventDefault(); sendToWs('\x1b[6~') }
-    else if (e.ctrlKey && e.key.length === 1) {
+    const mapped = mapSpecialKey(e.key, e.ctrlKey)
+    if (mapped) {
       e.preventDefault()
-      sendToWs(String.fromCharCode(e.key.toLowerCase().charCodeAt(0) - 96))
-    }
-    else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      sendToWs(mapped)
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // On mobile, let the input update first so the user gets immediate local
       // feedback; handleInputChange will forward the text to the terminal.
       if (isWidePC) {
@@ -1582,43 +1836,41 @@ export default function Terminal({ token }: Props) {
 
   function handleCompositionEnd(e: React.CompositionEvent<HTMLInputElement>) {
     isComposingRef.current = false
-    const text = e.data
+    const text = stripMobileInputArtifacts(e.data)
     if (text) sendToWs(text)
     resetMobileInput(e.currentTarget)
   }
 
-  // Track keyboard visibility and adjust layout height on mobile
-  const [vvHeight, setVvHeight] = useState<number | null>(null)
+  // Track keyboard visibility on mobile without resizing the terminal surface.
   // 文件上传覆盖确认对话框状态
-  const [uploadConflict, setUploadConflict] = useState<{ show: boolean; file: File | null; filename: string }>({ show: false, file: null, filename: '' })
+  const [uploadConflict, setUploadConflict] = useState<{ show: boolean; itemId: string | null; filename: string }>({ show: false, itemId: null, filename: '' })
   useEffect(() => {
     if (isWidePC) {
-      setVvHeight(null)
+      syncMobileInputEnabled(false)
       setMobileKeyboardVisible(false)
+      setMobileKeyboardInset(0)
       return
     }
     const vv = window.visualViewport
     if (!vv) return
-    const handleResize = () => {
-      const visible = vv.height < window.innerHeight * 0.8
-      syncMobileKeyboard(visible)
-      setVvHeight(Math.round(vv.height))
-      if (!visible && inputRef.current) {
-        inputRef.current.inputMode = 'none'
-        inputRef.current.readOnly = true
-      }
-    }
+    const handleResize = () => syncMobileViewportLayout()
     handleResize()
     vv.addEventListener('resize', handleResize)
-    return () => vv.removeEventListener('resize', handleResize)
-  }, [isWidePC, syncMobileKeyboard])
+    vv.addEventListener('scroll', handleResize)
+    window.addEventListener('resize', handleResize)
+    return () => {
+      vv.removeEventListener('resize', handleResize)
+      vv.removeEventListener('scroll', handleResize)
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [isWidePC, syncMobileInputEnabled, syncMobileViewportLayout])
 
   // Layer 2: Global focusin guard — blur any input that triggers keyboard when it should be hidden
   // This covers both our custom hidden input AND xterm's internal textarea
   useEffect(() => {
     if (isWidePC) return
     function handleFocusin(e: FocusEvent) {
-      if (keyboardVisibleRef.current) return
+      if (keyboardVisibleRef.current || mobileInputEnabledRef.current) return
       const target = e.target as HTMLElement
       const xtermTa = termRef.current?.textarea
       if (target === inputRef.current || (xtermTa && target === xtermTa)) {
@@ -1646,10 +1898,10 @@ export default function Terminal({ token }: Props) {
     const el = toolbarWrapRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      toolbarHeightRef.current = el.offsetHeight
+      setToolbarHeight(prev => prev === el.offsetHeight ? prev : el.offsetHeight)
     })
     ro.observe(el)
-    toolbarHeightRef.current = el.offsetHeight
+    setToolbarHeight(el.offsetHeight)
     return () => ro.disconnect()
   }, [])
 
@@ -1672,9 +1924,9 @@ export default function Terminal({ token }: Props) {
   }, [anyOverlayOpen, isWidePC])
 
   useEffect(() => {
-    if (isWidePC || !anyOverlayOpen || !mobileKeyboardVisible) return
+    if (isWidePC || !anyOverlayOpen || (!mobileKeyboardVisible && !mobileInputEnabled)) return
     blurMobileInput()
-  }, [anyOverlayOpen, blurMobileInput, isWidePC, mobileKeyboardVisible])
+  }, [anyOverlayOpen, blurMobileInput, isWidePC, mobileInputEnabled, mobileKeyboardVisible])
 
   function closeScrollback() {
     showScrollbackRef.current = false
@@ -1716,7 +1968,7 @@ export default function Terminal({ token }: Props) {
     const wi = activeWindowIndexRef.current
     const s = activeTmuxSessionRef.current
     const promise = scrollbackPrefetchRef.current ??
-      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
         headers: { Authorization: `Bearer ${token}` },
       }).then(r => r.ok ? r.json() : Promise.reject(r.status))
 
@@ -1749,6 +2001,7 @@ export default function Terminal({ token }: Props) {
   const toolbarProps = {
     token,
     sendToWs,
+    pasteToTerminal,
     scrollToBottom,
     onFitTerminal: fitTerminal,
     termRef,
@@ -1759,20 +2012,32 @@ export default function Terminal({ token }: Props) {
     onOpenWorkspace: () => setShowWorkspace(true),
     onOpenTasks: () => setShowTasks(true),
     onUpload: handleFileUpload,
-    onUploadFile: uploadFile,
+    onUploadFile: (file: File) => enqueueUploadFiles([file]),
+    onUploadFiles: (files: FileList) => enqueueUploadFiles(files),
     onShowCopySheet: (text: string) => setCopySheetText(text),
+    onTerminalInputRequest: () => {
+      if (!mobileInputEnabledRef.current) focusMobileInput()
+    },
     collapsed: toolbarCollapsed,
     onCollapsedChange: setToolbarCollapsed,
   }
 
   return (
-    <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
+    <div
+      ref={layoutRootRef}
+      className="flex flex-col w-full relative"
+      style={{
+        height: '100dvh',
+        paddingBottom: isWidePC ? 0 : mobileKeyboardInset,
+        transition: isWidePC ? undefined : 'padding-bottom 0.18s ease',
+      }}
+    >
       <input
         ref={inputRef}
         className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
         style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
         value={mobileInputValue}
-        readOnly={!mobileKeyboardVisible}
+        readOnly={!mobileInputEnabled}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
@@ -1782,13 +2047,17 @@ export default function Terminal({ token }: Props) {
         onKeyDown={handleKeyDown}
         onInput={(e) => keepMobileInputCaretVisible(e.currentTarget)}
         onFocus={(e) => {
+          syncMobileInputEnabled(true)
           if (!isWidePC) syncMobileKeyboard(true)
+          if (!isWidePC) setManagedMobileCursor(termRef.current, true)
           keepMobileInputCaretVisible(e.currentTarget)
         }}
         onBlur={() => {
           if (isWidePC) return
+          setManagedMobileCursor(termRef.current, false)
           window.setTimeout(() => {
             if (document.activeElement !== inputRef.current) {
+              syncMobileInputEnabled(false)
               syncMobileKeyboard(false)
             }
           }, 0)
@@ -1805,12 +2074,12 @@ export default function Terminal({ token }: Props) {
         ref={fileInputRef}
         type="file"
         accept="image/*,video/*"
-        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
-        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        multiple
+        className="fixed w-11 h-11 opacity-[0.01] -z-10"
+        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
         tabIndex={-1}
         onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) uploadFile(file)
+          if (e.target.files) enqueueUploadFiles(e.target.files)
           e.target.value = '' // reset
         }}
         aria-hidden="true"
@@ -1818,12 +2087,12 @@ export default function Terminal({ token }: Props) {
       <input
         ref={pasteFileRef}
         type="file"
-        className="fixed w-px h-px opacity-0 pointer-events-none -z-10"
-        style={{ left: '-10000px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        multiple
+        className="fixed w-11 h-11 opacity-[0.01] -z-10"
+        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
         tabIndex={-1}
         onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) uploadFile(file)
+          if (e.target.files) enqueueUploadFiles(e.target.files)
           e.target.value = '' // reset
         }}
         aria-hidden="true"
@@ -2014,8 +2283,8 @@ export default function Terminal({ token }: Props) {
               <button className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-agentmobile-accent border-none text-white text-lg cursor-pointer z-50 flex items-center justify-center shadow-lg backdrop-blur-sm" onClick={scrollToBottom} title="滚到底部"><Icon name="arrowDown" size={16} /></button>
             )}
           </div>
-          <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={toolbarHeightRef.current} />
-          <div ref={toolbarWrapRef}><Toolbar {...toolbarProps} /></div>
+          <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={mobileBottomChromeInset} />
+          <div ref={toolbarWrapRef} className="shrink-0"><Toolbar {...toolbarProps} /></div>
         </div>
       )}
 
@@ -2290,10 +2559,9 @@ export default function Terminal({ token }: Props) {
       {uploadConflict.show && (
         <div className="fixed inset-0 z-[500] bg-black/70 flex items-center justify-center p-5">
           <div className="bg-agentmobile-menu-bg rounded-xl p-6 max-w-[400px] border border-agentmobile-border">
-            <h3 className="text-agentmobile-text mt-0 mb-2">文件已存在</h3>
+            <h3 className="text-agentmobile-text mt-0 mb-2">{t('upload.conflictTitle')}</h3>
             <p className="text-agentmobile-text-2 text-sm mb-4">
-              文件 "<span className="text-agentmobile-text font-mono">{uploadConflict.filename}</span>" 已存在。
-              <br />是否覆盖？
+              {t('upload.conflictMessage', { filename: uploadConflict.filename })}
             </p>
             <div className="flex gap-3">
               <button
@@ -2312,6 +2580,38 @@ export default function Terminal({ token }: Props) {
           </div>
         </div>
       )}
+      {uploadQueue.length > 0 && (
+        <div
+          className="fixed left-1/2 -translate-x-1/2 z-[210] max-w-[92vw] w-[560px] rounded-xl border border-agentmobile-border bg-agentmobile-menu-bg shadow-[0_12px_36px_rgba(0,0,0,0.28)] overflow-hidden"
+          style={{ bottom: isWidePC ? 96 : (mobileBottomChromeInset + 96) }}
+        >
+          <div className="flex items-center justify-between px-3 py-2 border-b border-agentmobile-border">
+            <span className="text-agentmobile-text text-sm font-semibold">{t('upload.queueTitle')}</span>
+            <span className="text-agentmobile-text-2 text-xs">{uploadQueue.filter(item => item.status === 'uploading').length}/{MAX_PARALLEL_UPLOADS}</span>
+          </div>
+          <div className="max-h-[220px] overflow-y-auto">
+            {uploadQueue.map(item => (
+              <div key={item.id} className="px-3 py-2.5 border-b border-agentmobile-border last:border-b-0">
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 text-agentmobile-text text-sm truncate" title={item.filename}>{item.filename}</span>
+                  <span className="text-agentmobile-text-2 text-xs">{item.status === 'done' ? t('upload.done') : item.status === 'error' ? t('upload.error') : item.status === 'conflict' ? t('upload.conflict') : `${item.progress}%`}</span>
+                  <button
+                    onClick={() => removeUploadItem(item.id)}
+                    className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center"
+                    title={t('upload.cancel')}
+                  >
+                    <Icon name="x" size={14} />
+                  </button>
+                </div>
+                <div className="mt-2 h-1.5 rounded-full bg-agentmobile-bg-2 overflow-hidden">
+                  <div className={`h-full ${item.status === 'error' ? 'bg-agentmobile-error' : item.status === 'done' ? 'bg-agentmobile-success' : 'bg-agentmobile-accent'}`} style={{ width: `${item.progress}%` }} />
+                </div>
+                {item.error && <div className="mt-1 text-[11px] text-agentmobile-text-2 truncate">{item.error}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {showScrollback && (() => {
         const termTheme = termRef.current?.options.theme ?? {}
         const termBg = (termTheme as any).background ?? '#1a1a2e'
@@ -2320,7 +2620,7 @@ export default function Terminal({ token }: Props) {
         const termFontFamily = termRef.current?.options.fontFamily ?? 'Menlo, Monaco, monospace'
         const termMuted = (termTheme as any).brightBlack ?? '#4a5568'
         return (
-          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : toolbarHeightRef.current, overscrollBehaviorY: 'none' }}>
+          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : mobileBottomChromeInset, overscrollBehaviorY: 'none' }}>
             <GhostShield />
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b flex-shrink-0" style={{ borderColor: `${termMuted}44` }}>
               <span className="font-semibold text-sm" style={{ color: termFg }}>历史记录</span>
@@ -2355,7 +2655,7 @@ export default function Terminal({ token }: Props) {
       {uploadNotifications.length > 0 && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 max-w-[90vw] w-[480px]"
-          style={{ bottom: isWidePC ? 16 : (toolbarHeightRef.current + 16) }}
+          style={{ bottom: isWidePC ? 16 : (mobileBottomChromeInset + 16) }}
         >
           {uploadNotifications.map((notification) => (
             <div

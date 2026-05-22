@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AUTH_TOKEN_STORAGE_KEY, checkCookieSession, clearStoredAuth } from './auth'
 import Terminal from './Terminal'
-
-const STORAGE_KEY = 'agentmobile_token'
 
 export default function App() {
   const { t } = useTranslation()
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY))
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY))
+  const [checkingSession, setCheckingSession] = useState(() => Boolean(localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)))
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -18,6 +18,31 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!token) {
+      setCheckingSession(false)
+      return
+    }
+
+    let cancelled = false
+    setCheckingSession(true)
+    checkCookieSession()
+      .then(status => {
+        if (cancelled) return
+        if (status === 'unauthorized') {
+          clearStoredAuth()
+          setToken(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingSession(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
@@ -25,6 +50,7 @@ export default function App() {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
       })
@@ -33,13 +59,21 @@ export default function App() {
         return
       }
       const { token: authToken } = await res.json()
-      localStorage.setItem(STORAGE_KEY, authToken)
+      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken)
       setToken(authToken)
     } catch {
       setError(t('login.connectionFailed'))
     } finally {
       setLoading(false)
     }
+  }
+
+  if (checkingSession) {
+    return (
+      <div className="flex items-center justify-center w-full h-full bg-agentmobile-bg text-agentmobile-text-2 text-sm">
+        {t('common.loading')}
+      </div>
+    )
   }
 
   if (token) {

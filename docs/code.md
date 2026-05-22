@@ -514,7 +514,7 @@ const hash = await bcrypt.hash(password, 12)  // 12轮 salt
 
   - HTTP API:`Authorization: Bearer <token>`
 
-  - WebSocket:`ws://host/ws? token=<token>`（协议限制）
+  - WebSocket / SSE：浏览器自动携带 `agentmobile_token` HttpOnly cookie，不接受 URL query token
 
 ### 路径安全
 

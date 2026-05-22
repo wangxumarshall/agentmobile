@@ -10,8 +10,8 @@
 
 ```
 Browser (任意设备)
-    ↕  WSS /ws?token=<jwt>          ← WebSocket（原始 VT100 流）
-    ↕  HTTPS /api/*                ← REST（认证后端 JSON API）
+    ↕  WSS /ws                     ← WebSocket（HttpOnly cookie auth，原始 VT100 流）
+    ↕  HTTPS /api/*                ← REST（Bearer / cookie 认证后端 JSON API）
 agentmobile Server（Node.js，server.js）
     ↕  node-pty (ptyMap)           ← PTY 桥（每个 session:window 独立实例）
 tmux attach-session -t <session>:<window>
@@ -43,6 +43,7 @@ agentmobile IM Bridge（Node.js，im/server-im.ts，可选独立进程）
 | Method | Path | Auth | 描述 |
 |---|---|---|---|
 | POST | `/api/auth/login` | 无 | 密码 bcrypt 比对，返回 JWT |
+| GET | `/api/auth/session` | Cookie | 校验浏览器 HttpOnly 登录 cookie |
 | **窗口 / 会话** | | | |
 | GET | `/api/sessions` | Bearer | tmux list-windows（指定 session） |
 | POST | `/api/sessions` | Bearer | tmux new-window（claude/bash/profile） |
@@ -102,6 +103,7 @@ agentmobile IM Bridge（Node.js，im/server-im.ts，可选独立进程）
 // 每个 "session:windowIndex" 独立 PTY 实例
 const ptyMap = new Map()
 // entry: { pty, clients: Set<ws>, clientSizes: Map<ws, {cols,rows}>, lastOutput, lastActivity }
+// scrollback: tmux history-limit 50000; API capture clamps to the same limit.
 
 function getOrCreatePty(session, windowIndex) {
   // key = "session:windowIndex"

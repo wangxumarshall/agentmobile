@@ -27,7 +27,7 @@
 |---|---|---|
 | F-01 | WebSocket tmux 桥接 | 浏览器关闭后 tmux 和 Agent 继续运行；重新打开可接续 |
 | F-02 | JWT 单密码认证 | 密码 bcrypt hash 存 env，Token 30天有效 |
-| F-03 | xterm.js 终端渲染 | 256色/TrueColor/Unicode；scrollback 10000行 |
+| F-03 | xterm.js 终端渲染 | 256色/TrueColor/Unicode；scrollback 50000行 |
 | F-04 | 移动端控制字符工具栏 | 可发送 Esc/Tab/Ctrl+C/方向键等；触摸不弹软键盘 |
 | F-05 | 移动端滚动与缩放 | 单指滑动浏览历史；双指捏合调字号（8–32px） |
 | F-06 | Session 管理 API | `POST/GET/DELETE /api/sessions`；tmux 新建/切换/关闭 window |

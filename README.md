@@ -125,7 +125,7 @@ Default login password: `agentmobile` (user can change it in `.env` after setup)
 agentmobile is a **single-user, self-hosted tool** — not a multi-tenant platform.
 
 - 🔒 bcrypt (12 rounds) password hash + JWT (30d)
-- ⚠️ WebSocket token passed via query string — enable TLS in production
+- 🔐 API calls use Bearer tokens; WebSocket and SSE use the HttpOnly auth cookie
 - 🛡️ Run behind firewall, VPN, or tunnel — do not expose directly to the internet
 
 ---
@@ -151,10 +151,22 @@ Both backends share the same tmux bridge, file browser, project management, and 
 | Doc | |
 |---|---|
 | [QUICKSTART.md](docs/QUICKSTART.md) | Step-by-step setup guide |
+| [DOCS-INDEX.md](docs/DOCS-INDEX.md) | Generated index of markdown docs |
 | [SERVICES.md](docs/SERVICES.md) | Pull, deploy, restart, logs, and rollback commands for each service |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design |
 | [ROADMAP.md](docs/ROADMAP.md) | What's next |
 | [📖 The story behind agentmobile](docs/story.md) | Why this was built |
+
+## Automation
+
+This repo ships with both local and GitHub-side commit automation, aimed at different layers of work:
+
+- `npm run commit:auto` stages all non-ignored local changes and creates a standard commit locally
+- `npm run commit:auto:push` does the same, then pushes the current branch
+- `npm run docs:index` regenerates [docs/DOCS-INDEX.md](docs/DOCS-INDEX.md) from the markdown files in `docs/`
+- `.github/workflows/auto-commit-generated.yml` runs in GitHub Actions and only auto-commits the generated docs index after tracked docs changes or a manual dispatch
+
+GitHub Actions cannot see unpublished local edits. Cloud auto-commit is therefore limited to repository-visible, machine-generated files.
 
 
 ---
