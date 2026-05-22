@@ -7,6 +7,7 @@
 | [AGENTMOBILE-RELIABILITY-ANALYSIS.md](AGENTMOBILE-RELIABILITY-ANALYSIS.md) | agentmobile 高可用与 Claude Profile 启动流程分析 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | ARCHITECTURE — agentmobile 架构现状 |
 | [code.md](code.md) | agentmobile4CC 源码深度解析 |
+| [CODEX-SMART-CLI.md](CODEX-SMART-CLI.md) | Codex Smart CLI 方案（按任务复杂度自动切换模型与推理等级） |
 | [ISSUE-multi-client-resize.md](ISSUE-multi-client-resize.md) | Issue: 多客户端 Resize 导致 tmux 布局混乱 |
 | [ISSUE-scrollback-table-alignment.md](ISSUE-scrollback-table-alignment.md) | ISSUE scrollback table alignment |
 | [NORTH-STAR.md](NORTH-STAR.md) | NORTH-STAR.md — 锚点文件 |
