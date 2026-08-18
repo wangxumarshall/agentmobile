@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
@@ -49,7 +50,7 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
       const outputs: Record<number, any> = {}
       for (const win of windows) {
         try {
-          const r = await fetch(`/api/sessions/${win.index}/output`, { headers: { Authorization: `Bearer ${token}` } })
+          const r = await fetch(apiUrl(`/api/sessions/${win.index}/output`), { headers: { Authorization: `Bearer ${token}` } })
           if (r.ok) outputs[win.index] = await r.json()
         } catch {}
       }

@@ -2,19 +2,17 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AUTH_TOKEN_STORAGE_KEY, checkCookieSession, clearStoredAuth } from './auth'
 import Terminal from './Terminal'
+import Login from './Login'
 
 export default function App() {
   const { t } = useTranslation()
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY))
   const [checkingSession, setCheckingSession] = useState(() => Boolean(localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)))
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     // 注册 Service Worker
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {})
+      navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {})
     }
   }, [])
 
@@ -43,31 +41,6 @@ export default function App() {
     }
   }, [token])
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
-      })
-      if (!res.ok) {
-        setError(t('login.wrongPassword'))
-        return
-      }
-      const { token: authToken } = await res.json()
-      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken)
-      setToken(authToken)
-    } catch {
-      setError(t('login.connectionFailed'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
   if (checkingSession) {
     return (
       <div className="flex items-center justify-center w-full h-full bg-agentmobile-bg text-agentmobile-text-2 text-sm">
@@ -80,26 +53,5 @@ export default function App() {
     return <Terminal token={token} />
   }
 
-  return (
-    <div className="flex items-center justify-center w-full h-full bg-agentmobile-bg">
-      <div className="bg-agentmobile-bg-2 rounded-xl p-10 px-8 min-w-80 shadow-[0_8px_32px_rgba(0,0,0,0.3)] border border-agentmobile-border">
-        <h1 className="text-agentmobile-text text-3xl font-bold text-center mb-2 tracking-widest">{t('login.title')}</h1>
-        <p className="text-agentmobile-text-2 text-sm text-center mb-8">{t('login.subtitle')}</p>
-        <form onSubmit={handleLogin} className="flex flex-col gap-3">
-          <input
-            type="password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            placeholder={t('login.passwordPlaceholder')}
-            autoFocus
-            className="bg-agentmobile-bg border border-agentmobile-border rounded-lg text-agentmobile-text text-base py-3 px-4 outline-none"
-          />
-          {error && <p className="text-agentmobile-error text-sm text-center">{error}</p>}
-          <button type="submit" disabled={loading} className="bg-agentmobile-accent border-none rounded-lg text-white text-base font-semibold py-3 px-6 mt-2 cursor-pointer">
-            {loading ? t('login.loggingIn') : t('login.loginButton')}
-          </button>
-        </form>
-      </div>
-    </div>
-  )
+  return <Login onLogin={setToken} />
 }

@@ -95,7 +95,52 @@ agentmobile IM Bridge（Node.js，im/server-im.ts，可选独立进程）
 | **Telegram** | | | |
 | POST | `/api/webhooks/telegram` | 无（secret check） | Legacy Telegram Bot webhook；正式 IM bridge 使用 `agentmobile-im` polling |
 | GET | `/api/telegram/setup` | Bearer | Telegram Bot 状态信息 |
+| **远端实例（F-21）** | | | |
+| GET | `/api/remote-instances` | Bearer | 列出已注册远端实例（无敏感字段） |
+| GET | `/api/remote-instances/public-list` | 无 | 仅返回 `{id,label}`（登录页快速选择，按 lastUsedAt 排序） |
+| POST | `/api/remote-instances` | Bearer | 注册新远端实例（label/host/port/useTls/authMode/username/password/sshPort） |
+| PUT | `/api/remote-instances/:id` | Bearer | 编辑实例配置（更新密码则重新登录） |
+| DELETE | `/api/remote-instances/:id` | Bearer | 删除实例 |
+| POST | `/api/remote-instances/:id/test` | Bearer | 测试远端连通性（不持久化 token） |
+| POST | `/api/remote-instances/:id/login` | Bearer | 用存储的密码 hash 验证后登录远端，缓存 JWT |
+| ALL | `/api/remote-instances/:id/proxy/*` | Bearer | HTTP 透传到远端 `http(s)://host:port/<path>`，注入 `Authorization: Bearer <remoteToken>` |
+| WS | `/api/remote-instances/:id/ws-proxy` | Cookie | WebSocket 双向桥接到远端 `/ws`，连接后发 in-band auth |
 | GET | `*` | 无 | SPA fallback → index.html |
+| POST | `/api/remote-instances/:id/ssh-tunnel-test` | Bearer | 单独测试 SSH 隧道连通性（仅 SSH 模式） |
+
+### 远端实例连接层（F-21）
+
+```
+前端（任意实例）          ←  apiUrl() / wsUrl() 根据 setRemoteInstanceContext(id) 切换为代理路径
+  │
+  ├── 本地：相对路径 /api/... + /ws
+  └── 远端：/api/remote-instances/:id/proxy/<原 path> + /api/remote-instances/:id/ws-proxy
+       │
+       ▼
+本端 server.js
+  ├── authMiddleware 校验本端 cookie/token
+  ├── findRemoteInstance(id) 取实例
+  ├── getRemoteToken(inst, pw?) 取缓存 JWT（过期则用密码重新登录）
+  ├── Web 模式：fetch 转发（注入 Authorization，剥离 cookie/host，流式转发响应，支持 SSE）
+  ├── SSH 模式：通过 ssh2 隧道 forwardOut 到远端 localhost:port，再发起原始 HTTP/1.1 请求
+  └── WS 桥接：本端 WS ↔ 远端 WS，发送 in-band auth `{type:'auth', token}` 后双向转发
+       │
+       ▼
+远端 agentmobile 实例
+  ├── Web 模式：http(s)://host:port 上的标准 /api/* + /ws 接口
+  └── SSH 模式：远端服务器 localhost:port 上的标准 /api/* + /ws 接口
+```
+
+**数据持久化**：`data/remote-instances.json`，密码 bcrypt 12 轮 hash，远端 JWT 缓存到 `remoteToken` + `remoteTokenExpiresAt`。
+
+**SSH 模式（Phase 6）**：
+- `ssh2` 库建立到 `host:sshPort` 的 SSH 连接（按 instanceId 缓存 `ssh2.Client`，`getSshTunnel` / `ensureSshTunnel` / `openSshForwardStream`）。
+- HTTP 代理：`sshFetch(inst, method, path, headers, body, signal)` 通过 `forwardOut` 建立 TCP 流，手动写入 HTTP/1.1 请求行 + headers + body，解析响应（含 chunked 解码）。
+- WS 桥接：`new WebSocket(remoteWsUrl, { createConnection: () => stream })` 把 SSH 隧道流作为 ws 底层 socket。
+- 限制：SSH 模式不支持 multipart/二进制流转发（因为 `sshFetch` 用一次 `Connection: close` 请求）；日常 JSON/form-urlencoded + WS 终端流足够使用。
+- TLS 选项在 SSH 模式下不适用（远端 agentmobile 在 localhost）。
+
+**切换时状态清理**：前端 `instanceId` 加入 Terminal Effect B 依赖项，触发 WebSocket 重连 + 清空 windows/projects/tmuxSessions 状态。
 
 ### PTY 层（ptyMap 多实例）
 
@@ -214,7 +259,7 @@ App.tsx（路由）
      ├── SessionManagerV2.tsx    ← project-channel 双层会话管理（lazy）
      ├── SessionManager.tsx      ← 旧版 session 面板（legacy，lazy）
      ├── WorkspaceSelector.tsx   ← 路径选择器（lazy）
-     ├── WorkspaceBrowser.tsx    ← 文件浏览器（排序、右键菜单、lazy）
+     ├── WorkspaceBrowser.tsx    ← 文件浏览器（forwardRef + Handle.closeEditor；排序、右键菜单、Markdown TOC、嵌入式侧栏 + 拖拽缩放、折叠机 overlay、显示隐藏文件、文本编辑器限制、lazy）
      │    └── FilePanel.tsx      ← 文件查看/编辑/Markdown 预览（lazy）
      ├── GeneralSettings.tsx     ← 通用设置面板（lazy）
      │    └── FeishuSettings.tsx ← 飞书扫码初始化与连接状态
@@ -226,7 +271,10 @@ App.tsx（路由）
 | 条件 | 布局 |
 |---|---|
 | `>= 768px` (isWidePC) | Sidebar (200px) + Terminal + Toolbar |
+| `>= 700px` (canEmbedBrowser，matchMedia) | WorkspaceBrowser 嵌入为侧栏（foldable/宽屏），编辑器打开时切 overlay 全宽 |
 | `< 768px` | TabBar (top) + Terminal + Toolbar (bottom) |
+
+> WorkspaceBrowser 在宽屏（`canEmbedBrowser`）以 `embedded` 侧栏渲染而非全屏 modal；打开文件编辑器时切到 `overlay`+`hideSidebar`，编辑器获得全宽。`forwardRef` 暴露 `closeEditor()`，双击 channel 时由 `SessionManagerV2.onCloseEditor` 调用关闭编辑器再切换。所有 fetch 经 `apiUrl()` 包装（远端实例 F-21）。
 
 ### 状态管理
 
@@ -295,9 +343,11 @@ agentmobile/
 ├── ecosystem.config.cjs   # PM2 fallback 配置（systemd 不可用时生成/使用）
 ├── start.sh               # 手动启动脚本
 ├── scripts/service-control.sh # 服务拉取/部署/重启/验证统一入口
-├── scripts/tmux-runtime.sh # tmux runtime keepalive
+├── scripts/tmux-runtime.sh # tmux runtime keepalive（开机调用 restore）
+├── scripts/agentmobile-restore-tmux.sh # 恢复 tmux-resurrect 快照（AGENTMOBILE_RESTORED 守护，幂等）
+├── scripts/agentmobile-resume-claude.sh # 恢复后在 claude pane 接续对话（--resume / --continue）
 ├── scripts/migrate-tmux-runtime.sh # 既有安装迁移到 runtime cgroup
-├── agentmobile-run-claude.sh    # claude 会话启动脚本（server.js 调用）
+├── agentmobile-run-claude.sh    # claude 会话启动脚本（server.js 调用；恢复时读 AGENTMOBILE_RESUME_* env）
 ├── frontend/
 │   ├── src/               # React + TypeScript 源码
 │   └── dist/              # Vite 构建产物（server.js 静态伺服）

@@ -1,10 +1,11 @@
 // server.js — agentmobile WebSocket tmux 桥接服务
 import express from 'express';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import * as pty from 'node-pty';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { createServer } from 'node:http';
+import http from 'node:http';
 import { exec, execFile, spawn, execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, normalize, isAbsolute, basename } from 'path';
@@ -14,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import https from 'node:https';
 import multer from 'multer';
 import QRCode from 'qrcode';
+import ssh2 from 'ssh2';
 import {
   buildAuthCookie,
   buildClearAuthCookie,
@@ -1156,6 +1158,50 @@ app.get('/api/browse', authMiddleware, (req, res) => {
   }
 })
 
+// ---- Text file detection utilities ----
+// Known binary (non-text) extensions — fast pre-filter to avoid reading large binaries
+const BINARY_EXTENSIONS = new Set([
+  // Images
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tiff', 'tif', 'heic', 'heif', 'avif',
+  // Video / Audio
+  'mp4', 'webm', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'm4v', 'mpg', 'mpeg',
+  'mp3', 'wav', 'ogg', 'flac', 'aac', 'wma', 'm4a', 'opus',
+  // Archives
+  'zip', 'tar', 'gz', 'bz2', 'xz', '7z', 'rar', 'zst', 'lz4',
+  // Binaries / executables
+  'exe', 'dll', 'so', 'dylib', 'o', 'a', 'wasm', 'bin', 'dat',
+  // Documents (binary formats)
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'epub',
+  // Fonts
+  'ttf', 'otf', 'woff', 'woff2', 'eot',
+  // Other binary
+  'class', 'jar', 'war', 'pyc', 'pyo', 'elc', 'zwc',
+  'db', 'sqlite', 'sqlite3',
+  'psd', 'ai', 'sketch',
+  'iso', 'dmg', 'vhd', 'qcow2',
+  'pdb', 'obj', 'lib',
+  'dex', 'apk', 'ipa',
+])
+
+function isKnownBinaryExt(filePath) {
+  const name = basename(filePath).toLowerCase()
+  const dotIdx = name.lastIndexOf('.')
+  if (dotIdx <= 0) return false
+  const ext = name.slice(dotIdx + 1)
+  return BINARY_EXTENSIONS.has(ext)
+}
+
+function isBinaryContent(buffer) {
+  // Check first 8192 bytes for null bytes — reliable binary indicator
+  const maxCheck = Math.min(buffer.length, 8192)
+  for (let i = 0; i < maxCheck; i++) {
+    if (buffer[i] === 0) return true
+  }
+  return false
+}
+
+const MAX_EDITOR_FILE_SIZE = 5 * 1024 * 1024 // 5MB hard limit for text editor
+
 // GET /api/workspace/files — 浏览文件系统（支持文件和目录，任意路径）
 app.get('/api/workspace/files', authMiddleware, async (req, res) => {
   try {
@@ -1163,8 +1209,9 @@ app.get('/api/workspace/files', authMiddleware, async (req, res) => {
     if (p === '~') p = WORKSPACE_ROOT
     if (!isAbsolute(p)) p = join(WORKSPACE_ROOT, p)
     p = normalize(p)
+    const showHidden = req.query.showHidden === '1' || req.query.showHidden === 'true'
     const dirents = await readdir(p, { withFileTypes: true })
-    const visible = dirents.filter(e => !e.name.startsWith('.'))
+    const visible = showHidden ? dirents : dirents.filter(e => !e.name.startsWith('.'))
     const entries = await Promise.all(visible.map(async e => {
       const fullPath = join(p, e.name)
       const st = await statAsync(fullPath)
@@ -1267,7 +1314,7 @@ app.post('/api/workspace/files', authMiddleware, (req, res) => {
   }
 })
 
-// GET /api/workspace/file — 读取文件内容
+// GET /api/workspace/file — 读取文件内容（自动检测二进制，仅文本文件可读）
 app.get('/api/workspace/file', authMiddleware, (req, res) => {
   try {
     let p = req.query.path || ''
@@ -1279,14 +1326,28 @@ app.get('/api/workspace/file', authMiddleware, (req, res) => {
     if (!existsSync(p) || !statSync(p).isFile()) {
       return res.status(404).json({ error: 'not found' })
     }
-    const content = readFileSync(p, 'utf8')
+    // Fast pre-filter: known binary extension → reject immediately
+    if (isKnownBinaryExt(p)) {
+      return res.status(415).json({ error: 'binary file, cannot open in editor' })
+    }
+    // Reject files that are too large for the editor
+    const st = statSync(p)
+    if (st.size > MAX_EDITOR_FILE_SIZE) {
+      return res.status(413).json({ error: 'file too large for editor', size: st.size, max: MAX_EDITOR_FILE_SIZE })
+    }
+    // Read as buffer first to detect binary content via null bytes
+    const buf = readFileSync(p)
+    if (isBinaryContent(buf)) {
+      return res.status(415).json({ error: 'binary file detected' })
+    }
+    const content = buf.toString('utf8')
     res.json({ path: p, content })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// PUT /api/workspace/file — 保存文件内容
+// PUT /api/workspace/file — 保存文件内容（自动检测二进制，仅文本文件可写）
 app.put('/api/workspace/file', authMiddleware, (req, res) => {
   try {
     let { path: filePath, content = '' } = req.body
@@ -1295,6 +1356,10 @@ app.put('/api/workspace/file', authMiddleware, (req, res) => {
     filePath = normalize(filePath)
     if (filePath.includes('..')) {
       return res.status(403).json({ error: 'invalid path' })
+    }
+    // Fast pre-filter: known binary extension → reject
+    if (isKnownBinaryExt(filePath)) {
+      return res.status(415).json({ error: 'binary file, cannot save via editor' })
     }
     writeFileSync(filePath, content, 'utf8')
     res.json({ ok: true, path: filePath })
@@ -1734,6 +1799,48 @@ function dedupScrollback(lines, paneHeight) {
 // GET /api/config — 服务端配置信息（供前端初始化用）
 app.get('/api/config', authMiddleware, (req, res) => {
   res.json({ tmuxSession: TMUX_SESSION, workspaceRoot: WORKSPACE_ROOT })
+})
+
+// POST /api/launch-iterm — 在本机启动 iTerm2 并用 tmux -CC 集成模式接管指定 session
+// 仅在 server 与 iTerm2 同机时有意义（macOS only）。
+app.post('/api/launch-iterm', authMiddleware, (req, res) => {
+  if (process.platform !== 'darwin') {
+    return res.status(400).json({ error: 'launch-iterm requires macOS host' })
+  }
+  const session = req.body?.session
+  if (!session || typeof session !== 'string') {
+    return res.status(400).json({ error: 'session required' })
+  }
+  if (/["'\\`$]/.test(session)) {
+    return res.status(400).json({ error: 'invalid session name' })
+  }
+  try {
+    execSync(`tmux has-session -t '${session}' 2>/dev/null`)
+  } catch {
+    return res.status(404).json({ error: 'session not found' })
+  }
+  const appleScript = `on run argv
+  set sess to item 1 of argv
+  tell application "iTerm2"
+    activate
+    set newWin to (create window with default profile)
+    tell current session of newWin
+      write text "tmux -CC attach -t \\"" & sess & "\\""
+    end tell
+  end tell
+end run`
+  try {
+    const proc = spawn('osascript', ['-', session], {
+      detached: true,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    })
+    proc.stdin.write(appleScript)
+    proc.stdin.end()
+    proc.unref()
+    return res.json({ ok: true, session })
+  } catch (e) {
+    return res.status(500).json({ error: String(e) })
+  }
 })
 
 // GET /api/tmux-sessions — 列出所有 tmux session（F-18）
@@ -2822,6 +2929,686 @@ app.get('/api/telegram/setup', authMiddleware, (req, res) => {
   }).on('error', (e) => res.status(500).json({ error: e.message }))
 })
 
+// ========== Remote Instances — 远端 agentmobile 实例连接 ==========
+// 数据持久化：data/remote-instances.json
+// 模式：Web（远端 agentmobile 密码）或 SSH（远端系统账号）
+// 代理透传：/api/remote-instances/:id/proxy/* → 远端 http(s)://host:port/*
+// WebSocket 桥接：/api/remote-instances/:id/ws-proxy → 远端 ws(s)://host:port/ws
+
+const REMOTE_INSTANCES_FILE = join(DATA_DIR, 'remote-instances.json');
+
+function loadRemoteInstances() {
+  try {
+    if (!existsSync(REMOTE_INSTANCES_FILE)) return [];
+    const data = JSON.parse(readFileSync(REMOTE_INSTANCES_FILE, 'utf8'));
+    return Array.isArray(data?.instances) ? data.instances : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRemoteInstances(instances) {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(REMOTE_INSTANCES_FILE, JSON.stringify({ instances }, null, 2), 'utf8');
+}
+
+function findRemoteInstance(id) {
+  return loadRemoteInstances().find(i => i.id === id) || null;
+}
+
+// 返回给前端的实例信息（剔除敏感字段）
+function publicInstance(inst) {
+  if (!inst) return null;
+  return {
+    id: inst.id,
+    label: inst.label,
+    host: inst.host,
+    port: inst.port,
+    useTls: !!inst.useTls,
+    authMode: inst.authMode || 'web',
+    username: inst.username || '',
+    sshPort: inst.sshPort || 22,
+    hasPassword: !!inst.passwordHash,
+    hasRemoteToken: !!inst.remoteToken,
+    remoteTokenExpiresAt: inst.remoteTokenExpiresAt || null,
+    createdAt: inst.createdAt,
+    lastUsedAt: inst.lastUsedAt || null,
+  };
+}
+
+// 远端实例基础 URL
+// SSH 模式下：远端 agentmobile 在远端服务器的 localhost:port，本端通过 SSH 隧道访问。
+// 我们用 fake host 'remote-ssh.local' 让 http.request 走 createConnection，
+// 实际 socket 由 SSH forwardOut 建立，并指明目标为 localhost:port。
+function remoteBaseUrl(inst) {
+  if (inst.authMode === 'ssh') {
+    return `http://remote-ssh.local:${inst.port}`;
+  }
+  const proto = inst.useTls ? 'https' : 'http';
+  return `${proto}://${inst.host}:${inst.port}`;
+}
+
+function remoteWsUrl(inst, search) {
+  if (inst.authMode === 'ssh') {
+    // SSH 模式：返回 'localhost:port' 给 ws 构造器，createConnection 实际通过 SSH 隧道
+    return `ws://localhost:${inst.port}/ws${search || ''}`;
+  }
+  const proto = inst.useTls ? 'wss' : 'ws';
+  return `${proto}://${inst.host}:${inst.port}/ws${search || ''}`;
+}
+
+// ========== SSH 隧道连接池（F-21 Phase 6 SSH 模式） ==========
+// 按 instanceId 缓存 ssh2.Client 实例，懒连接 + 自动重连
+const sshConnectionPool = new Map(); // instanceId -> ssh2.Client
+
+function getSshTunnel(inst) {
+  const existing = sshConnectionPool.get(inst.id);
+  if (existing && existing._connected && !existing._closing) {
+    return existing;
+  }
+  // 关闭旧连接（如果有）
+  if (existing) {
+    try { existing.end(); } catch {}
+    sshConnectionPool.delete(inst.id);
+  }
+  // 仅在持有明文密码时建立新隧道；hash 不可逆，无法重连
+  if (!inst._plainPassword) {
+    throw new Error('SSH tunnel requires plain password; please re-enter password');
+  }
+  const conn = new ssh2.Client();
+  conn._connected = false;
+  conn._closing = false;
+  conn._plainPassword = inst._plainPassword;
+  conn.on('ready', () => { conn._connected = true; });
+  conn.on('close', () => { conn._connected = false; if (!conn._closing) sshConnectionPool.delete(inst.id); });
+  conn.on('error', (err) => { console.warn(`[ssh-tunnel] ${inst.id} error: ${err.message}`); });
+  // 异步 connect：调用方需 await readyPromise
+  conn._readyPromise = new Promise((resolve, reject) => {
+    conn.once('ready', () => resolve(conn));
+    conn.once('error', (err) => reject(err));
+    // 连接超时：15s
+    setTimeout(() => reject(new Error('SSH connection timeout')), 15000);
+  });
+  conn.connect({
+    host: inst.host,
+    port: inst.sshPort || 22,
+    username: inst.username || '',
+    password: inst._plainPassword,
+    readyTimeout: 15000,
+    keepaliveInterval: 30000,
+  });
+  sshConnectionPool.set(inst.id, conn);
+  return conn;
+}
+
+async function ensureSshTunnel(inst) {
+  const conn = getSshTunnel(inst);
+  if (conn._connected && !conn._closing) return conn;
+  await conn._readyPromise;
+  return conn;
+}
+
+// 通过 SSH 隧道创建 TCP socket 到远端 localhost:port
+function openSshForwardStream(inst) {
+  return new Promise((resolve, reject) => {
+    ensureSshTunnel(inst).then(conn => {
+      conn.forwardOut('127.0.0.1', 0, '127.0.0.1', inst.port, (err, stream) => {
+        if (err) reject(err);
+        else resolve(stream);
+      });
+    }).catch(reject);
+  });
+}
+
+// 触发远端 agentmobile 登录，缓存返回的 JWT
+// - Web 模式：直接 fetch 到远端 http(s)://host:port/api/auth/login
+// - SSH 模式：通过 SSH 隧道转发到远端 localhost:port/api/auth/login
+async function loginRemoteInstance(inst) {
+  const path = '/api/auth/login';
+  const body = JSON.stringify({ password: inst._plainPassword || '' });
+  const headers = { 'Content-Type': 'application/json', 'Host': `localhost:${inst.port}` };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  try {
+    let r;
+    if (inst.authMode === 'ssh') {
+      r = await sshFetch(inst, 'POST', path, headers, body, controller.signal);
+    } else {
+      r = await fetch(`${remoteBaseUrl(inst)}${path}`, {
+        method: 'POST',
+        headers,
+        body,
+        signal: controller.signal,
+      });
+    }
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`remote login failed: ${r.status} ${text}`);
+    }
+    const data = await r.json();
+    if (!data?.token) throw new Error('remote login: missing token');
+    // 解析 JWT exp（不验证签名，仅读取过期时间）
+    let exp = null;
+    try {
+      const payload = JSON.parse(Buffer.from(data.token.split('.')[1], 'base64').toString('utf8'));
+      if (typeof payload.exp === 'number') exp = new Date(payload.exp * 1000).toISOString();
+    } catch {}
+    const updated = {
+      ...inst,
+      remoteToken: data.token,
+      remoteTokenExpiresAt: exp,
+      lastUsedAt: new Date().toISOString(),
+    };
+    delete updated._plainPassword;
+    const all = loadRemoteInstances().map(i => i.id === inst.id ? updated : i);
+    saveRemoteInstances(all);
+    return updated;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// 通过 SSH 隧道发起 HTTP 请求（不使用 fetch，因为 Node fetch 不支持自定义 Agent）
+// 流程：建立 SSH forwardOut → 远端 localhost:port → 用 http.request 写入原始 HTTP 报文
+async function sshFetch(inst, method, path, headers, body, signal) {
+  const stream = await openSshForwardStream(inst);
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { stream.destroy(); return reject(new Error('aborted')); }
+    const onAbort = () => { stream.destroy(); reject(new Error('aborted')); };
+    signal?.addEventListener?.('once', onAbort);
+    // 写入 HTTP 请求行 + headers
+    const reqHeaders = { ...headers };
+  if (typeof body === 'string' && body.length > 0) {
+    reqHeaders['Content-Length'] = Buffer.byteLength(body);
+  }
+    let reqStr = `${method} ${path} HTTP/1.1\r\nHost: localhost:${inst.port}\r\n`;
+    for (const [k, v] of Object.entries(reqHeaders)) {
+      if (k.toLowerCase() === 'host') continue;
+      reqStr += `${k}: ${v}\r\n`;
+    }
+    reqStr += 'Connection: close\r\n\r\n';
+    stream.write(reqStr);
+    if (body) stream.write(body);
+    // 解析 HTTP 响应
+    const chunks = [];
+    stream.on('data', (c) => chunks.push(c));
+    stream.on('end', () => {
+      signal?.removeEventListener?.('once', onAbort);
+      const buf = Buffer.concat(chunks);
+      // 解析 status line + headers + body
+      const headerEnd = buf.indexOf('\r\n\r\n');
+      if (headerEnd === -1) { reject(new Error('malformed HTTP response')); return; }
+      const headerBlock = buf.slice(0, headerEnd).toString('utf8');
+      const bodyBuf = buf.slice(headerEnd + 4);
+      const lines = headerBlock.split('\r\n');
+      const statusMatch = lines[0].match(/^HTTP\/1\.\d (\d+) ?(.*)$/);
+      const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+      const respHeaders = new Headers();
+      for (let i = 1; i < lines.length; i++) {
+        const sep = lines[i].indexOf(':');
+        if (sep > 0) respHeaders.append(lines[i].slice(0, sep).trim(), lines[i].slice(sep + 1).trim());
+      }
+      // 处理 chunked transfer encoding
+      let respBody = bodyBuf;
+      if (respHeaders.get('transfer-encoding')?.toLowerCase().includes('chunked')) {
+        respBody = decodeChunked(bodyBuf);
+      }
+      resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        headers: respHeaders,
+        text: async () => respBody.toString('utf8'),
+        json: async () => JSON.parse(respBody.toString('utf8')),
+      });
+    });
+    stream.on('error', (err) => {
+      signal?.removeEventListener?.('once', onAbort);
+      reject(err);
+    });
+  });
+}
+
+// 解析 chunked transfer encoding
+function decodeChunked(buf) {
+  let pos = 0;
+  const parts = [];
+  while (pos < buf.length) {
+    let lineEnd = buf.indexOf('\r\n', pos);
+    if (lineEnd === -1) break;
+    const sizeStr = buf.slice(pos, lineEnd).toString('utf8').trim();
+    const size = parseInt(sizeStr, 16);
+    if (isNaN(size)) break;
+    pos = lineEnd + 2;
+    if (size === 0) break;
+    parts.push(buf.slice(pos, pos + size));
+    pos += size + 2;
+  }
+  return Buffer.concat(parts);
+}
+
+// 获取有效远端 token：缓存未过期则直接用，否则用存储的密码 hash 重新登录
+async function getRemoteToken(inst, plainPassword = '') {
+  // 缓存 token 有效则直接用
+  if (inst.remoteToken && inst.remoteTokenExpiresAt) {
+    const exp = Date.parse(inst.remoteTokenExpiresAt);
+    if (Number.isFinite(exp) && exp - Date.now() > 60_000) {
+      return inst.remoteToken;
+    }
+  }
+  // 用提供的密码或存储的 hash 验证后登录
+  let instance = inst;
+  if (plainPassword) {
+    instance = { ...inst, _plainPassword: plainPassword };
+  } else {
+    // 没有明文密码：无法重新登录（hash 不可逆）
+    // 此分支说明缓存 token 已过期，且前端没有重新输入密码
+    if (inst.passwordHash) {
+      throw new Error('remote token expired; please re-enter password to reconnect');
+    }
+    throw new Error('remote token expired and no credentials available');
+  }
+  const updated = await loginRemoteInstance(instance);
+  return updated.remoteToken;
+}
+
+// GET /api/remote-instances — 列出所有远端实例
+app.get('/api/remote-instances', authMiddleware, (req, res) => {
+  const list = loadRemoteInstances().map(publicInstance);
+  res.json(list);
+});
+
+// GET /api/remote-instances/public-list — 仅返回 id+label（登录页使用，无需 auth）
+// 不暴露 host/port/token 等敏感字段，仅供登录页快速选择
+app.get('/api/remote-instances/public-list', (req, res) => {
+  const list = loadRemoteInstances()
+    .sort((a, b) => (b.lastUsedAt ? Date.parse(b.lastUsedAt) : 0) - (a.lastUsedAt ? Date.parse(a.lastUsedAt) : 0))
+    .map(i => ({ id: i.id, label: i.label }));
+  res.json(list);
+});
+
+// POST /api/remote-instances — 注册新远端实例
+app.post('/api/remote-instances', authMiddleware, async (req, res) => {
+  const { label, host, port, useTls, authMode, username, password, sshPort } = req.body || {};
+  if (!label || !host || !port) {
+    return res.status(400).json({ error: 'label, host, port required' });
+  }
+  if (authMode && !['web', 'ssh'].includes(authMode)) {
+    return res.status(400).json({ error: 'authMode must be web or ssh' });
+  }
+  if (!password) {
+    return res.status(400).json({ error: 'password required' });
+  }
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+    const inst = {
+      id: randomUUID(),
+      label,
+      host: String(host).trim(),
+      port: Number(port),
+      useTls: !!useTls,
+      authMode: authMode || 'web',
+      username: username || '',
+      sshPort: sshPort ? Number(sshPort) : 22,
+      passwordHash,
+      remoteToken: null,
+      remoteTokenExpiresAt: null,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
+    };
+    // 立即尝试登录以验证密码正确并缓存 token
+    try {
+      const instWithPw = { ...inst, _plainPassword: password };
+      const loggedIn = await loginRemoteInstance(instWithPw);
+      Object.assign(inst, {
+        remoteToken: loggedIn.remoteToken,
+        remoteTokenExpiresAt: loggedIn.remoteTokenExpiresAt,
+        lastUsedAt: loggedIn.lastUsedAt,
+      });
+    } catch (e) {
+      // 登录失败仍创建实例记录，前端可看到错误后编辑密码
+      console.warn(`[remote-instances] initial login failed for ${inst.id}: ${e.message}`);
+    }
+    const all = loadRemoteInstances();
+    all.push(inst);
+    saveRemoteInstances(all);
+    res.status(201).json(publicInstance(inst));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/remote-instances/:id — 编辑实例配置
+app.put('/api/remote-instances/:id', authMiddleware, async (req, res) => {
+  const { label, host, port, useTls, authMode, username, password, sshPort } = req.body || {};
+  const all = loadRemoteInstances();
+  const idx = all.findIndex(i => i.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'instance not found' });
+  const updated = { ...all[idx] };
+  if (label !== undefined) updated.label = label;
+  if (host !== undefined) updated.host = String(host).trim();
+  if (port !== undefined) updated.port = Number(port);
+  if (useTls !== undefined) updated.useTls = !!useTls;
+  if (authMode !== undefined) updated.authMode = ['web', 'ssh'].includes(authMode) ? authMode : updated.authMode;
+  if (username !== undefined) updated.username = username;
+  if (sshPort !== undefined) updated.sshPort = Number(sshPort);
+  if (password) {
+    // 提供了新密码：重新 hash + 重新登录
+    try {
+      updated.passwordHash = await bcrypt.hash(password, 12);
+      const instWithPw = { ...updated, _plainPassword: password };
+      const loggedIn = await loginRemoteInstance(instWithPw);
+      Object.assign(updated, {
+        remoteToken: loggedIn.remoteToken,
+        remoteTokenExpiresAt: loggedIn.remoteTokenExpiresAt,
+      });
+    } catch (e) {
+      return res.status(400).json({ error: `login failed: ${e.message}` });
+    }
+  }
+  all[idx] = updated;
+  saveRemoteInstances(all);
+  res.json(publicInstance(updated));
+});
+
+// DELETE /api/remote-instances/:id — 删除实例
+app.delete('/api/remote-instances/:id', authMiddleware, (req, res) => {
+  const all = loadRemoteInstances();
+  const filtered = all.filter(i => i.id !== req.params.id);
+  if (filtered.length === all.length) {
+    return res.status(404).json({ error: 'instance not found' });
+  }
+  saveRemoteInstances(filtered);
+  res.json({ ok: true });
+});
+
+// POST /api/remote-instances/:id/test — 测试连接（不持久化 token，可选验证密码）
+app.post('/api/remote-instances/:id/test', authMiddleware, async (req, res) => {
+  const inst = findRemoteInstance(req.params.id);
+  if (!inst) return res.status(404).json({ error: 'instance not found' });
+  const { password } = req.body || {};
+  const testPw = password || '';
+  // 注入明文密码用于 SSH 隧道建立
+  const instWithPw = testPw ? { ...inst, _plainPassword: testPw } : inst;
+  try {
+    if (inst.authMode === 'ssh') {
+      // SSH 模式：先测试 SSH 连接，再通过隧道测试 agentmobile
+      try {
+        await ensureSshTunnel(instWithPw);
+      } catch (e) {
+        return res.json({ ok: false, error: `SSH: ${e.message}` });
+      }
+      const r = await sshFetch(instWithPw, 'POST', '/api/auth/login', { 'Content-Type': 'application/json' }, JSON.stringify({ password: testPw }), AbortSignal.timeout(10000));
+      if (r.status === 401) return res.json({ ok: false, error: 'wrong password' });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        return res.json({ ok: false, error: `remote returned ${r.status}: ${text.slice(0, 200)}` });
+      }
+      const data = await r.json();
+      res.json({ ok: !!data?.token });
+    } else {
+      const url = `${remoteBaseUrl(inst)}/api/auth/login`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: testPw }),
+          signal: controller.signal,
+        });
+        if (r.status === 401) return res.json({ ok: false, error: 'wrong password' });
+        if (!r.ok) {
+          const text = await r.text().catch(() => '');
+          return res.json({ ok: false, error: `remote returned ${r.status}: ${text.slice(0, 200)}` });
+        }
+        const data = await r.json();
+        res.json({ ok: !!data?.token });
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/remote-instances/:id/login — 用存储的密码 hash 验证前端输入，登录远端
+app.post('/api/remote-instances/:id/login', authMiddleware, async (req, res) => {
+  const inst = findRemoteInstance(req.params.id);
+  if (!inst) return res.status(404).json({ error: 'instance not found' });
+  const { password } = req.body || {};
+  if (!password) return res.status(400).json({ error: 'password required' });
+  try {
+    const ok = await bcrypt.compare(password, inst.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'wrong password' });
+    const updated = await loginRemoteInstance({ ...inst, _plainPassword: password });
+    res.json(publicInstance(updated));
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// POST /api/remote-instances/:id/ssh-tunnel-test — 单独测试 SSH 连通性（远端 agentmobile 不可达时定位故障）
+app.post('/api/remote-instances/:id/ssh-tunnel-test', authMiddleware, async (req, res) => {
+  const inst = findRemoteInstance(req.params.id);
+  if (!inst) return res.status(404).json({ error: 'instance not found' });
+  if (inst.authMode !== 'ssh') return res.json({ ok: false, error: 'not an SSH-mode instance' });
+  const { password } = req.body || {};
+  const instWithPw = password ? { ...inst, _plainPassword: password } : inst;
+  try {
+    await ensureSshTunnel(instWithPw);
+    res.json({ ok: true });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ALL /api/remote-instances/:id/proxy/* — HTTP 透传到远端
+// 注意：此路由必须挂载在 express.json() 之后，但 multipart 部分需通过流式转发
+app.all('/api/remote-instances/:id/proxy/*', authMiddleware, async (req, res) => {
+  const inst = findRemoteInstance(req.params.id);
+  if (!inst) return res.status(404).json({ error: 'instance not found' });
+  const remotePath = req.params[0] || '';
+  const search = req.url.includes('?') ? '?' + req.url.split('?').slice(1).join('?') : '';
+  const url = `${remoteBaseUrl(inst)}/${remotePath}${search}`;
+  // 提取前端可能传入的明文密码（用于 token 过期时自动重登；SSH 模式下也用于建立隧道）
+  const providedPw = req.headers['x-remote-password'] || '';
+  try {
+    let token;
+    try {
+      token = await getRemoteToken(inst, providedPw);
+    } catch (e) {
+      return res.status(401).json({ error: 'remote auth required', detail: e.message });
+    }
+    // 构造转发 headers
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      const lk = k.toLowerCase();
+      if (lk === 'host' || lk === 'authorization' || lk === 'cookie' || lk === 'x-remote-password' ||
+          lk === 'content-length' || lk === 'content-encoding' || lk === 'transfer-encoding' || lk === 'connection') continue;
+      headers[k] = v;
+    }
+    headers['authorization'] = `Bearer ${token}`;
+    headers['host'] = inst.authMode === 'ssh' ? `localhost:${inst.port}` : `${inst.host}:${inst.port}`;
+    // 决定 body：
+    // - JSON 已被 express.json() 解析，重新 stringify
+    // - 其他类型（multipart/form-data, application/octet-stream 等）：直接流式转发原始 req
+    //   express.json() 仅在 Content-Type 匹配时消耗 body，其他情况下 req 仍是未读取的可读流
+    let bodyPayload;
+    let bodyStream;
+    const contentType = req.headers['content-type'] || '';
+    if (['GET', 'HEAD'].includes(req.method)) {
+      bodyPayload = undefined;
+    } else if (contentType.includes('application/json')) {
+      bodyPayload = (req.body && Object.keys(req.body).length > 0) ? JSON.stringify(req.body) : undefined;
+    } else if (contentType.includes('application/x-www-form-urlencoded')) {
+      bodyPayload = (req.body && Object.keys(req.body).length > 0) ? new URLSearchParams(req.body).toString() : undefined;
+    } else {
+      // multipart 或其他：流式转发 req
+      bodyStream = req;
+    }
+
+    if (inst.authMode === 'ssh') {
+      // SSH 模式：通过隧道转发。multipart/二进制流不支持（因为 sshFetch 用一次 HTTP/1.1 connection: close 请求）
+      // 但支持 JSON + form-urlencoded，足够日常使用
+      if (bodyStream) {
+        return res.status(400).json({ error: 'SSH mode does not support multipart/binary body forwarding; use JSON or urlencoded' });
+      }
+      const pathWithSearch = `/${remotePath}${search}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 300000);
+      try {
+        const upstream = await sshFetch(inst, req.method, pathWithSearch, headers, bodyPayload || '', controller.signal);
+        clearTimeout(timeout);
+        const skipHeaders = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'host']);
+        upstream.headers.forEach((value, key) => {
+          if (!skipHeaders.has(key.toLowerCase())) res.setHeader(key, value);
+        });
+        res.status(upstream.status);
+        res.send(await upstream.text());
+      } finally {
+        clearTimeout(timeout);
+      }
+    } else {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 300000);
+      let upstream;
+      try {
+        upstream = await fetch(url, {
+          method: req.method,
+          headers,
+          body: bodyStream || bodyPayload,
+          signal: controller.signal,
+          redirect: 'manual',
+          duplex: 'half',
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+      // 透传响应头
+      const skipHeaders = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'host']);
+      upstream.headers.forEach((value, key) => {
+        if (!skipHeaders.has(key.toLowerCase())) res.setHeader(key, value);
+      });
+      res.status(upstream.status);
+      if (upstream.body) {
+        const reader = upstream.body.getReader();
+        const pump = async () => {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              res.end();
+              return;
+            }
+            res.write(value);
+          }
+        };
+        pump().catch(err => {
+          if (!res.writableEnded) res.end();
+        });
+        req.on('close', () => {
+          try { reader.cancel(); } catch {}
+        });
+      } else {
+        res.end();
+      }
+    }
+    // 异步更新 lastUsedAt
+    const all = loadRemoteInstances();
+    const idx = all.findIndex(i => i.id === inst.id);
+    if (idx !== -1) {
+      all[idx].lastUsedAt = new Date().toISOString();
+      saveRemoteInstances(all);
+    }
+  } catch (err) {
+    if (!res.writableEnded) res.status(502).json({ error: err.message });
+  }
+});
+
+// WS /api/remote-instances/:id/ws-proxy — WebSocket 双向桥接
+// 实际的 WebSocketServer 实例和 upgrade 拦截在 `const server = createServer(app)` 之后注册
+// （见本文件后续 setupRemoteWsBridge 调用）
+function setupRemoteWsBridge() {
+  const remoteWss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url, 'http://x');
+    const m = url.pathname.match(/^\/api\/remote-instances\/([^/]+)\/ws-proxy$/);
+    if (m) {
+      remoteWss.handleUpgrade(req, socket, head, (ws) => {
+        remoteWss.emit('connection', ws, req, m[1]);
+      });
+    }
+  });
+  remoteWss.on('connection', async (ws, req, instanceId) => {
+    const inst = findRemoteInstance(instanceId);
+    if (!inst) {
+      ws.close(4004, 'instance not found');
+      return;
+    }
+    const cookieToken = getCookieToken({ headers: { cookie: req.headers.cookie || '' } });
+    if (!verifyJwtToken(cookieToken)) {
+      ws.close(4001, 'unauthorized');
+      return;
+    }
+    const url = new URL(req.url, 'http://x');
+    const windowParam = url.searchParams.get('window') || '0';
+    const sessionParam = url.searchParams.get('session') || '~';
+    const search = `?window=${encodeURIComponent(windowParam)}&session=${encodeURIComponent(sessionParam)}`;
+    let remoteWs;
+    try {
+      try {
+        await getRemoteToken(inst, '');
+      } catch (e) {
+        ws.close(4001, 'remote auth required');
+        return;
+      }
+      if (inst.authMode === 'ssh') {
+        // SSH 模式：通过 SSH 隧道建立底层 TCP socket，然后用 ws 模块包装为 WebSocket
+        const stream = await openSshForwardStream(inst);
+        remoteWs = new WebSocket(remoteWsUrl(inst, search), {
+          createConnection: () => stream,
+        });
+      } else {
+        remoteWs = new WebSocket(remoteWsUrl(inst, search));
+      }
+    } catch (e) {
+      ws.close(4005, 'remote connect failed');
+      return;
+    }
+    let closed = false;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      try { ws.close(); } catch {}
+      try { remoteWs.close(); } catch {}
+    };
+    remoteWs.on('open', () => {
+      // 发送 in-band auth 帧
+      try {
+        remoteWs.send(JSON.stringify({ type: 'auth', token: inst.remoteToken || '' }));
+      } catch (e) {
+        cleanup();
+      }
+    });
+    // 远端 → 本端
+    remoteWs.on('message', (data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(data); } catch {}
+      }
+    });
+    // 本端 → 远端
+    ws.on('message', (data) => {
+      if (remoteWs.readyState === WebSocket.OPEN) {
+        try { remoteWs.send(data); } catch {}
+      }
+    });
+    remoteWs.on('close', cleanup);
+    remoteWs.on('error', cleanup);
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
+  });
+}
+
 app.use('/api', (req, res) => {
   res.status(404).json({ error: 'api route not found' });
 });
@@ -2924,6 +3711,8 @@ function ensureWindowPty(session, windowIndex) {
 // WebSocket 服务 — 使用 cookie auth（不接受 query token）
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+// 注册远端实例 WS 桥接（路径 /api/remote-instances/:id/ws-proxy）
+setupRemoteWsBridge();
 const wsHeartbeatInterval = setInterval(() => {
   for (const ws of wss.clients) {
     if (ws.isAlive === false) {

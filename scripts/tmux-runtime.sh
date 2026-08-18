@@ -40,15 +40,30 @@ if ! command -v tmux >/dev/null 2>&1; then
 fi
 
 ensure_session() {
-  tmux set-option -g history-limit "$history_limit" >/dev/null
   if ! tmux has-session -t "$session" 2>/dev/null; then
     tmux new-session -d -s "$session" -n "$window_name" -c "$workspace" "$shell_cmd"
   fi
-  tmux set-option -t "$session" history-limit "$history_limit" >/dev/null
+  # Set history-limit tolerantly: server may not exist on cold start,
+  # and these calls should not break the runtime under `set -e`.
+  tmux set-option -g history-limit "$history_limit" >/dev/null 2>&1 || true
+  tmux set-option -t "$session" history-limit "$history_limit" >/dev/null 2>&1 || true
 }
 
 ensure_session
 echo "[agentmobile-tmux] tmux runtime ready: $session"
+
+# Session restore: idempotent — runs only once per tmux server lifetime.
+# The restore script sets the AGENTMOBILE_RESTORED tmux environment marker
+# (cleared on host reboot), so normal agentmobile-tmux.service restarts
+# (tmux still alive) are no-ops and never clobber running sessions.
+# Requires the tmux-resurrect plugin; if absent, the script skips silently.
+if [ -z "${AGENTMOBILE_RESTORED:-}" ]; then
+  RESTORE_SCRIPT="$(dirname "$0")/agentmobile-restore-tmux.sh"
+  if [ -f "$RESTORE_SCRIPT" ]; then
+    bash "$RESTORE_SCRIPT" || echo "[agentmobile-tmux] restore step returned non-zero, continuing" >&2
+  fi
+  export AGENTMOBILE_RESTORED=1
+fi
 
 while true; do
   ensure_session

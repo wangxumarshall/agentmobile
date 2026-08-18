@@ -3,9 +3,12 @@ export const AUTH_TOKEN_STORAGE_KEY = 'agentmobile_token'
 export type CookieSessionStatus = 'valid' | 'unauthorized' | 'error'
 export type AuthFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+// 本端 cookie 校验：始终走本端 /api/auth/session，不受远端实例切换影响
+const LOCAL_API_BASE = (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL || '/').replace(/\/$/, '')
+
 export async function checkCookieSession(fetcher: AuthFetch = fetch): Promise<CookieSessionStatus> {
   try {
-    const response = await fetcher('/api/auth/session', { credentials: 'same-origin' })
+    const response = await fetcher(`${LOCAL_API_BASE}/api/auth/session`, { credentials: 'same-origin' })
     if (response.ok) return 'valid'
     return response.status === 401 ? 'unauthorized' : 'error'
   } catch {

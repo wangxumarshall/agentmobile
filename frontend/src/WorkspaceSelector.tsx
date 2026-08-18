@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
@@ -75,7 +76,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
 
   async function fetchConfigs() {
     try {
-      const r = await fetch('/api/configs', { headers })
+      const r = await fetch(apiUrl('/api/configs'), { headers })
       if (r.ok) {
         const data: Config[] = await r.json()
         setConfigs(data)

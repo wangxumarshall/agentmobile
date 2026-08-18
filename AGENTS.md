@@ -16,9 +16,9 @@ Project: **agentmobile** — WebSocket tmux 桥接，AI 终端移动端面板
 
 | Layer | Tech |
 |---|---|
-| Backend | Node.js (ESM) + Express + ws + node-pty |
+| Backend | Node.js (ESM) + Express + ws + node-pty + ssh2 (远端实例 SSH 隧道) |
 | Frontend | React 18 + TypeScript + xterm.js + Vite |
-| Auth | JWT (30d) + bcrypt password hash |
+| Auth | JWT (30d) + bcrypt password hash；远端实例：bcrypt 12-round + 远端 JWT 缓存 + 自动重登 |
 | Runtime | 宿主机（WSL2）直接运行，Node.js + systemd 管理（PM2 fallback）；systemd 下 Web bridge 与 tmux runtime 分离 |
 | Config | `.env` → `server.js` 顶部解构，无 dotenv 依赖 |
 | Persist | `./data/`（toolbar config、session configs） |
@@ -26,6 +26,7 @@ Project: **agentmobile** — WebSocket tmux 桥接，AI 终端移动端面板
 ## Architecture Constraints
 
 - **多 PTY 架构**（F-11）：每个 `tmux session:window` 独立 PTY 实例，`ptyMap` 管理
+- **远端实例连接层**（F-21）：本端 server.js 提供 `/api/remote-instances/*` 路由族（CRUD + test + login + HTTP proxy + WS bridge + public-list），`data/remote-instances.json` 持久化（密码 bcrypt hash）；切换实例时前端走 `proxy/*` 与 `ws-proxy`，远端 token 缓存 + 自动重登
 - **systemd 双运行域**：`agentmobile.service` 只承载 Web/PTY bridge，`agentmobile-tmux.service` 承载持久 tmux/Agent；普通 Web 发布只重启 `agentmobile`
 - **前端 dist 由 Vite 构建**，server.js 静态伺服 `frontend/dist/` + `public/`
 - **no database**：会话状态从 tmux 实时读取，持久化只用 JSON 文件
@@ -34,14 +35,18 @@ Project: **agentmobile** — WebSocket tmux 桥接，AI 终端移动端面板
 ## Key Files
 
 ```
-server.js                  # 唯一后端入口：Express + WS + PTY + Tasks + Telegram
-data/                      # 持久化数据（toolbar、tasks、configs）
+server.js                  # 唯一后端入口：Express + WS + PTY + Tasks + Telegram + 远端实例代理/WS 桥接
+data/                      # 持久化数据（toolbar、tasks、configs、remote-instances.json）
 public/
   sw.js                    # Service Worker（cache-first 静态资源）
   icon.svg                 # PWA 图标
 frontend/src/
   App.tsx                  # 路由：登录页 / 终端页
-  Terminal.tsx             # xterm.js + WebSocket + 触摸处理 + 双 Effect 模式
+  Terminal.tsx             # xterm.js + WebSocket + 触摸处理 + 双 Effect 模式 + 实例切换感知
+  RemoteInstanceSwitcher.tsx  # 本地/远端实例下拉切换（搜索 + 排序 + 状态灯）
+  RemoteBanner.tsx         # 远端模式视觉提示条 + 切回本地按钮
+  RemoteInstancesSettings.tsx # 远端实例管理面板（CRUD + test + login）
+  remoteInstance.ts        # useRemoteInstances / useInstanceSwitch hook + switchInstanceById
   Toolbar.tsx              # 可配置工具栏（固定行 + 展开区）
   TabBar.tsx               # tmux window 标签（< 768px 顶部导航）
   TaskPanel.tsx            # claude -p 异步任务面板（SSE 流式）

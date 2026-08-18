@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import FeishuSettings from './FeishuSettings'
 import TelegramSettings from './TelegramSettings'
+import RemoteInstancesSettings from './RemoteInstancesSettings'
 
 interface Props {
   token: string
@@ -31,7 +33,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
-    fetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
+    fetch(apiUrl('/api/version'), { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data?.current) setCurrentVersion(data.current) })
       .catch(() => {})
@@ -40,12 +42,12 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
   async function handleCheckUpdate() {
     setUpdateStatus('checking')
     try {
-      const lRes = await fetch('/api/version/latest', { headers: { Authorization: `Bearer ${token}` } })
+      const lRes = await fetch(apiUrl('/api/version/latest'), { headers: { Authorization: `Bearer ${token}` } })
       if (!lRes.ok) { setUpdateStatus('error'); return }
       const lData = await lRes.json()
       if (lData.error) { setUpdateStatus('error'); return }
       // Re-fetch current version to get fresh clean state at check time
-      const vRes = await fetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
+      const vRes = await fetch(apiUrl('/api/version'), { headers: { Authorization: `Bearer ${token}` } })
       if (!vRes.ok) { setUpdateStatus('error'); return }
       const vData = await vRes.json()
       setCurrentVersion(vData.current)
@@ -145,6 +147,9 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
               <Icon name="arrowRight" size={14} />
             </button>
           </div>
+
+          {/* Remote instances — register and connect to other agentmobile servers */}
+          <RemoteInstancesSettings token={token} />
 
           <TelegramSettings token={token} />
           <FeishuSettings token={token} />

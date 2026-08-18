@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardRef } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import RemoteInstanceSwitcher from './RemoteInstanceSwitcher'
 
 const STORAGE_KEY = 'agentmobile_token'
 
@@ -66,6 +68,9 @@ interface Props {
   onNewChannel: () => void
   /** Refresh callback — exposed for sidebar toggle integration */
   onRefresh?: () => void
+  /** Called when a channel is double-clicked (desktop sidebar) — should close
+   * any open file editor in the workspace browser before switching. */
+  onCloseEditor?: () => void
   layout?: 'modal' | 'sidebar'
 }
 
@@ -178,6 +183,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   onNewProject,
   onNewChannel,
   onRefresh: _onRefresh,
+  onCloseEditor,
   layout = 'modal',
 }: Props, ref) {
   const { t } = useTranslation()
@@ -222,7 +228,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   const fetchProjects = useCallback(async () => {
     setLoadingProjects(true)
     try {
-      const r = await fetch('/api/projects', { headers })
+      const r = await fetch(apiUrl('/api/projects'), { headers })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.loadFailed'))); return }
       setProjects(await r.json())
     } catch (e: unknown) {
@@ -236,7 +242,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     const requestId = ++channelsRequestRef.current
     if (!opts?.silent) setLoadingChannels(true)
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/channels`, { headers })
+      const r = await fetch(apiUrl(`/api/projects/${encodeURIComponent(projectName)}/channels`), { headers })
       if (!r.ok) {
         if (requestId !== channelsRequestRef.current || projectName !== currentProjectRef.current) return
         setError(await parseApiError(r, t('sessionMgr.loadFailed')))
@@ -267,7 +273,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   useImperativeHandle(ref, () => ({ refresh: handleRefresh }), [handleRefresh])
 
   useEffect(() => {
-    const es = new EventSource('/api/projects/events')
+    const es = new EventSource(apiUrl('/api/projects/events'))
     const onProjectsChanged = () => handleRefresh()
     es.addEventListener('projects_changed', onProjectsChanged as EventListener)
     es.onerror = () => {
@@ -289,7 +295,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     currentProjectRef.current = project.name
     onSwitchProject(project.name, optimisticChannel ?? undefined)
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}/activate`, { method: 'POST', headers })
+      const r = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.name)}/activate`), { method: 'POST', headers })
       if (!r.ok) {
         currentProjectRef.current = previousProject
         onSwitchProject(previousProject, previousChannel)
@@ -359,12 +365,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     setRenaming(true)
     try {
       const r = renameTarget.type === 'channel'
-        ? await fetch(`/api/sessions/${renameTarget.channel.index}/rename?session=${encodeURIComponent(currentProject)}`, {
+        ? await fetch(apiUrl(`/api/sessions/${renameTarget.channel.index}/rename?session=${encodeURIComponent(currentProject)}`), {
           method: 'POST',
           headers: { ...headers, 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: newName }),
         })
-        : await fetch(`/api/projects/${encodeURIComponent(renameTarget.project.name)}/rename`, {
+        : await fetch(apiUrl(`/api/projects/${encodeURIComponent(renameTarget.project.name)}/rename`), {
           method: 'POST',
           headers: { ...headers, 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: newName }),
@@ -401,7 +407,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     setLongPressMenu(null)
     setSidebarChannelMenu(null)
     try {
-      const r = await fetch(`/api/sessions/${channel.index}?session=${encodeURIComponent(currentProject)}`, {
+      const r = await fetch(apiUrl(`/api/sessions/${channel.index}?session=${encodeURIComponent(currentProject)}`), {
         method: 'DELETE',
         headers,
       })
@@ -416,7 +422,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     setProjectMenu(null)
     setSidebarProjectMenu(null)
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE', headers })
+      const r = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.name)}`), { method: 'DELETE', headers })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.closeFailed'))); return }
       fetchProjects()
       if (project.name === currentProject) {
@@ -706,6 +712,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none transition-colors duration-75 group/item ${isActive ? 'bg-agentmobile-bg-2' : ''} ${!isDesktop && pressChannel === channel.index ? 'bg-agentmobile-border' : ''}`}
                   style={{ WebkitTouchCallout: 'none' }}
                   onPointerDown={() => { if (!isRenamingChannel && isDesktop) doSwitchChannel(channel, false) }}
+                  onDoubleClick={() => { if (!isRenamingChannel && isDesktop) { onCloseEditor?.(); doSwitchChannel(channel, false) } }}
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) } : undefined}
                   onTouchStart={(e) => { if (!isDesktop && !isRenamingChannel) handleChannelTouchStart(channel, e) }}
                   onTouchEnd={(e) => { if (!isDesktop && !isRenamingChannel) { e.preventDefault(); handleChannelTouchEnd(channel) } }}
@@ -1018,9 +1025,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
         ? 'bg-agentmobile-bg border border-agentmobile-border rounded-xl flex flex-col text-agentmobile-text w-full max-w-[400px] max-h-[85vh] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden'
         : 'fixed inset-0 bg-agentmobile-bg flex flex-col text-agentmobile-text'
       }>
-        <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border shrink-0">
-          <span className="text-base font-semibold">{t('sessionMgr.title')}</span>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border shrink-0 gap-2">
+          <div className="flex flex-col gap-1 flex-1 min-w-0">
+            <span className="text-[10px] text-agentmobile-text-2 uppercase tracking-wider">{t('sessionMgr.title')}</span>
+            <RemoteInstanceSwitcher variant="compact" />
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
             <button className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1 flex items-center justify-center" onPointerDown={handleRefresh} title={t('sessionMgr.refresh') || '刷新'}>
               <Icon name="refresh" size={16} />
             </button>

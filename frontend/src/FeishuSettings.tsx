@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import { Icon } from './icons'
 
@@ -96,7 +97,7 @@ export default function FeishuSettings({ token }: Props) {
   async function loadSettings() {
     setLoadingSettings(true)
     try {
-      const res = await fetch('/api/feishu/settings', {
+      const res = await fetch(apiUrl('/api/feishu/settings'), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error(t('settings.feishuLoadFailed'))
@@ -112,7 +113,7 @@ export default function FeishuSettings({ token }: Props) {
     setStarting(true)
     setError('')
     try {
-      const res = await fetch('/api/feishu/setup', {
+      const res = await fetch(apiUrl('/api/feishu/setup'), {
         method: 'POST',
         headers: authHeaders(token),
         body: JSON.stringify({ domain }),
@@ -130,7 +131,7 @@ export default function FeishuSettings({ token }: Props) {
 
   async function refreshSetup(id: string) {
     try {
-      const res = await fetch(`/api/feishu/setup/${id}`, {
+      const res = await fetch(apiUrl(`/api/feishu/setup/${id}`), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) return
@@ -145,7 +146,7 @@ export default function FeishuSettings({ token }: Props) {
   async function cancelSetup() {
     if (!setup?.id) return
     try {
-      await fetch(`/api/feishu/setup/${setup.id}`, {
+      await fetch(apiUrl(`/api/feishu/setup/${setup.id}`), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })

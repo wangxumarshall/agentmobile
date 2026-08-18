@@ -10,7 +10,8 @@ export type IconName =
   | 'chevronUp' | 'chevronLeft' | 'chevronRight' | 'grip' | 'trash' | 'plus' | 'copy'
   | 'arrowDown' | 'arrowLeft' | 'arrowRight' | 'message'
   | 'play' | 'stop' | 'refresh' | 'history' | 'pin' | 'folder'
-  | 'folderPlus' | 'folderOpen' | 'image' | 'alert' | 'eye' | 'download' | 'file' | 'edit' | 'save' | 'sort'
+  | 'folderPlus' | 'folderOpen' | 'image' | 'alert' | 'eye' | 'eyeOff' | 'lock' | 'download' | 'file' | 'edit' | 'save' | 'sort'
+  | 'server' | 'cloud' | 'wifi' | 'list'
 
 interface Props {
   name: IconName
@@ -178,6 +179,18 @@ const ICONS: Record<IconName, React.ReactNode> = {
       <circle cx="12" cy="12" r="3" />
     </g>
   ),
+  eyeOff: (
+    <g>
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </g>
+  ),
+  lock: (
+    <g>
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </g>
+  ),
   download: (
     <g>
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -209,6 +222,35 @@ const ICONS: Record<IconName, React.ReactNode> = {
       <line x1="3" y1="6" x2="21" y2="6" />
       <line x1="6" y1="12" x2="18" y2="12" />
       <line x1="9" y1="18" x2="15" y2="18" />
+    </g>
+  ),
+  server: (
+    <g>
+      <rect x="3" y="4" width="18" height="6" rx="1.5" />
+      <rect x="3" y="14" width="18" height="6" rx="1.5" />
+      <line x1="7" y1="7" x2="7.01" y2="7" />
+      <line x1="7" y1="17" x2="7.01" y2="17" />
+    </g>
+  ),
+  cloud: (
+    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+  ),
+  wifi: (
+    <g>
+      <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+      <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+      <line x1="12" y1="20" x2="12.01" y2="20" />
+    </g>
+  ),
+  list: (
+    <g>
+      <line x1="8" y1="6" x2="21" y2="6" />
+      <line x1="8" y1="12" x2="21" y2="12" />
+      <line x1="8" y1="18" x2="21" y2="18" />
+      <line x1="3" y1="6" x2="3.01" y2="6" />
+      <line x1="3" y1="12" x2="3.01" y2="12" />
+      <line x1="3" y1="18" x2="3.01" y2="18" />
     </g>
   ),
 }

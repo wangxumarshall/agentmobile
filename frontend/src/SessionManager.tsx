@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
@@ -28,6 +29,7 @@ interface Config {
   API_TIMEOUT_MS?: string
   REASONING_EFFORT?: string
   SANDBOX_MODE?: string
+  CONTEXT_TOKENS?: string
 }
 
 interface Props {
@@ -48,6 +50,7 @@ const EMPTY_CONFIG: Omit<Config, 'id'> = {
   API_TIMEOUT_MS: '3000000',
   REASONING_EFFORT: '',
   SANDBOX_MODE: '',
+  CONTEXT_TOKENS: '',
 }
 
 export default function SessionManager({ token, onClose }: Props) {
@@ -65,7 +68,7 @@ export default function SessionManager({ token, onClose }: Props) {
   async function fetchConfigs() {
     setLoadingCfg(true)
     try {
-      const r = await fetch('/api/configs', { headers })
+      const r = await fetch(apiUrl('/api/configs'), { headers })
       setConfigs(r.ok ? await r.json() : [])
     } catch { setConfigs([]) }
     finally { setLoadingCfg(false) }
@@ -79,7 +82,7 @@ export default function SessionManager({ token, onClose }: Props) {
     if (!id.trim() || !data.label.trim()) { setCfgError('ID 和名称不能为空'); return }
     setSavingCfg(true); setCfgError(null)
     try {
-      const r = await fetch(`/api/configs/${id.trim()}`, {
+      const r = await fetch(apiUrl(`/api/configs/${id.trim()}`), {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -94,7 +97,7 @@ export default function SessionManager({ token, onClose }: Props) {
 
   async function deleteConfig(id: string) {
     try {
-      await fetch(`/api/configs/${id}`, { method: 'DELETE', headers })
+      await fetch(apiUrl(`/api/configs/${id}`), { method: 'DELETE', headers })
       await fetchConfigs()
     } catch { /* ignore */ }
   }
@@ -113,6 +116,7 @@ export default function SessionManager({ token, onClose }: Props) {
       { key: 'API_TIMEOUT_MS',     label: t('apiConfig.timeout'),           placeholder: '3000000' },
       { key: 'REASONING_EFFORT',   label: t('apiConfig.reasoningEffort'),   placeholder: 'high' },
       { key: 'SANDBOX_MODE',       label: t('apiConfig.sandboxMode'),       placeholder: 'danger-full-access' },
+      { key: 'CONTEXT_TOKENS',     label: t('apiConfig.contextTokens'),     placeholder: '1000000' },
     ]
     return (
       <div className={isDesktop ? 'fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-5' : 'fixed inset-0 bg-black/60 z-[100]'}>
@@ -211,7 +215,7 @@ export default function SessionManager({ token, onClose }: Props) {
                 <div className="flex gap-1.5 shrink-0">
                   <button
                     className="bg-transparent border border-agentmobile-border rounded text-agentmobile-accent cursor-pointer text-[11px] px-2 py-[3px]"
-                    onPointerDown={() => setEditingConfig({ id: cfg.id, isNew: false, label: cfg.label, agent_type: cfg.agent_type || 'claude', BASE_URL: cfg.BASE_URL, AUTH_TOKEN: cfg.AUTH_TOKEN, API_KEY: cfg.API_KEY, DEFAULT_MODEL: cfg.DEFAULT_MODEL, THINK_MODEL: cfg.THINK_MODEL, LONG_CONTEXT_MODEL: cfg.LONG_CONTEXT_MODEL, DEFAULT_HAIKU_MODEL: cfg.DEFAULT_HAIKU_MODEL, API_TIMEOUT_MS: cfg.API_TIMEOUT_MS, REASONING_EFFORT: cfg.REASONING_EFFORT, SANDBOX_MODE: cfg.SANDBOX_MODE })}
+                    onPointerDown={() => setEditingConfig({ id: cfg.id, isNew: false, label: cfg.label, agent_type: cfg.agent_type || 'claude', BASE_URL: cfg.BASE_URL, AUTH_TOKEN: cfg.AUTH_TOKEN, API_KEY: cfg.API_KEY, DEFAULT_MODEL: cfg.DEFAULT_MODEL, THINK_MODEL: cfg.THINK_MODEL, LONG_CONTEXT_MODEL: cfg.LONG_CONTEXT_MODEL, DEFAULT_HAIKU_MODEL: cfg.DEFAULT_HAIKU_MODEL, API_TIMEOUT_MS: cfg.API_TIMEOUT_MS, REASONING_EFFORT: cfg.REASONING_EFFORT, SANDBOX_MODE: cfg.SANDBOX_MODE, CONTEXT_TOKENS: cfg.CONTEXT_TOKENS })}
                   >{t('common.edit')}</button>
                   <button
                     className="bg-transparent border border-agentmobile-border rounded text-agentmobile-error cursor-pointer text-[11px] px-2 py-[3px]"

@@ -366,6 +366,95 @@ interface Channel {
 
 ---
 
+## Feature Detail: 远端 agentmobile 实例连接（F-21）
+
+**问题**：用户在两台不同服务器上各部署一个 agentmobile 实例，希望从一个入口同时管理两者，切换后体验与本地一致。
+
+**解法**：在本端 agentmobile Web 界面注册远端实例（host/port/label/password），切换后整个前端 API/WS 调用走本端 server.js 的代理路由，由本端 server.js 转发到远端实例。
+
+```
+POST /api/remote-instances
+  body: { label, host, port, useTls?, authMode, username?, password, sshPort? }
+  → bcrypt hash password 存 data/remote-instances.json
+  → 调用远端 /api/auth/login 缓存 JWT
+  → 返回 publicInstance（无敏感字段）
+
+POST /api/remote-instances/:id/test
+  body: { password? }
+  → 验证密码 + 测试远端连通性
+
+POST /api/remote-instances/:id/login
+  body: { password }
+  → bcrypt.compare + 远端 /api/auth/login → 缓存 JWT
+
+ALL /api/remote-instances/:id/proxy/*
+  → 注入 Authorization: Bearer <remoteToken>
+  → 剥离本端 cookie/host
+  → fetch 透传到远端 http(s)://host:port/<path>
+  → 流式转发响应（支持 SSE）
+
+WS /api/remote-instances/:id/ws-proxy
+  → 本端建立 WS ↔ 远端 WS（注入 in-band auth {type:'auth', token}）
+  → 双向转发数据帧
+```
+
+**前端**：
+- `RemoteInstanceSwitcher` 组件挂在侧边栏顶部（PC）/ SessionManagerV2 header（移动端）。
+- `RemoteInstancesSettings` 在 GeneralSettings 中管理实例 CRUD。
+- `apiUrl()` / `wsUrl()` 根据 `setRemoteInstanceContext(id)` 自动切换为代理路径。
+- 切换实例时 `instanceId` 加入 Effect B 依赖项，触发 WebSocket 重连 + tmux 状态清空。
+
+**安全**：
+- 远端密码本端 bcrypt 12 轮 hash 存储，明文不持久化。
+- 远端 JWT 缓存到 `data/remote-instances.json`，过期自动重登（需提供明文密码）。
+- 本端代理剥离 cookie/host，避免泄漏。
+- 不在日志中打印远端密码或 token。
+
+**单用户场景**：远端实例列表为本端用户私有，不引入团队/权限复杂度（与 NORTH-STAR 一致）。
+
+**Out of Scope**：
+- SSH 模式（远端 SSH 账号登录）作为 Phase 5+ 增量。
+- multipart 文件上传到远端目前仅流式转发原始 body，未做完整 busboy 解析。
+
+---
+
+## Feature Detail: nexus4cc v4.8.3 补丁移植
+
+从上游 nexus4cc v4.8.3 反向移植一批补丁到 agentmobile（保留 agentmobile 已有的 IM / Tasks / 远端实例 / Codex 多 Agent / cookie 认证子系统）。
+
+### 文件浏览器增强（WorkspaceBrowser.tsx）
+
+- **Markdown TOC**：markdown 文件编辑器内置可折叠目录树（`marked.lexer` 解析，正确跳过代码块内的 `#`）。双击节点展开/折叠，点击导航 + `scrollIntoView`，展开/收起全部。标题经自定义 marked renderer 注入 `id`，DOMPurify `ALLOWED_ATTR` 增加 `id`/`type`。
+- **嵌入式侧栏 + 拖拽缩放**：宽屏（`canEmbedBrowser` ≥700px，matchMedia 检测）下文件浏览器作为侧栏而非全屏 modal；右侧拖拽手柄调整宽度，持久化到 `agentmobile_filetree_width`。`forwardRef` 暴露 `closeEditor()` 供父组件协调。
+- **折叠机 overlay 模式**：折叠屏（≥700px <1024px）侧栏与编辑器并排；编辑器 `onClickCapture` 阻止 click-through 到下层 markdown 链接。
+- **紧凑编辑器头部**：`ResizeObserver` 在 < 480px 隐藏按钮文字只留图标。
+- **显示隐藏文件**：切换显示 dotfile，持久化到 `agentmobile_show_hidden`，向后端 `/api/workspace/files?showHidden=1` 传参。
+- **双击 channel 关编辑器**：`SessionManagerV2.onCloseEditor` 在双击 channel 时先关编辑器再切换。
+- **文本编辑器限制**：前端 `isTextFile` 预检 + 后端 415（二进制扩展名/null-byte 检测）回退只读视图 + 413（>5MB）友好提示。
+
+### 后端
+
+- `GET /api/workspace/files` 支持 `?showHidden=1`。
+- `GET/PUT /api/workspace/file` 拒绝二进制（415）与超大文件（413，上限 5MB），防止编辑器 OOM 与乱码。
+- `POST /api/launch-iterm`（macOS-only，tmux -CC 接管 session；非 darwin 返回 400）。
+
+### CONTEXT_TOKENS
+
+每个 API profile 新增 `CONTEXT_TOKENS` 字段，`agentmobile-run-claude.sh` 读出并 `export CLAUDE_CODE_MAX_CONTEXT_TOKENS`。第三方/非 Claude Code 已知模型默认 200k 上下文窗口会过早触发 auto-compact，此字段让用户声明真实窗口。
+
+### 会话持久化（tmux 域）
+
+开机后自动恢复 tmux session/window/pane 结构（tmux-resurrect 快照）并在每个 claude 频道精确接续对话（pane 标题 → `~/.claude/projects/**/*.jsonl` 首条用户消息模糊匹配 → `claude --resume <uuid>`，回退 `--continue`）。运行在 `agentmobile-tmux.service` 域（`scripts/tmux-runtime.sh` 调用 `agentmobile-restore-tmux.sh` + `agentmobile-resume-claude.sh`），**非** web 服务。`AGENTMOBILE_RESTORED` 标记守护，普通重启跳过，绝不覆盖运行中的会话。只对 claude pane 注入，不碰 codex/opencode/trae pane。前置条件：tmux-resurrect 插件（详见 SERVICES.md）。
+
+### 显式不做（保留 agentmobile 现有实现）
+
+- 不移植 nexus4cc 的 query-token WS 认证（agentmobile 用 cookie + in-band message）。
+- 不移植 workspace-global 文件路径隔离（agentmobile 用 session 级隔离 `isPathAllowedForSession`）。
+- 不移植 nexus4cc 的 mobileKeyboard 简化模型（agentmobile 保留 chunked paste / stripMobileInputArtifacts / codex alt-screen refresh / paddingBottom 布局）。
+- 不移植 `New` 下拉菜单（保留 agentmobile 的 New Folder/New File + Edit/View/Download 行）。
+
+---
+
 ## Known Limitations（v1）
 
 | 问题 | 影响 | v2 解法 |

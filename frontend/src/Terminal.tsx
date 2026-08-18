@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState, lazy, Suspense } from 'react'
+import { apiUrl, wsUrl } from './api'
 import type { SessionManagerV2Handle } from './SessionManagerV2'
 import { useTranslation } from 'react-i18next'
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm'
@@ -13,6 +14,9 @@ import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowSta
 import { resolveMobileKeyboardViewportState } from './mobileKeyboard'
 import { mapSpecialKey, shouldSkipInput, stripMobileInputArtifacts } from './mobileInput'
 import { buildWebSocketAuthMessage, clearAuthAndReload } from './auth'
+import RemoteInstanceSwitcher from './RemoteInstanceSwitcher'
+import RemoteBanner from './RemoteBanner'
+import { useInstanceSwitch, clearRemoteInstanceOnLogout } from './remoteInstance'
 
 // ANSI 256-color palette (0-15 standard, 16-231 6x6x6 cube, 232-255 grayscale)
 const ANSI256: string[] = (() => {
@@ -212,6 +216,7 @@ export const THEMES: Record<ThemeMode, ITheme> = {
 
 async function parseApiError(r: Response, fallback?: string): Promise<string> {
   if (r.status === 401) {
+    clearRemoteInstanceOnLogout()
     clearAuthAndReload()
     return ''
   }
@@ -330,11 +335,22 @@ export default function Terminal({ token }: Props) {
   const [sessionActionError, setSessionActionError] = useState<string | null>(null)
 
   const [isWidePC, setIsWidePC] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768)
+  // Foldable-aware: canEmbedBrowser is true on wide-enough screens (≥700px) so
+  // the WorkspaceBrowser can render as an embedded sidebar instead of a full-screen
+  // modal. Uses matchMedia with a 'change' listener (window resize is unreliable on
+  // foldables like vivo X Fold). Distinct from isWidePC (≥768).
+  const [canEmbedBrowser, setCanEmbedBrowser] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia?.('(min-width: 700px)').matches === true
+  )
   const [isConnecting, setIsConnecting] = useState(false)
   const hasConnectedRef = useRef(false)
   const [showFiles, setShowFiles] = useState(false)
   const [showWorkspace, setShowWorkspace] = useState(false)
   const [showTasks, setShowTasks] = useState(false)
+  // Embedded WorkspaceBrowser sidebar: ref for imperative closeEditor(), plus a
+  // hide flag so an open file editor can take the full width (overlay mode).
+  const workspaceBrowserRef = useRef<import('./WorkspaceBrowser').WorkspaceBrowserHandle | null>(null)
+  const [workspaceSidebarHidden, setWorkspaceSidebarHidden] = useState(false)
   const [copySheetText, setCopySheetText] = useState<string | null>(null)
   const [showScrollback, setShowScrollback] = useState(false)
   const [scrollbackContent, setScrollbackContent] = useState('')
@@ -407,6 +423,26 @@ export default function Terminal({ token }: Props) {
   activeTmuxSessionRef.current = activeTmuxSession
   const sessionManagerRef = useRef<SessionManagerV2Handle>(null)
 
+  // 远端实例切换：清空 tmux 状态并触发 WebSocket 重连
+  const instanceId = useInstanceSwitch()
+  // 切换实例时重置 tmux 会话相关状态，避免使用旧实例的陈旧数据
+  useEffect(() => {
+    setTmuxSessions([])
+    setProjects([])
+    setWindows([])
+    setActiveTmuxSession(localStorage.getItem('agentmobile_session') || '')
+    setWsSessionKey(localStorage.getItem('agentmobile_session') || '__default__')
+    // 切换实例后立即重新拉取配置
+    fetch(apiUrl('/api/config'), { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(d => {
+        if (d.tmuxSession && !localStorage.getItem('agentmobile_session')) {
+          setActiveTmuxSession(d.tmuxSession)
+        }
+      })
+      .catch(() => {})
+  }, [instanceId, token])
+
   // Projects list (for getting project path when creating new channel)
   interface ProjectInfo {
     name: string
@@ -420,7 +456,7 @@ export default function Terminal({ token }: Props) {
 
   // 加载服务端默认 session
   useEffect(() => {
-    fetch('/api/config', { headers: { Authorization: `Bearer ${token}` } })
+    fetch(apiUrl('/api/config'), { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then(d => {
         if (d.tmuxSession && !localStorage.getItem('agentmobile_session')) {
@@ -539,7 +575,7 @@ export default function Terminal({ token }: Props) {
 
   const fetchTmuxSessions = useCallback(async () => {
     try {
-      const r = await fetch('/api/tmux-sessions', { headers: { Authorization: `Bearer ${token}` } })
+      const r = await fetch(apiUrl('/api/tmux-sessions'), { headers: { Authorization: `Bearer ${token}` } })
       if (r.ok) {
         const sessions = await r.json()
         setTmuxSessions(sessions.map((s: any) => s.name))
@@ -551,7 +587,7 @@ export default function Terminal({ token }: Props) {
 
   const fetchProjectsList = useCallback(async () => {
     try {
-      const r = await fetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
+      const r = await fetch(apiUrl('/api/projects'), { headers: { Authorization: `Bearer ${token}` } })
       if (r.ok) {
         setProjects(await r.json())
       }
@@ -562,7 +598,7 @@ export default function Terminal({ token }: Props) {
 
   const confirmActiveWindow = useCallback(async (session: string, index: number) => {
     try {
-      const r = await fetch(`/api/sessions/${index}/attach?session=${encodeURIComponent(session)}`, {
+      const r = await fetch(apiUrl(`/api/sessions/${index}/attach?session=${encodeURIComponent(session)}`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -589,6 +625,16 @@ export default function Terminal({ token }: Props) {
     const check = () => setIsWidePC(window.innerWidth >= 768)
     window.addEventListener('resize', check)
     return () => window.removeEventListener('resize', check)
+  }, [])
+
+  // Foldable detection via matchMedia (more reliable than window resize on foldables)
+  useEffect(() => {
+    const mq = window.matchMedia?.('(min-width: 700px)')
+    if (!mq) return
+    const handler = (e: MediaQueryListEvent) => setCanEmbedBrowser(e.matches)
+    mq.addEventListener?.('change', handler)
+    setCanEmbedBrowser(mq.matches)
+    return () => mq.removeEventListener?.('change', handler)
   }, [])
 
   // 请求通知权限（首次使用时，静默请求）
@@ -715,7 +761,7 @@ export default function Terminal({ token }: Props) {
       const outputs: Record<number, any> = {}
       for (const win of windows) {
         try {
-          const r = await fetch(`/api/sessions/${win.index}/output?session=${encodeURIComponent(activeTmuxSession)}`, { headers: { Authorization: `Bearer ${token}` } })
+          const r = await fetch(apiUrl(`/api/sessions/${win.index}/output?session=${encodeURIComponent(activeTmuxSession)}`), { headers: { Authorization: `Bearer ${token}` } })
           if (r.ok) outputs[win.index] = await r.json()
         } catch {}
       }
@@ -880,7 +926,7 @@ export default function Terminal({ token }: Props) {
   async function fetchWindows() {
     try {
       const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions?session=${encodeURIComponent(session)}`, { headers: { Authorization: `Bearer ${token}` } })
+      const r = await fetch(apiUrl(`/api/sessions?session=${encodeURIComponent(session)}`), { headers: { Authorization: `Bearer ${token}` } })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const d = await r.json()
       const wins = d.windows ?? []
@@ -949,7 +995,7 @@ export default function Terminal({ token }: Props) {
   async function closeWindow(index: number) {
     try {
       const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions/${index}?session=${encodeURIComponent(session)}`, {
+      const r = await fetch(apiUrl(`/api/sessions/${index}?session=${encodeURIComponent(session)}`), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       })
@@ -964,7 +1010,7 @@ export default function Terminal({ token }: Props) {
   async function renameWindow(index: number, name: string) {
     try {
       const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions/${index}/rename?session=${encodeURIComponent(session)}`, {
+      const r = await fetch(apiUrl(`/api/sessions/${index}/rename?session=${encodeURIComponent(session)}`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -980,7 +1026,7 @@ export default function Terminal({ token }: Props) {
   async function createSession(relPath: string, agentType: 'claude' | 'codex' | 'trae' | 'opencode' | 'bash' = 'claude', profile?: string) {
     setSessionActionError(null)
     try {
-      const r = await fetch('/api/projects', {
+      const r = await fetch(apiUrl('/api/projects'), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: relPath, agent_type: agentType, profile }),
@@ -1007,7 +1053,7 @@ export default function Terminal({ token }: Props) {
       // 获取当前 project 的路径
       const currentProject = projects.find(p => p.name === session)
       const projectPath = currentProject?.path
-      const r = await fetch(`/api/projects/${encodeURIComponent(session)}/channels`, {
+      const r = await fetch(apiUrl(`/api/projects/${encodeURIComponent(session)}/channels`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent_type: agentType, profile, path: projectPath }),
@@ -1026,7 +1072,7 @@ export default function Terminal({ token }: Props) {
         attachToWindow(resolvedWindowIndex)
       }
       const sessionNow = activeTmuxSessionRef.current
-      const listRes = await fetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
+      const listRes = await fetch(apiUrl(`/api/sessions?session=${encodeURIComponent(sessionNow)}`), {
         headers: { Authorization: `Bearer ${token}` }
       })
       if (!listRes.ok) {
@@ -1134,7 +1180,7 @@ export default function Terminal({ token }: Props) {
     formData.append('file', snapshot.file)
     formData.append('originalName', snapshot.file.name)
     const sessionParam = `session=${encodeURIComponent(activeTmuxSessionRef.current)}`
-    const url = overwrite ? `/api/files/upload?overwrite=1&${sessionParam}` : `/api/files/upload?${sessionParam}`
+    const url = overwrite ? apiUrl(`/api/files/upload?overwrite=1&${sessionParam}`) : apiUrl(`/api/files/upload?${sessionParam}`)
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return
@@ -1248,7 +1294,11 @@ export default function Terminal({ token }: Props) {
     })
 
     const fitAddon = new FitAddon()
-    const webLinksAddon = new WebLinksAddon()
+    // Open links in a new tab (PWA-safe: keeps the user inside the app instead
+    // of navigating the current page away).
+    const webLinksAddon = new WebLinksAddon((_event: MouseEvent, uri: string) => {
+      window.open(uri, '_blank', 'noopener,noreferrer')
+    })
     term.loadAddon(fitAddon)
     term.loadAddon(webLinksAddon)
     termRef.current = term
@@ -1314,7 +1364,7 @@ export default function Terminal({ token }: Props) {
         ) {
           const wi = activeWindowIndexRef.current
           const s = activeTmuxSessionRef.current
-          scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
+          scrollbackPrefetchRef.current = fetch(apiUrl(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`), {
             headers: { Authorization: `Bearer ${token}` },
           }).then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then((data: { content: string }) => {
@@ -1369,6 +1419,16 @@ export default function Terminal({ token }: Props) {
         if (term.hasSelection()) {
           e.preventDefault()
           navigator.clipboard.writeText(term.getSelection()).catch(() => {})
+          return
+        }
+        // Fallback: when tmux mouse mode is on and the user Shift+drags, the
+        // selection may live in the browser's native DOM (window.getSelection)
+        // rather than xterm's buffer. Copy that if its anchor is inside the
+        // terminal container.
+        const domSel = window.getSelection()
+        if (domSel && domSel.toString() && containerRef.current?.contains(domSel.anchorNode)) {
+          e.preventDefault()
+          copyToClipboard(domSel.toString())
           return
         }
         // Mac Cmd+C 无选中：不拦截（Mac 终端里 Cmd+C 永远是复制，不发送 SIGINT）
@@ -1568,7 +1628,7 @@ export default function Terminal({ token }: Props) {
             ) {
               const wi = activeWindowIndexRef.current
               const s = activeTmuxSessionRef.current
-              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
+              scrollbackPrefetchRef.current = fetch(apiUrl(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`), {
                 headers: { Authorization: `Bearer ${token}` },
               }).then(r => r.ok ? r.json() : Promise.reject(r.status))
                 .then((data: { content: string }) => {
@@ -1720,8 +1780,6 @@ export default function Terminal({ token }: Props) {
     userScrolledRef.current = hasSavedScroll
     hasConnectedRef.current = false
 
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-
     // 延迟显示 loading，避免快速连接时的闪烁
     const loadingTimer = setTimeout(() => {
       if (!hasConnectedRef.current) setIsConnecting(true)
@@ -1742,7 +1800,7 @@ export default function Terminal({ token }: Props) {
     function createWs(isReconnect = false) {
       const s = activeTmuxSessionRef.current
       const wi = activeWindowIndexRef.current
-      const newWs = new WebSocket(`${protocol}//${location.host}/ws?window=${wi}&session=${encodeURIComponent(s)}`)
+      const newWs = new WebSocket(`${wsUrl('/ws')}?window=${wi}&session=${encodeURIComponent(s)}`)
       wsRef.current = newWs
 
       newWs.onopen = () => {
@@ -1796,7 +1854,7 @@ export default function Terminal({ token }: Props) {
       clearTimeout(loadingTimer)
       wsRef.current?.close()
     }
-  }, [token, activeWindowIndex, wsSessionKey])
+  }, [token, activeWindowIndex, wsSessionKey, instanceId])
 
   const isComposingRef = useRef(false)
 
@@ -1968,7 +2026,7 @@ export default function Terminal({ token }: Props) {
     const wi = activeWindowIndexRef.current
     const s = activeTmuxSessionRef.current
     const promise = scrollbackPrefetchRef.current ??
-      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`, {
+      fetch(apiUrl(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${TERMINAL_SCROLLBACK_LINES}`), {
         headers: { Authorization: `Bearer ${token}` },
       }).then(r => r.ok ? r.json() : Promise.reject(r.status))
 
@@ -2076,7 +2134,7 @@ export default function Terminal({ token }: Props) {
         accept="image/*,video/*"
         multiple
         className="fixed w-11 h-11 opacity-[0.01] -z-10"
-        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent', fontSize: '16px' }}
         tabIndex={-1}
         onChange={(e) => {
           if (e.target.files) enqueueUploadFiles(e.target.files)
@@ -2089,7 +2147,7 @@ export default function Terminal({ token }: Props) {
         type="file"
         multiple
         className="fixed w-11 h-11 opacity-[0.01] -z-10"
-        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent' }}
+        style={{ left: '-9999px', top: '0', border: '0', padding: '0', background: 'transparent', color: 'transparent', caretColor: 'transparent', fontSize: '16px' }}
         tabIndex={-1}
         onChange={(e) => {
           if (e.target.files) enqueueUploadFiles(e.target.files)
@@ -2225,14 +2283,17 @@ export default function Terminal({ token }: Props) {
               ) : (
                 /* Expanded Sidebar: session manager + fixed bottom bar */
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
-                  {/* Collapse button in header area */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(true); localStorage.setItem('agentmobile_sidebar_collapsed', 'true'); }}
-                    className="absolute top-1 right-1 z-50 w-7 h-7 flex items-center justify-center rounded cursor-pointer bg-agentmobile-bg/80 border border-agentmobile-border text-agentmobile-text-2 hover:bg-agentmobile-bg transition-colors"
-                    title="收起侧边栏"
-                  >
-                    <Icon name="chevronLeft" size={16} />
-                  </button>
+                  {/* Instance switcher header + collapse button */}
+                  <div className="flex items-center gap-2 px-2 py-2 border-b border-agentmobile-border shrink-0">
+                    <RemoteInstanceSwitcher variant="sidebar" />
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(true); localStorage.setItem('agentmobile_sidebar_collapsed', 'true'); }}
+                      className="w-7 h-7 flex items-center justify-center rounded cursor-pointer bg-agentmobile-bg/80 border border-agentmobile-border text-agentmobile-text-2 hover:bg-agentmobile-bg transition-colors shrink-0"
+                      title="收起侧边栏"
+                    >
+                      <Icon name="chevronLeft" size={16} />
+                    </button>
+                  </div>
                   <div
                     className="flex-1 min-h-0 overflow-hidden"
                   >
@@ -2246,6 +2307,7 @@ export default function Terminal({ token }: Props) {
                       onSwitchChannel={(idx) => attachToWindow(idx)}
                       onNewProject={openNewSessionDialog}
                       onNewChannel={handleCreateWindow}
+                      onCloseEditor={() => workspaceBrowserRef.current?.closeEditor()}
                       layout="sidebar"
                     />
                   </div>
@@ -2256,6 +2318,7 @@ export default function Terminal({ token }: Props) {
               )}
             </div>
             <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
+              <RemoteBanner />
               <div ref={containerRef} className="flex-1 overflow-hidden relative" />
               {isConnecting && (
                 <div className="absolute inset-0 bg-agentmobile-bg flex flex-col items-center justify-center gap-3 z-10">
@@ -2271,6 +2334,7 @@ export default function Terminal({ token }: Props) {
         </div>
       ) : (
         <div className="flex flex-col flex-1 overflow-hidden min-h-0">
+          <RemoteBanner />
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
             <div ref={containerRef} className="flex-1 overflow-hidden relative" />
             {isConnecting && (
@@ -2406,9 +2470,17 @@ export default function Terminal({ token }: Props) {
       {showWorkspace && (
         <Suspense fallback={null}>
           <WorkspaceBrowser
+            ref={workspaceBrowserRef}
             token={token}
             onClose={() => setShowWorkspace(false)}
             currentSession={activeTmuxSession}
+            // Embedded sidebar (wide screens) + foldable overlay modes. When
+            // canEmbedBrowser is false (mobile), these props are undefined and
+            // the browser renders as a full-screen modal (legacy behavior).
+            embedded={canEmbedBrowser && !workspaceSidebarHidden}
+            overlay={canEmbedBrowser && workspaceSidebarHidden}
+            hideSidebar={canEmbedBrowser && workspaceSidebarHidden}
+            onEditingChange={(editing) => setWorkspaceSidebarHidden(editing)}
           />
         </Suspense>
       )}
@@ -2473,6 +2545,7 @@ export default function Terminal({ token }: Props) {
             onSwitchChannel={attachToWindow}
             onNewProject={() => { setShowSessionManagerV2(false); openNewSessionDialog() }}
             onNewChannel={() => { setShowSessionManagerV2(false); handleCreateWindow() }}
+            onCloseEditor={() => workspaceBrowserRef.current?.closeEditor()}
           />
         </Suspense>
       )}

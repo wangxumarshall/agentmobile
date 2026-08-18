@@ -67,3 +67,287 @@ body,
   width: 100% !important;
   overflow: hidden !important;
 }
+
+/* =============================================================
+ * Login page — Terminal × Precision Instrument aesthetic
+ * Scoped under .login-* classes; reuses theme CSS variables.
+ * ============================================================= */
+
+/* Full-screen stage with layered radial gradients for "machine-room depth" */
+.login-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-color: var(--agentmobile-bg);
+  background-image:
+    radial-gradient(ellipse 60% 50% at 50% 0%, rgba(59, 130, 246, 0.12), transparent 70%),
+    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(59, 130, 246, 0.06), transparent 60%),
+    radial-gradient(circle at 20% 30%, rgba(34, 197, 94, 0.05), transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(245, 158, 11, 0.04), transparent 40%);
+}
+
+/* Fine dot grid overlay with radial mask for edge fade */
+.login-grid-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: center;
+  mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, #000 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, #000 30%, transparent 80%);
+}
+
+/* Slow drifting scanline — barely perceptible */
+.login-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.35), transparent);
+  pointer-events: none;
+  animation: login-scan 8s linear infinite;
+}
+
+@keyframes login-scan {
+  0% { top: -2%; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { top: 102%; opacity: 0; }
+}
+
+/* Corner decorations — terminal brackets */
+.login-corner-deco {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-color: color-mix(in srgb, var(--agentmobile-muted) 55%, transparent);
+  pointer-events: none;
+}
+.login-corner-deco--tl { top: 20px; left: 20px; border-top: 1px solid; border-left: 1px solid; }
+.login-corner-deco--tr { top: 20px; right: 20px; border-top: 1px solid; border-right: 1px solid; }
+.login-corner-deco--bl { bottom: 20px; left: 20px; border-bottom: 1px solid; border-left: 1px solid; }
+.login-corner-deco--br { bottom: 20px; right: 20px; border-bottom: 1px solid; border-right: 1px solid; }
+
+/* Glass card with backdrop blur */
+.login-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 24rem;
+  margin: 1.25rem;
+  padding: 2.25rem 2rem 1.75rem;
+  background: color-mix(in srgb, var(--agentmobile-bg2) 78%, transparent);
+  border: 1px solid var(--agentmobile-border);
+  border-radius: 14px;
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  box-shadow:
+    0 12px 48px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (max-width: 480px) {
+  .login-card {
+    margin: 0.75rem;
+    padding: 1.75rem 1.25rem 1.25rem;
+    border-radius: 12px;
+  }
+}
+
+/* Terminal status bar above logo */
+.login-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px dashed color-mix(in srgb, var(--agentmobile-border) 70%, transparent);
+  font-family: Menlo, Monaco, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--agentmobile-text2);
+  text-transform: uppercase;
+}
+.login-status-bar__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--agentmobile-success);
+  box-shadow: 0 0 6px var(--agentmobile-success);
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.login-status-bar__version {
+  margin-left: auto;
+  color: var(--agentmobile-muted);
+}
+
+/* Logo mark */
+.login-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+/* Title and subtitle — mono vs sans pairing */
+.login-title {
+  font-family: Menlo, Monaco, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 1.875rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-align: center;
+  color: var(--agentmobile-text);
+  margin-bottom: 0.375rem;
+}
+.login-subtitle {
+  text-align: center;
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
+  color: var(--agentmobile-text2);
+  margin-bottom: 1.75rem;
+}
+
+/* Password field with leading lock and trailing eye toggle */
+.login-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.login-field__icon--lead {
+  position: absolute;
+  left: 0.875rem;
+  color: var(--agentmobile-muted);
+  pointer-events: none;
+}
+.login-field__toggle {
+  position: absolute;
+  right: 0.5rem;
+  background: transparent;
+  border: none;
+  padding: 0.375rem;
+  color: var(--agentmobile-text2);
+  cursor: pointer;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-field__toggle:hover {
+  color: var(--agentmobile-text);
+  background: color-mix(in srgb, var(--agentmobile-accent) 12%, transparent);
+}
+.login-field__toggle:focus-visible {
+  outline: 2px solid var(--agentmobile-accent);
+  outline-offset: 1px;
+}
+.login-input {
+  width: 100%;
+  background: color-mix(in srgb, var(--agentmobile-bg) 60%, transparent);
+  border: 1px solid var(--agentmobile-border);
+  border-radius: 8px;
+  color: var(--agentmobile-text);
+  font-family: Menlo, Monaco, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.9375rem;
+  padding: 0.75rem 2.75rem 0.75rem 2.5rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.login-input::placeholder {
+  color: var(--agentmobile-muted);
+  font-family: inherit;
+}
+.login-input:focus {
+  border-color: var(--agentmobile-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--agentmobile-accent) 18%, transparent);
+}
+
+/* Error text with shake animation */
+.login-error {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--agentmobile-error);
+  background: color-mix(in srgb, var(--agentmobile-error) 10%, transparent);
+  border-left: 2px solid var(--agentmobile-error);
+  border-radius: 4px;
+  animation: login-shake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes login-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(5px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
+/* Submit button with hover glow */
+.login-submit {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--agentmobile-accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: box-shadow 0.18s ease, transform 0.12s ease, filter 0.18s ease;
+  font-family: inherit;
+}
+.login-submit:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px var(--agentmobile-accent), 0 0 24px color-mix(in srgb, var(--agentmobile-accent) 55%, transparent);
+  filter: brightness(1.08);
+}
+.login-submit:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.login-submit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* Footer with theme hint */
+.login-footer {
+  margin-top: 1.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed color-mix(in srgb, var(--agentmobile-border) 60%, transparent);
+  text-align: center;
+  font-family: Menlo, Monaco, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--agentmobile-muted);
+  text-transform: uppercase;
+}
+
+/* Stagger entrance helpers — paired with animate-slide-up keyframe */
+.login-stagger-1 { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: 60ms; }
+.login-stagger-2 { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: 120ms; }
+.login-stagger-3 { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: 180ms; }
+.login-stagger-4 { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: 240ms; }
+.login-stagger-5 { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: 300ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .login-scanline,
+  .login-status-bar__dot {
+    animation: none;
+  }
+  .login-card,
+  .login-stagger-1,
+  .login-stagger-2,
+  .login-stagger-3,
+  .login-stagger-4,
+  .login-stagger-5 {
+    animation: none;
+  }
+}

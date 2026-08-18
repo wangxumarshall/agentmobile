@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
@@ -282,7 +283,7 @@ export default function TaskPanel({ token, currentProject, currentChannelName, o
     if (eventSourcesRef.current.has(taskId)) return
 
     const fromSeq = resumeStateRef.current[taskId]?.lastSeq ?? 0
-    const url = `/api/tasks/${encodeURIComponent(taskId)}/events?from_seq=${fromSeq}`
+    const url = apiUrl(`/api/tasks/${encodeURIComponent(taskId)}/events?from_seq=${fromSeq}`)
     const source = new EventSource(url)
 
     source.addEventListener('snapshot', (event) => {
@@ -346,7 +347,7 @@ export default function TaskPanel({ token, currentProject, currentChannelName, o
 
   const fetchProfiles = useCallback(async () => {
     try {
-      const response = await fetch('/api/configs', {
+      const response = await fetch(apiUrl('/api/configs'), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!response.ok) return
@@ -360,7 +361,7 @@ export default function TaskPanel({ token, currentProject, currentChannelName, o
   const fetchTasks = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true)
     try {
-      const response = await fetch('/api/tasks', {
+      const response = await fetch(apiUrl('/api/tasks'), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!response.ok) {
@@ -427,7 +428,7 @@ export default function TaskPanel({ token, currentProject, currentChannelName, o
     let startedTaskId: string | null = null
 
     try {
-      const response = await fetch('/api/tasks', {
+      const response = await fetch(apiUrl('/api/tasks'), {
         method: 'POST',
         signal: controller.signal,
         headers: {
@@ -496,7 +497,7 @@ export default function TaskPanel({ token, currentProject, currentChannelName, o
     const confirmed = window.confirm(t('tasks.deleteConfirm'))
     if (!confirmed) return
     try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+      const response = await fetch(apiUrl(`/api/tasks/${encodeURIComponent(taskId)}`), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })

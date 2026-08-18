@@ -20,6 +20,27 @@ PM2 fallback 只管理 `agentmobile` 单进程，适用于 systemd 不可用的�
 
 ---
 
+## 会话持久化（开机自动恢复 tmux + claude 对话）
+
+`agentmobile-tmux.service` 启动时，`scripts/tmux-runtime.sh` 会调用 `scripts/agentmobile-restore-tmux.sh`，从 `~/.tmux/resurrect/last` 恢复上次的 tmux session/window/pane 结构，然后用 `scripts/agentmobile-resume-claude.sh` 在每个 claude 频道里精确接续之前的对话（按 pane 标题模糊匹配 `~/.claude/projects/**/*.jsonl` 的首条用户消息 → `claude --resume <uuid>`，匹配失败回退 `claude --continue`）。
+
+**前置条件**：需安装 `tmux-resurrect` 插件到 `~/.tmux/plugins/tmux-resurrect/`。未安装时恢复脚本会静默跳过（不影响正常启动）。安装：
+
+```bash
+git clone https://github.com/tmux-plugins/tmux-resurrect ~/.tmux/plugins/tmux-resurrect
+# 并在 ~/.tmux.conf 加入：run-shell ~/.tmux/plugins/tmux-resurrect/resurrect.tmux
+```
+
+**安全保证**：
+
+- 恢复脚本由 `AGENTMOBILE_RESTORED` tmux 环境标记守护（随 tmux server 生命周期存在，宿主机重启后消失）。**普通重启 `agentmobile-tmux.service`（tmux 仍在）会因标记存在而跳过**，绝不覆盖正在运行的会话——所以日常部署不受影响。
+- `agentmobile-resume-claude.sh` 只对启动命令含 `agentmobile-run-claude.sh` 的 pane 注入，**不碰 codex / opencode / tre pane**；且只对当前是普通 shell 的 pane 注入，不覆盖已在跑 claude 的 pane。
+- 受控维护窗口需要强制重做恢复时，用 `scripts/service-control.sh restart-tmux --force`（会清掉标记触发一次恢复）。
+
+**测试恢复（不实际注入）**：`bash scripts/agentmobile-resume-claude.sh --dry-run ~/.tmux/resurrect/last`
+
+---
+
 ## 推荐入口
 
 优先使用仓库内的统一脚本：

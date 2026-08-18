@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, useImperativeHandle, forwardRef } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -16,6 +17,14 @@ interface Props {
   onClose: () => void
   initialPath?: string
   currentSession?: string
+  /** Render as an embedded sidebar column (wide screens) instead of a full-screen modal. */
+  embedded?: boolean
+  /** Foldable-phone overlay mode: sidebar + editor coexist side-by-side. */
+  overlay?: boolean
+  /** When true (overlay mode), hide the sidebar to give the editor full width. */
+  hideSidebar?: boolean
+  /** Notifies parent when the file editor opens/closes (for layout coordination). */
+  onEditingChange?: (editing: boolean) => void
 }
 
 function formatSize(bytes?: number): string {
@@ -30,9 +39,223 @@ function formatTime(ts: number): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
 }
 
-export default function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession }: Props) {
+// ---- Markdown TOC (Table of Contents) ----
+interface TocEntry {
+  id: string
+  text: string
+  level: number
+  children: TocEntry[]
+}
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w一-鿿-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function TocNode({ entry, depth, expandedIds, onToggle, onNavigate }: {
+  entry: TocEntry
+  depth: number
+  expandedIds: Set<string>
+  onToggle: (id: string) => void
+  onNavigate: (id: string) => void
+}) {
+  const hasChildren = entry.children.length > 0
+  const isExpanded = expandedIds.has(entry.id)
+  const indent = Math.min(depth, 5) * 16
+  const clickTimer = useRef<number | null>(null)
+
+  function handleTextClick() {
+    if (hasChildren && clickTimer.current !== null) {
+      clearTimeout(clickTimer.current)
+      clickTimer.current = null
+      onToggle(entry.id)
+      return
+    }
+    clickTimer.current = window.setTimeout(() => {
+      clickTimer.current = null
+      onNavigate(entry.id)
+    }, 280)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (clickTimer.current !== null) clearTimeout(clickTimer.current)
+    }
+  }, [])
+
+  return (
+    <div>
+      <div
+        className="flex items-center gap-0.5 py-1 pr-2 rounded hover:bg-agentmobile-bg-2 cursor-pointer select-none"
+        style={{ paddingLeft: `${indent}px` }}
+      >
+        {hasChildren ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggle(entry.id) }}
+            className="p-0.5 text-agentmobile-muted hover:text-agentmobile-text flex-shrink-0 bg-transparent border-none cursor-pointer"
+            aria-label={isExpanded ? 'Collapse' : 'Expand'}
+          >
+            <Icon name={isExpanded ? 'chevronDown' : 'chevronRight'} size={14} />
+          </button>
+        ) : (
+          <span className="w-[18px] flex-shrink-0" />
+        )}
+        <span
+          onClick={handleTextClick}
+          className="text-agentmobile-text text-sm truncate hover:text-agentmobile-accent flex-1"
+        >
+          {entry.text}
+        </span>
+      </div>
+      {hasChildren && isExpanded && (
+        <div>
+          {entry.children.map(child => (
+            <TocNode
+              key={child.id}
+              entry={child}
+              depth={depth + 1}
+              expandedIds={expandedIds}
+              onToggle={onToggle}
+              onNavigate={onNavigate}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function buildToc(markdown: string): TocEntry[] {
+  // Use marked's lexer for proper parsing — regex can't distinguish
+  // real headings from # lines inside fenced code blocks.
+  const tokens = marked.lexer(markdown)
+  const headings: { level: number; text: string; id: string }[] = []
+  for (const token of tokens) {
+    if (token.type === 'heading') {
+      const t = token as any
+      const text = (t.text || '').trim()
+      if (text) {
+        headings.push({ level: t.depth as number, text, id: slugify(text) })
+      }
+    }
+  }
+
+  // Deduplicate IDs
+  const idCounts = new Map<string, number>()
+  for (const h of headings) {
+    const count = idCounts.get(h.id) || 0
+    if (count > 0) {
+      h.id = `${h.id}-${count}`
+    }
+    idCounts.set(h.id, (idCounts.get(h.id) || 0) + 1)
+  }
+
+  // Build tree
+  const root: TocEntry[] = []
+  const stack: TocEntry[] = []
+  for (const h of headings) {
+    const entry: TocEntry = { id: h.id, text: h.text, level: h.level, children: [] }
+    while (stack.length > 0 && stack[stack.length - 1].level >= h.level) {
+      stack.pop()
+    }
+    if (stack.length === 0) {
+      root.push(entry)
+    } else {
+      stack[stack.length - 1].children.push(entry)
+    }
+    stack.push(entry)
+  }
+  return root
+}
+
+function collectParentIds(tree: TocEntry[]): string[] {
+  const ids: string[] = []
+  for (const entry of tree) {
+    if (entry.children.length > 0) {
+      ids.push(entry.id)
+      ids.push(...collectParentIds(entry.children))
+    }
+  }
+  return ids
+}
+
+// marked renderer factory: generates heading IDs using slugify so TOC
+// navigation can scrollIntoView the rendered heading.
+function createMarkedRenderer() {
+  const r = new marked.Renderer()
+  const seenIds = new Map<string, number>()
+  r.heading = function (opts: { tokens: any[]; depth: number; text: string }) {
+    let id = slugify(opts.text)
+    const count = seenIds.get(id) || 0
+    if (count > 0) {
+      id = `${id}-${count}`
+    }
+    seenIds.set(id, (seenIds.get(id) || 0) + 1)
+    return `<h${opts.depth} id="${id}">${this.parser.parseInline(opts.tokens)}</h${opts.depth}>\n`
+  }
+  r.link = function (opts: { href: string; title?: string | null; tokens: any[] }) {
+    const text = this.parser.parseInline(opts.tokens)
+    const title = opts.title ? ` title="${opts.title}"` : ''
+    return `<a href="${opts.href}"${title} target="_blank" rel="noopener noreferrer">${text}</a>`
+  }
+  return r
+}
+
+export interface WorkspaceBrowserHandle {
+  closeEditor: () => void
+}
+
+const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, embedded, overlay, hideSidebar, onEditingChange }: Props, ref) {
   const { t } = useTranslation()
   const [workspaceRoot, setWorkspaceRoot] = useState('')
+
+  // Sidebar width for embedded mode (persisted + draggable)
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem('agentmobile_filetree_width')
+      if (saved) return Math.max(200, Math.min(600, parseInt(saved, 10)))
+    }
+    return 280
+  })
+  const draggingRef = useRef(false)
+  const dragStartXRef = useRef(0)
+  const dragStartWidthRef = useRef(0)
+  const dragWidthRef = useRef(sidebarWidth)
+
+  function handleResizeMouseDown(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    draggingRef.current = true
+    dragStartXRef.current = e.clientX
+    dragStartWidthRef.current = sidebarWidth
+
+    function onMouseMove(ev: MouseEvent) {
+      if (!draggingRef.current) return
+      const dx = ev.clientX - dragStartXRef.current
+      const newWidth = Math.max(200, Math.min(window.innerWidth * 0.5, dragStartWidthRef.current + dx))
+      dragWidthRef.current = newWidth
+      setSidebarWidth(newWidth)
+    }
+
+    function onMouseUp() {
+      draggingRef.current = false
+      localStorage.setItem('agentmobile_filetree_width', String(dragWidthRef.current))
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }
 
   // 路径状态：null 表示正在初始化
   const [currentPath, setCurrentPath] = useState<string | null>(null)
@@ -52,7 +275,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       // 1. 获取服务端配置
       let root = ''
       try {
-        const r = await fetch('/api/config', { headers })
+        const r = await fetch(apiUrl('/api/config'), { headers })
         if (r.ok) {
           const data = await r.json()
           root = data.workspaceRoot || ''
@@ -66,7 +289,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       let targetPath = initialPath
       if (!targetPath && currentSession) {
         try {
-          const r = await fetch(`/api/session-cwd?session=${encodeURIComponent(currentSession)}`, { headers })
+          const r = await fetch(apiUrl(`/api/session-cwd?session=${encodeURIComponent(currentSession)}`), { headers })
           if (r.ok) {
             const data = await r.json()
             targetPath = data?.cwd || root || '/'
@@ -101,6 +324,63 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const [editorContent, setEditorContent] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [isPreviewMode, setIsPreviewMode] = useState(false)
+
+  // Markdown TOC 状态
+  const [showToc, setShowToc] = useState(false)
+  const [tocExpandedIds, setTocExpandedIds] = useState<Set<string>>(new Set())
+  const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
+
+  // Compact editor header (hide button labels on narrow editors)
+  const [compactHeader, setCompactHeader] = useState(false)
+  const editorContainerRef = useRef<HTMLDivElement | null>(null)
+
+  // 显示隐藏文件（持久化）
+  const [showHidden, setShowHidden] = useState(() => {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem('agentmobile_show_hidden') === '1'
+    }
+    return false
+  })
+
+  // Imperative close handle — lets Terminal/SessionManager close the editor
+  // when switching channels (double-click channel → closeEditor).
+  useImperativeHandle(ref, () => ({
+    closeEditor: () => {
+      setEditingFile(null)
+      setEditorContent('')
+      setIsPreviewMode(false)
+      setShowToc(false)
+      onEditingChange?.(false)
+    },
+  }), [onEditingChange])
+
+  // Track editor open/close for parent layout coordination
+  useEffect(() => {
+    onEditingChange?.(!!editingFile)
+  }, [editingFile, onEditingChange])
+
+  // Compact-header detection via ResizeObserver (hide labels < 480px)
+  useEffect(() => {
+    const el = editorContainerRef.current
+    if (!el) return
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      setCompactHeader(el.clientWidth < 480)
+    })
+    ro.observe(el)
+    setCompactHeader(el.clientWidth < 480)
+    return () => ro.disconnect()
+  }, [editingFile])
+
+  // Persist show-hidden preference
+  function toggleShowHidden() {
+    const next = !showHidden
+    setShowHidden(next)
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('agentmobile_show_hidden', next ? '1' : '0')
+    }
+    if (currentPath) loadEntries(currentPath)
+  }
 
   // 编辑器字体大小（双指缩放调整）
   const [editorFontSize, setEditorFontSize] = useState(14) // 基础 14px
@@ -139,7 +419,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     setSizesReady(false)
     setSelectedName(null) // 切换目录时清除选中
     try {
-      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}`, {
+      const r = await fetch(apiUrl(`/api/workspace/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=1' : ''}`), {
         headers,
         signal: ctrl.signal,
       })
@@ -164,7 +444,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       setEntries([])
       setLoading(false)
     }
-  }, [token])
+  }, [token, showHidden])
 
   // 当 currentPath 确定后加载内容
   useEffect(() => {
@@ -183,7 +463,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const loadPickerEntries = useCallback(async (path: string) => {
     setPickerLoading(true)
     try {
-      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}`, { headers })
+      const r = await fetch(apiUrl(`/api/workspace/files?path=${encodeURIComponent(path)}`), { headers })
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
       const dirs = (data.entries || []).filter((e: FileEntry) => e.type === 'dir')
@@ -216,7 +496,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     setIsRenaming(true)
     setRenameError('')
     try {
-      const r = await fetch('/api/workspace/rename', {
+      const r = await fetch(apiUrl('/api/workspace/rename'), {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: getEntryPath(renameTarget.name), newName: renameName.trim() }),
@@ -240,7 +520,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   async function deleteEntry(entry: FileEntry) {
     if (!confirm(t('workspace.deleteConfirm', { name: entry.name }))) return
     try {
-      const r = await fetch('/api/workspace/entry', {
+      const r = await fetch(apiUrl('/api/workspace/entry'), {
         method: 'DELETE',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: getEntryPath(entry.name) }),
@@ -291,7 +571,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     const targetPath = pickerPath.endsWith('/') ? `${pickerPath}${pickerSource.name}` : `${pickerPath}/${pickerSource.name}`
     const sourcePath = getEntryPath(pickerSource.name)
     try {
-      const r = await fetch(`/api/workspace/${pickerMode}`, {
+      const r = await fetch(apiUrl(`/api/workspace/${pickerMode}`), {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourcePath, targetPath }),
@@ -372,7 +652,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     setIsCreating(true)
     setNewItemError('')
     try {
-      const r = await fetch('/api/workspace/mkdir', {
+      const r = await fetch(apiUrl('/api/workspace/mkdir'), {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: currentPath, name: newItemName.trim() }),
@@ -397,7 +677,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     setIsCreating(true)
     setNewItemError('')
     try {
-      const r = await fetch('/api/workspace/files', {
+      const r = await fetch(apiUrl('/api/workspace/files'), {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: currentPath, name: newItemName.trim(), content: '' }),
@@ -419,14 +699,30 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   // 打开文件编辑器
   async function openEditor(name: string) {
     if (!currentPath) return
+    // Front-end precheck: known-binary → open as read-only view instead
+    if (!isTextFile(name)) {
+      openFile(name)
+      return
+    }
     const filePath = currentPath.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`
     try {
-      const r = await fetch(`/api/workspace/file?path=${encodeURIComponent(filePath)}`, { headers })
+      const r = await fetch(apiUrl(`/api/workspace/file?path=${encodeURIComponent(filePath)}`), { headers })
+      // 415 = server detected binary → fall back to read-only view
+      if (r.status === 415) {
+        openFile(name)
+        return
+      }
+      // 413 = file too large for editor → friendly alert
+      if (r.status === 413) {
+        alert(t('workspace.fileTooLarge'))
+        return
+      }
       if (!r.ok) throw new Error('Failed to load file')
       const data = await r.json()
       setEditingFile({ name, path: filePath, content: data.content })
       setEditorContent(data.content)
       setIsPreviewMode(false)
+      setShowToc(false)
     } catch (e: any) {
       setError(e.message || 'Failed to open file')
     }
@@ -437,7 +733,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     if (!editingFile) return
     setIsSaving(true)
     try {
-      const r = await fetch('/api/workspace/file', {
+      const r = await fetch(apiUrl('/api/workspace/file'), {
         method: 'PUT',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: editingFile.path, content: editorContent }),
@@ -473,6 +769,45 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     const ext = name.split('.').pop()?.toLowerCase() || ''
     return ext === 'md' || ext === 'markdown'
   }
+
+  // ---- TOC navigation ----
+  const tocTree = useMemo(() => {
+    if (!editingFile || !isMarkdownFile(editingFile.name)) return []
+    return buildToc(editorContent)
+  }, [editingFile, editorContent])
+
+  function toggleTocNode(id: string) {
+    setTocExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function expandAllToc() {
+    setTocExpandedIds(new Set(collectParentIds(tocTree)))
+  }
+
+  function collapseAllToc() {
+    setTocExpandedIds(new Set())
+  }
+
+  function navigateToHeading(id: string) {
+    setPendingScrollId(id)
+    // Ensure preview mode is on so the heading is rendered in the DOM
+    if (!isPreviewMode) setIsPreviewMode(true)
+  }
+
+  // Scroll to the heading once it's rendered in preview mode
+  useEffect(() => {
+    if (!pendingScrollId) return
+    const el = document.getElementById(pendingScrollId)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      setPendingScrollId(null)
+    }
+  }, [pendingScrollId, isPreviewMode, editorContent])
 
   // 双指缩放：计算两点间距离
   function getPinchDistance(touches: React.TouchList | globalThis.TouchList): number {
@@ -559,7 +894,17 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     : null
 
   return (
-    <div className="fixed inset-0 z-[450] bg-agentmobile-bg flex flex-col">
+    <div
+      className={
+        embedded
+          ? 'relative h-full bg-agentmobile-bg flex flex-col border-r border-agentmobile-border'
+          : overlay
+            ? `relative h-full bg-agentmobile-bg flex ${hideSidebar ? 'hidden' : ''}`
+            : 'fixed inset-0 z-[450] bg-agentmobile-bg flex flex-col'
+      }
+      style={(embedded || overlay) ? { width: sidebarWidth } : undefined}
+      onClick={overlay ? () => { if (!hideSidebar) onClose() } : undefined}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3.5 border-b border-agentmobile-border flex-shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -612,20 +957,33 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
         ) : (
           <div />
         )}
-        {/* 排序下拉按钮 */}
-        <div className="relative">
+        <div className="flex items-center gap-1.5">
+          {/* 显示/隐藏 隐藏文件 */}
           <button
-            onClick={() => setShowSortMenu(m => !m)}
+            onClick={toggleShowHidden}
             className={`flex items-center gap-1 text-xs px-2 py-1 rounded border cursor-pointer transition-all duration-100 ${
-              showSortMenu
+              showHidden
                 ? 'bg-agentmobile-accent border-agentmobile-accent text-white'
                 : 'bg-transparent border-agentmobile-border text-agentmobile-text-2'
             }`}
+            title={showHidden ? t('workspace.hideHidden') : t('workspace.showHidden')}
           >
-            <Icon name="sort" size={13} />
-            <span>{t(`workspace.sort.${sortKey}`)}</span>
-            <span>{sortAsc ? '↑' : '↓'}</span>
+            <Icon name={showHidden ? 'eye' : 'eyeOff'} size={13} />
           </button>
+          {/* 排序下拉按钮 */}
+          <div className="relative">
+            <button
+              onClick={() => setShowSortMenu(m => !m)}
+              className={`flex items-center gap-1 text-xs px-2 py-1 rounded border cursor-pointer transition-all duration-100 ${
+                showSortMenu
+                  ? 'bg-agentmobile-accent border-agentmobile-accent text-white'
+                  : 'bg-transparent border-agentmobile-border text-agentmobile-text-2'
+              }`}
+            >
+              <Icon name="sort" size={13} />
+              <span>{t(`workspace.sort.${sortKey}`)}</span>
+              <span>{sortAsc ? '↑' : '↓'}</span>
+            </button>
           {showSortMenu && (
             <>
               <div className="fixed inset-0 z-[460]" onClick={() => setShowSortMenu(false)} />
@@ -645,6 +1003,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
 
@@ -1089,7 +1448,19 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
 
       {/* 文件编辑器 */}
       {editingFile && (
-        <div className="fixed inset-0 z-[470] bg-agentmobile-bg flex flex-col">
+        <div
+          className={overlay ? 'absolute inset-0 z-[1] bg-agentmobile-bg flex flex-col' : 'fixed inset-0 z-[470] bg-agentmobile-bg flex flex-col'}
+          // In overlay (foldable) mode with the sidebar still visible, a click on
+          // the editor area should close the editor first (preventing click-through
+          // to markdown links underneath) rather than activate the underlying content.
+          onClickCapture={(e) => {
+            if (overlay && !hideSidebar) {
+              e.preventDefault()
+              e.stopPropagation()
+              onClose()
+            }
+          }}
+        >
           {/* Editor Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-agentmobile-border flex-shrink-0">
             <div className="flex items-center gap-2 min-w-0">
@@ -1105,39 +1476,99 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-agentmobile-accent hover:bg-agentmobile-accent/90 text-white text-xs rounded transition-colors disabled:opacity-50"
               >
                 <Icon name="save" size={14} />
-                {isSaving ? t('common.saving') : t('common.save')}
+                {!compactHeader && (isSaving ? t('common.saving') : t('common.save'))}
               </button>
               {editingFile && isMarkdownFile(editingFile.name) && (
-                <button
-                  onClick={() => setIsPreviewMode(!isPreviewMode)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
-                    isPreviewMode
-                      ? 'bg-agentmobile-accent text-white border-agentmobile-accent'
-                      : 'bg-agentmobile-bg-2 text-agentmobile-text border-agentmobile-border hover:bg-agentmobile-bg-2/80'
-                  }`}
-                >
-                  <Icon name="eye" size={14} />
-                  {isPreviewMode ? t('workspace.edit') : t('workspace.preview')}
-                </button>
+                <>
+                  <button
+                    onClick={() => setShowToc(s => !s)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
+                      showToc
+                        ? 'bg-agentmobile-accent text-white border-agentmobile-accent'
+                        : 'bg-agentmobile-bg-2 text-agentmobile-text border-agentmobile-border hover:bg-agentmobile-bg-2/80'
+                    }`}
+                    title={t('workspace.toc')}
+                  >
+                    <Icon name="list" size={14} />
+                    {!compactHeader && t('workspace.toc')}
+                  </button>
+                  <button
+                    onClick={() => setIsPreviewMode(!isPreviewMode)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
+                      isPreviewMode
+                        ? 'bg-agentmobile-accent text-white border-agentmobile-accent'
+                        : 'bg-agentmobile-bg-2 text-agentmobile-text border-agentmobile-border hover:bg-agentmobile-bg-2/80'
+                    }`}
+                  >
+                    <Icon name="eye" size={14} />
+                    {!compactHeader && (isPreviewMode ? t('workspace.edit') : t('workspace.preview'))}
+                  </button>
+                </>
               )}
               <button
-                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setEditorFontSize(14) }}
+                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setShowToc(false); setEditorFontSize(14) }}
                 className="bg-transparent border-none text-agentmobile-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
               >
                 <Icon name="x" size={20} />
               </button>
             </div>
           </div>
-          {/* Editor Content */}
+          {/* Editor Content + TOC side panel */}
           <div
-            className="flex-1 p-4 overflow-hidden touch-none"
+            ref={editorContainerRef}
+            className="flex-1 p-4 overflow-hidden touch-none flex gap-3"
             onTouchStart={handleEditorTouchStart}
             onTouchMove={handleEditorTouchMove}
             onTouchEnd={handleEditorTouchEnd}
           >
+            {/* TOC panel (markdown only, toggle) */}
+            {showToc && editingFile && isMarkdownFile(editingFile.name) && (
+              <>
+                <div
+                  className="fixed inset-0 z-[468] bg-black/30 md:hidden"
+                  onClick={() => setShowToc(false)}
+                />
+                <div className="w-60 flex-shrink-0 h-full bg-agentmobile-bg-2 border border-agentmobile-border rounded p-2 overflow-y-auto relative z-[469]">
+                  <div className="flex items-center justify-between mb-2 pb-2 border-b border-agentmobile-border">
+                    <span className="text-agentmobile-text text-xs font-semibold uppercase tracking-wide">{t('workspace.toc')}</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={expandAllToc}
+                        className="text-[10px] text-agentmobile-muted hover:text-agentmobile-accent bg-transparent border-none cursor-pointer"
+                      >
+                        {t('workspace.expandAll')}
+                      </button>
+                      <span className="text-agentmobile-muted text-[10px]">·</span>
+                      <button
+                        onClick={collapseAllToc}
+                        className="text-[10px] text-agentmobile-muted hover:text-agentmobile-accent bg-transparent border-none cursor-pointer"
+                      >
+                        {t('workspace.collapseAll')}
+                      </button>
+                    </div>
+                  </div>
+                  {tocTree.length === 0 ? (
+                    <div className="text-agentmobile-muted text-xs text-center py-4">{t('workspace.noHeadings')}</div>
+                  ) : (
+                    <div>
+                      {tocTree.map(entry => (
+                        <TocNode
+                          key={entry.id}
+                          entry={entry}
+                          depth={0}
+                          expandedIds={tocExpandedIds}
+                          onToggle={toggleTocNode}
+                          onNavigate={navigateToHeading}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
             {editingFile && isMarkdownFile(editingFile.name) && isPreviewMode ? (
               <div
-                className="w-full h-full bg-agentmobile-bg-2 border border-agentmobile-border rounded p-4 overflow-y-auto"
+                className="flex-1 h-full bg-agentmobile-bg-2 border border-agentmobile-border rounded p-4 overflow-y-auto"
                 style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
               >
                 <MarkdownPreview content={editorContent} fontSize={editorFontSize} />
@@ -1146,7 +1577,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               <textarea
                 value={editorContent}
                 onChange={(e) => setEditorContent(e.target.value)}
-                className="w-full h-full bg-agentmobile-bg-2 border border-agentmobile-border rounded p-3 text-agentmobile-text font-mono resize-none focus:outline-none focus:border-agentmobile-accent"
+                className="flex-1 h-full bg-agentmobile-bg-2 border border-agentmobile-border rounded p-3 text-agentmobile-text font-mono resize-none focus:outline-none focus:border-agentmobile-accent"
                 style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
                 spellCheck={false}
               />
@@ -1165,13 +1596,23 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 </button>
               )}
             </div>
-            <span>{editingFile.path}</span>
+            <span className="truncate ml-2">{editingFile.path}</span>
           </div>
         </div>
       )}
+
+      {/* Resize handle (embedded / overlay sidebar only) */}
+      {(embedded || overlay) && (
+        <div
+          onMouseDown={handleResizeMouseDown}
+          className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-agentmobile-accent/30 active:bg-agentmobile-accent/50 z-10"
+        />
+      )}
     </div>
   )
-}
+})
+
+export default WorkspaceBrowser
 
 function getFileIcon(name: string): string {
   const ext = name.split('.').pop()?.toLowerCase()
@@ -1198,8 +1639,12 @@ marked.setOptions({
 })
 
 // Markdown preview component using marked + DOMPurify
+// Uses createMarkedRenderer so headings get id="..." attrs (for TOC navigation)
+// and links open in a new tab.
 function MarkdownPreview({ content, fontSize = 14 }: { content: string; fontSize?: number }) {
-  const rawHtml = marked.parse(content, { async: false }) as string
+  const rendererRef = useRef<ReturnType<typeof createMarkedRenderer> | null>(null)
+  if (!rendererRef.current) rendererRef.current = createMarkedRenderer()
+  const rawHtml = marked.parse(content, { async: false, renderer: rendererRef.current }) as string
   const cleanHtml = DOMPurify.sanitize(rawHtml, {
     ALLOWED_TAGS: [
       'p', 'br', 'strong', 'em', 'del', 'a', 'img', 'code', 'pre',
@@ -1207,7 +1652,8 @@ function MarkdownPreview({ content, fontSize = 14 }: { content: string; fontSize
       'ul', 'ol', 'li', 'blockquote', 'hr', 'table', 'thead', 'tbody',
       'tr', 'th', 'td', 'input' // input for task lists
     ],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'target', 'rel', 'checked', 'disabled'],
+    // 'id' for TOC heading anchors; 'type' for task-list checkboxes
+    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'target', 'rel', 'checked', 'disabled', 'id', 'type'],
     ALLOW_DATA_ATTR: false,
   })
 

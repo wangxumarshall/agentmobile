@@ -47,6 +47,7 @@ THINK_MODEL=$(cfg THINK_MODEL)
 LONG_CONTEXT_MODEL=$(cfg LONG_CONTEXT_MODEL)
 DEFAULT_HAIKU_MODEL=$(cfg DEFAULT_HAIKU_MODEL)
 API_TIMEOUT_MS=$(cfg API_TIMEOUT_MS)
+CONTEXT_TOKENS=$(cfg CONTEXT_TOKENS)
 LABEL=$(cfg label)
 BASE_URL="${BASE_URL:-${ANTHROPIC_BASE_URL:-}}"
 AUTH_TOKEN="${AUTH_TOKEN:-${ANTHROPIC_AUTH_TOKEN:-}}"
@@ -99,6 +100,11 @@ fi
 if [ -n "$API_TIMEOUT_MS" ]; then
     export API_TIMEOUT_MS="$API_TIMEOUT_MS"
 fi
+# Set the max context window (tokens) — important for third-party / non-Claude-
+# Code-known models so auto-compact isn't triggered prematurely.
+if [ -n "$CONTEXT_TOKENS" ]; then
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT_TOKENS"
+fi
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
 # ── 代理变量：优先使用 NEXUS_PROXY（server.js 注入），其次继承环境 ──
@@ -134,8 +140,29 @@ echo "╚═══════════════════════�
 echo ""
 
 # ── 主循环：退出后提示续接 ──
+# 会话持久化恢复：agentmobile-resume-claude.sh 在重启后通过环境变量注入接续参数。
+#   AGENTMOBILE_RESUME_SESSION=<uuid>  → 精确接续该条对话 (claude --resume <uuid>)
+#   AGENTMOBILE_RESUME=1               → 无匹配，回退到最近一条对话 (claude --continue)
+# 仅第一次循环生效（恢复后清掉，回到正常启动）。
 while true; do
-    # kimi 不支持 claude -c 的 conversation resume，直接启动（历史通过左侧 Sessions 面板访问）
-    "$CLAUDE_BIN" --dangerously-skip-permissions || true
+    if [ -n "${AGENTMOBILE_RESUME_SESSION:-}" ]; then
+        # kimi 不支持 --resume，避免报错
+        if [[ "$BASE_URL" != *"kimi"* ]]; then
+            "$CLAUDE_BIN" --dangerously-skip-permissions --resume "$AGENTMOBILE_RESUME_SESSION" || true
+        else
+            "$CLAUDE_BIN" --dangerously-skip-permissions || true
+        fi
+        unset AGENTMOBILE_RESUME_SESSION
+    elif [ "${AGENTMOBILE_RESUME:-}" = "1" ]; then
+        if [[ "$BASE_URL" != *"kimi"* ]]; then
+            "$CLAUDE_BIN" --dangerously-skip-permissions --continue || true
+        else
+            "$CLAUDE_BIN" --dangerously-skip-permissions || true
+        fi
+        unset AGENTMOBILE_RESUME
+    else
+        # kimi 不支持 claude -c 的 conversation resume，直接启动（历史通过左侧 Sessions 面板访问）
+        "$CLAUDE_BIN" --dangerously-skip-permissions || true
+    fi
     agentmobile_exit_menu "Claude"
 done

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 
 interface Props {
@@ -109,7 +110,7 @@ export default function TelegramSettings({ token }: Props) {
     setLoadingSettings(true)
     setSaved(false)
     try {
-      const res = await fetch('/api/telegram/settings', {
+      const res = await fetch(apiUrl('/api/telegram/settings'), {
         headers: { Authorization: `Bearer ${token}` },
       })
       const data = await readJsonResponse(res, t('settings.telegramInvalidResponse'))
@@ -129,7 +130,7 @@ export default function TelegramSettings({ token }: Props) {
     setSaved(false)
     setError('')
     try {
-      const res = await fetch('/api/telegram/settings', {
+      const res = await fetch(apiUrl('/api/telegram/settings'), {
         method: 'POST',
         headers: authHeaders(token),
         body: JSON.stringify({

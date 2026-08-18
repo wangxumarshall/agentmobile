@@ -1,8 +1,21 @@
 # ROADMAP — agentmobile
 
-**锚点**: `docs/NORTH-STAR.md` | **PRD**: `docs/PRD.md` (v1 Complete) | **更新**: 2026-04-15
+**锚点**: `docs/NORTH-STAR.md` | **PRD**: `docs/PRD.md` (v1 Complete) | **更新**: 2026-08-18
 
 ---
+
+## v4.7.0 (2026-08-18) — nexus4cc v4.8.3 补丁反向移植
+
+从上游 nexus4cc v4.7.x–v4.8.3 移植一批补丁，保留 agentmobile 已有子系统：
+
+- **文件浏览器**：Markdown TOC、嵌入式侧栏 + 拖拽缩放、折叠机 overlay、紧凑头部、显示隐藏文件、双击 channel 关编辑器、文本编辑器二进制/超大限制
+- **终端**：matchMedia 折叠检测（`canEmbedBrowser` ≥700px）、WebLinksAddon 新标签打开、Shift-drag 原生选区复制回退、iOS 文件选择器 `fontSize:16` 防缩放
+- **后端**：`/api/workspace/files?showHidden`、`/api/workspace/file` 415/413 守卫、`/api/launch-iterm`
+- **配置**：`CONTEXT_TOKENS` → `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+- **持久化**：tmux 域开机自动恢复 session 结构 + claude 对话接续（`agentmobile-restore-tmux.sh` + `agentmobile-resume-claude.sh`）
+- **i18n**：11 个新 key（en + zh-CN）
+
+详见 `docs/PRD.md` §「nexus4cc v4.8.3 补丁移植」。
 
 ## v4.5.0 Released (2026-04-15) — Dual AI Backend
 

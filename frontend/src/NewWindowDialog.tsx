@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
@@ -23,7 +24,7 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
   const [showConfigs, setShowConfigs] = useState(false)
 
   useEffect(() => {
-    fetch('/api/configs', { headers: { Authorization: `Bearer ${token}` } })
+    fetch(apiUrl('/api/configs'), { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : [])
       .then((data: Config[]) => {
         setConfigs(data)

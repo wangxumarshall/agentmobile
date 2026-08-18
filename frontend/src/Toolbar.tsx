@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, RefObject } from 'react'
+import { apiUrl } from './api'
 import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
 import GhostShield from './GhostShield'
@@ -149,7 +150,7 @@ export default function Toolbar({ token, sendToWs, pasteToTerminal, scrollToBott
 
   // 启动时从服务端拉取配置，覆盖 localStorage 缓存
   useEffect(() => {
-    fetch('/api/toolbar-config', { headers: { Authorization: `Bearer ${token}` } })
+    fetch(apiUrl('/api/toolbar-config'), { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data && data.pinned && data.expanded) {
@@ -258,7 +259,7 @@ export default function Toolbar({ token, sendToWs, pasteToTerminal, scrollToBott
   function saveConfig(c: ToolbarConfig) {
     const normalized = normalizeConfig(c)
     localStorage.setItem(CONFIG_KEY, JSON.stringify(normalized))
-    fetch('/api/toolbar-config', {
+    fetch(apiUrl('/api/toolbar-config'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(normalized),
